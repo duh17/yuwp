@@ -1,0 +1,98 @@
+import Foundation
+
+/// Animates text appearing character-by-character when the sidecar sends
+/// full-replacement transcript updates every ~2s.
+///
+/// Ported from an earlier project's TypewriterAnimator.
+/// Computes the delta (new chars appended) and reveals them gradually
+/// over ~1.5s, leaving a 0.5s buffer before the next update.
+/// If a new update arrives mid-animation, snaps to completion and starts fresh.
+@MainActor
+final class TypewriterAnimator {
+    private(set) var displayText = ""
+    private(set) var isAnimating = false
+
+    private var targetText = ""
+    private var animationTask: Task<Void, Never>?
+
+    /// Total reveal time for delta chars. Lower = faster typewriter.
+    static let animationDurationNs: UInt64 = 800_000_000  // 0.8s (was 1.5s)
+    static let minimumIntervalNs: UInt64 = 8_000_000 // ~8ms, one frame at 120Hz
+
+    /// Feed a new full replacement transcript. Animates the delta.
+    func update(fullText: String) {
+        commitCurrentAnimation()
+
+        let previousTarget = targetText
+        targetText = fullText
+
+        let commonCount = commonPrefixCount(previousTarget, fullText)
+
+        // If text got shorter or unchanged (correction/deletion), snap
+        guard fullText.count > commonCount else {
+            displayText = fullText
+            return
+        }
+
+        // Show common prefix immediately, animate the delta
+        let prefixEnd = fullText.index(fullText.startIndex, offsetBy: commonCount)
+        displayText = String(fullText[..<prefixEnd])
+
+        let deltaCount = fullText.count - commonCount
+        let intervalNs = max(
+            Self.minimumIntervalNs,
+            Self.animationDurationNs / UInt64(max(1, deltaCount))
+        )
+
+        isAnimating = true
+
+        animationTask = Task { [weak self] in
+            var currentIndex = prefixEnd
+            let target = fullText
+
+            while currentIndex < target.endIndex {
+                do {
+                    try await Task.sleep(nanoseconds: intervalNs)
+                } catch { break }
+                guard !Task.isCancelled else { break }
+                guard let self else { break }
+
+                currentIndex = target.index(after: currentIndex)
+                self.displayText = String(target[..<currentIndex])
+            }
+
+            guard let self else { return }
+            if !Task.isCancelled {
+                self.isAnimating = false
+            }
+        }
+    }
+
+    /// Snap to target text immediately.
+    func commitCurrentAnimation() {
+        animationTask?.cancel()
+        animationTask = nil
+        displayText = targetText
+        isAnimating = false
+    }
+
+    func reset() {
+        animationTask?.cancel()
+        animationTask = nil
+        targetText = ""
+        displayText = ""
+        isAnimating = false
+    }
+
+    private func commonPrefixCount(_ a: String, _ b: String) -> Int {
+        var count = 0
+        var ai = a.startIndex
+        var bi = b.startIndex
+        while ai < a.endIndex, bi < b.endIndex, a[ai] == b[bi] {
+            count += 1
+            ai = a.index(after: ai)
+            bi = b.index(after: bi)
+        }
+        return count
+    }
+}
