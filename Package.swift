@@ -13,7 +13,8 @@ let package = Package(
         .testTarget(
             name: "YuwpTests",
             dependencies: ["Yuwp"],
-            path: "Tests"
+            path: "Tests",
+            exclude: ["fixtures"]
         ),
     ]
 )
