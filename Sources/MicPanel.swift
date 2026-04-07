@@ -16,12 +16,19 @@ final class MicPanel {
     private var smoothLevel: Float = 0
     private var barPhase: Float = 0
 
+    // Compact mode: waveform-only dot, no transcript text
+    private var compactMode = false
+    private var compactPanel: NSPanel?
+    private var compactView: NSView?
+    private var compactBars: [CALayer] = []
+
     // Layout constants
     private let panelWidth: CGFloat = 340
     private let minHeight: CGFloat = 40
     private let maxHeight: CGFloat = 260
     private let cornerRadius: CGFloat = 12
     private let padding: CGFloat = 10
+    private let compactSize: CGFloat = 28
 
     // Waveform constants
     private let barCount = 5
@@ -37,18 +44,33 @@ final class MicPanel {
     private let barPhaseOffset: [Float] = [0, 0.7, 1.4, 2.1, 2.8]
 
     func show(near position: NSPoint) {
+        compactMode = false
         if panel == nil { createPanel() }
         guard let panel else { return }
 
-        // Prefer the caret/element position from TextInjector.
-        // Fall back to mouse location if the AX position is zero (no target found).
         let anchor = (position == .zero) ? NSEvent.mouseLocation : position
-        // Position below and to the right of the anchor point
         panel.setFrameOrigin(NSPoint(x: anchor.x + 16, y: anchor.y - minHeight - 16))
 
         textView?.string = ""
         resizeToFit()
+        compactPanel?.orderOut(nil)
         panel.orderFront(nil)
+        startAnimation()
+    }
+
+    /// Show a tiny waveform-only indicator near the caret.
+    /// Used when AX injection is live and the full transcript panel is redundant.
+    func showCompact(near position: NSPoint) {
+        compactMode = true
+        if compactPanel == nil { createCompactPanel() }
+        guard let cp = compactPanel else { return }
+
+        let anchor = (position == .zero) ? NSEvent.mouseLocation : position
+        // Position just below and right of the caret
+        cp.setFrameOrigin(NSPoint(x: anchor.x + 4, y: anchor.y - compactSize - 4))
+
+        panel?.orderOut(nil)
+        cp.orderFront(nil)
         startAnimation()
     }
 
@@ -65,6 +87,8 @@ final class MicPanel {
     func hide() {
         stopAnimation()
         panel?.orderOut(nil)
+        compactPanel?.orderOut(nil)
+        compactMode = false
         targetLevel = 0
         smoothLevel = 0
     }
@@ -93,11 +117,30 @@ final class MicPanel {
         smoothLevel += (targetLevel - smoothLevel) * factor
         barPhase += 0.08
 
-        guard let contentView else { return }
-        let panelH = contentView.bounds.height
-
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+
+        // Animate compact bars
+        if compactMode {
+            let ch = compactSize
+            for i in 0..<compactBars.count {
+                let bar = compactBars[i]
+                let levelContribution = CGFloat(smoothLevel) * barScale[i] * (ch * 0.6)
+                let phase = barPhase + barPhaseOffset[i]
+                let idle = (sin(phase) * 0.5 + 0.5) * 1.5
+                let height = max(2, levelContribution + CGFloat(idle))
+                let x: CGFloat = 4 + CGFloat(i) * (barWidth + 2)
+                let y = (ch - height) / 2
+                bar.frame = CGRect(x: x, y: y, width: barWidth, height: height)
+                let brightness = 0.5 + CGFloat(smoothLevel) * 0.5
+                bar.backgroundColor = NSColor(calibratedRed: 1.0, green: 0.3, blue: 0.3, alpha: brightness).cgColor
+            }
+            CATransaction.commit()
+            return
+        }
+
+        guard let contentView else { CATransaction.commit(); return }
+        let panelH = contentView.bounds.height
 
         for i in 0..<barCount {
             guard i < waveformBars.count else { break }
@@ -227,5 +270,47 @@ final class MicPanel {
         p.contentView = cv
         contentView = cv
         panel = p
+    }
+
+    private func createCompactPanel() {
+        let size = compactSize
+        let p = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: size, height: size),
+            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        p.isFloatingPanel = true
+        p.becomesKeyOnlyIfNeeded = true
+        p.level = .statusBar
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = true
+        p.hidesOnDeactivate = false
+        p.titleVisibility = .hidden
+        p.titlebarAppearsTransparent = true
+
+        let cv = NSView(frame: NSRect(x: 0, y: 0, width: size, height: size))
+        cv.wantsLayer = true
+        cv.layer?.cornerRadius = size / 2
+        cv.layer?.masksToBounds = true
+        cv.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.85).cgColor
+        cv.layer?.borderWidth = 0.5
+        cv.layer?.borderColor = NSColor(calibratedRed: 1.0, green: 0.3, blue: 0.3, alpha: 0.3).cgColor
+
+        compactBars = []
+        for i in 0..<barCount {
+            let bar = CALayer()
+            let x: CGFloat = 4 + CGFloat(i) * (barWidth + 2)
+            bar.frame = CGRect(x: x, y: (size - 2) / 2, width: barWidth, height: 2)
+            bar.cornerRadius = barWidth / 2
+            bar.backgroundColor = NSColor(calibratedRed: 1.0, green: 0.3, blue: 0.3, alpha: 0.5).cgColor
+            cv.layer?.addSublayer(bar)
+            compactBars.append(bar)
+        }
+
+        p.contentView = cv
+        compactView = cv
+        compactPanel = p
     }
 }

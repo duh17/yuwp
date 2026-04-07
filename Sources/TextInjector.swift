@@ -52,33 +52,41 @@ final class TextInjector {
     }
 
     /// Stream a partial transcription into the field.
-    /// Replaces previously injected text in-place via AX selection.
+    /// Writes the full value directly to avoid selection flashing.
     /// No-op when using clipboard method (text only committed on finish).
     func inject(_ text: String) {
         guard let anchor, anchor.method == .accessibility else { return }
 
-        // Select the range of our previous injection
-        let selectOK = selectRange(
-            in: anchor.element,
-            location: anchor.cursorPosition,
-            length: writtenLength
-        )
-        if !selectOK {
-            // AX broke mid-session — degrade to clipboard for commit
+        // Read the existing text, splice our portion in, write the whole value back.
+        // This avoids the visible select-then-replace flash that select+replace causes.
+        let existing = readValue(from: anchor.element) ?? ""
+        let before = String(existing.prefix(anchor.cursorPosition))
+        let after = String(existing.dropFirst(anchor.cursorPosition + writtenLength))
+        let newValue = before + text + after
+
+        let writeOK = AXUIElementSetAttributeValue(
+            anchor.element, kAXValueAttribute as CFString, newValue as CFTypeRef
+        ) == .success
+
+        if writeOK {
+            writtenLength = text.count
+            // Move cursor to end of injected text
+            let cursorEnd = anchor.cursorPosition + text.count
+            var range = CFRange(location: cursorEnd, length: 0)
+            if let val = AXValueCreate(.cfRange, &range) {
+                AXUIElementSetAttributeValue(
+                    anchor.element, kAXSelectedTextRangeAttribute as CFString, val
+                )
+            }
+        } else {
+            // Value write failed — degrade to clipboard for commit
             self.anchor = Anchor(
                 element: anchor.element,
                 method: .paste,
                 cursorPosition: anchor.cursorPosition,
                 screenPoint: anchor.screenPoint
             )
-            yuwpLog("AX selection failed — degrading to clipboard")
-            return
-        }
-
-        // Replace selection with new text
-        let replaceOK = replaceSelection(in: anchor.element, with: text)
-        if replaceOK {
-            writtenLength = text.count
+            yuwpLog("AX value write failed — degrading to clipboard")
         }
     }
 
@@ -92,10 +100,21 @@ final class TextInjector {
 
         // Always use clipboard paste for the final commit — it's the most
         // reliable path across all apps. AX inject is only for live preview.
-        // First, undo any AX-injected preview text by replacing it with empty.
+        // First, undo any AX-injected preview text by writing the value without it.
         if anchor.method == .accessibility && writtenLength > 0 {
-            if selectRange(in: anchor.element, location: anchor.cursorPosition, length: writtenLength) {
-                _ = replaceSelection(in: anchor.element, with: "")
+            if let existing = readValue(from: anchor.element) {
+                let before = String(existing.prefix(anchor.cursorPosition))
+                let after = String(existing.dropFirst(anchor.cursorPosition + writtenLength))
+                AXUIElementSetAttributeValue(
+                    anchor.element, kAXValueAttribute as CFString, (before + after) as CFTypeRef
+                )
+                // Restore cursor to injection point
+                var range = CFRange(location: anchor.cursorPosition, length: 0)
+                if let val = AXValueCreate(.cfRange, &range) {
+                    AXUIElementSetAttributeValue(
+                        anchor.element, kAXSelectedTextRangeAttribute as CFString, val
+                    )
+                }
             }
             writtenLength = 0
         }
@@ -144,6 +163,15 @@ final class TextInjector {
     ]
 
     // MARK: - AX Helpers
+
+    /// Read the full text value from an element.
+    private func readValue(from element: AXUIElement) -> String? {
+        var ref: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            element, kAXValueAttribute as CFString, &ref
+        ) == .success else { return nil }
+        return ref as? String
+    }
 
     /// Get the system-wide focused UI element.
     private func focusedElement() -> AXUIElement? {
