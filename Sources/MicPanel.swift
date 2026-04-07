@@ -1,78 +1,86 @@
 import AppKit
 
-/// Floating dictation indicator with reactive audio waveform.
-/// Translucent dark pill with animated bars that respond to mic input,
-/// plus multiline transcript text.
+/// Floating dictation indicator.
+/// Text-only pill with audio-reactive border glow that follows the mouse cursor.
+/// In AX mode, shows a compact waveform dot near the text caret instead.
 @MainActor
 final class MicPanel {
+    // Main pill
     private var panel: NSPanel?
     private var contentView: NSView?
     private var textView: NSTextView?
-    private var waveformBars: [CALayer] = []
-    private var animationTimer: Timer?
 
-    // Audio level state
-    private var targetLevel: Float = 0
-    private var smoothLevel: Float = 0
-    private var barPhase: Float = 0
-
-    // Compact mode: waveform-only dot, no transcript text
+    // Compact dot (AX mode — waveform bars near caret)
     private var compactMode = false
     private var compactPanel: NSPanel?
     private var compactView: NSView?
     private var compactBars: [CALayer] = []
 
-    // Layout constants
-    private let panelWidth: CGFloat = 340
-    private let minHeight: CGFloat = 40
-    private let maxHeight: CGFloat = 260
-    private let cornerRadius: CGFloat = 12
-    private let padding: CGFloat = 10
-    private let compactSize: CGFloat = 28
+    // Animation state
+    private var animationTimer: Timer?
+    private var targetLevel: Float = 0
+    private var smoothLevel: Float = 0
+    private var barPhase: Float = 0
 
-    // Waveform constants
+    // Layout constants
+    private let panelWidth: CGFloat = 320
+    private let minHeight: CGFloat = 36
+    private let cornerRadius: CGFloat = 10
+    private let textPadding: CGFloat = 14
+    private let verticalPadding: CGFloat = 8
+    private let compactSize: CGFloat = 28
+    private let cursorGap: CGFloat = 20 // gap between mouse and panel bottom
+
+    // Glow
+    private let glowColor = NSColor(calibratedRed: 0.5, green: 0.7, blue: 1.0, alpha: 1.0)
+
+    // Compact waveform
     private let barCount = 5
     private let barWidth: CGFloat = 3
-    private let barSpacing: CGFloat = 3
-    private let barMinHeight: CGFloat = 4
-    private let barMaxHeight: CGFloat = 20
-    private let waveformLeft: CGFloat = 12
-
-    // Per-bar "personality" — center bar is tallest, edges are shorter
     private let barScale: [CGFloat] = [0.5, 0.8, 1.0, 0.8, 0.5]
-    // Phase offsets so bars don't all move identically
     private let barPhaseOffset: [Float] = [0, 0.7, 1.4, 2.1, 2.8]
 
+    // MARK: - Public API
+
+    /// Show the text pill near a position (clipboard-fallback mode).
+    /// The pill follows the mouse cursor while visible.
     func show(near position: NSPoint) {
         compactMode = false
         if panel == nil { createPanel() }
         guard let panel else { return }
 
         let anchor = (position == .zero) ? NSEvent.mouseLocation : position
-        // Position above the anchor so the panel grows upward, not off-screen
-        let origin = clampToScreen(NSPoint(x: anchor.x, y: anchor.y + 8), panelSize: panel.frame.size)
+        let size = panel.frame.size
+        let origin = clampToScreen(
+            NSPoint(x: anchor.x - size.width / 2, y: anchor.y + cursorGap),
+            panelSize: size
+        )
         panel.setFrameOrigin(origin)
 
         textView?.string = ""
         resizeToFit()
         compactPanel?.orderOut(nil)
+        panel.alphaValue = 1
         panel.orderFront(nil)
         startAnimation()
     }
 
-    /// Show a tiny waveform-only indicator near the caret.
-    /// Used when AX injection is live and the full transcript panel is redundant.
+    /// Show a tiny waveform-only dot near the caret.
+    /// Used when AX injection is live and the full pill is redundant.
     func showCompact(near position: NSPoint) {
         compactMode = true
         if compactPanel == nil { createCompactPanel() }
         guard let cp = compactPanel else { return }
 
         let anchor = (position == .zero) ? NSEvent.mouseLocation : position
-        // Position just above and right of the caret
-        let origin = clampToScreen(NSPoint(x: anchor.x + 4, y: anchor.y + 4), panelSize: cp.frame.size)
+        let origin = clampToScreen(
+            NSPoint(x: anchor.x + 4, y: anchor.y + 4),
+            panelSize: cp.frame.size
+        )
         cp.setFrameOrigin(origin)
 
         panel?.orderOut(nil)
+        cp.alphaValue = 1
         cp.orderFront(nil)
         startAnimation()
     }
@@ -82,35 +90,9 @@ final class MicPanel {
         resizeToFit()
     }
 
-    /// Feed normalized audio level (0.0–1.0).
+    /// Feed normalized audio level (0.0-1.0).
     func updateAudioLevel(_ level: Float) {
         targetLevel = level
-    }
-
-    /// Clamp a panel origin so it stays fully on-screen.
-    /// The origin is the bottom-left of the panel (macOS coordinate system).
-    private func clampToScreen(_ point: NSPoint, panelSize: NSSize) -> NSPoint {
-        guard let screen = NSScreen.main?.visibleFrame else { return point }
-        var x = point.x
-        var y = point.y
-
-        // Keep right edge on screen
-        if x + panelSize.width > screen.maxX {
-            x = screen.maxX - panelSize.width - 8
-        }
-        // Keep left edge on screen
-        if x < screen.minX {
-            x = screen.minX + 8
-        }
-        // Keep top edge on screen
-        if y + panelSize.height > screen.maxY {
-            y = screen.maxY - panelSize.height - 8
-        }
-        // Keep bottom edge on screen
-        if y < screen.minY {
-            y = screen.minY + 8
-        }
-        return NSPoint(x: x, y: y)
     }
 
     func hide() {
@@ -122,7 +104,21 @@ final class MicPanel {
         smoothLevel = 0
     }
 
-    // MARK: - Animation (main thread timer at ~60fps)
+    // MARK: - Screen Clamping
+
+    private func clampToScreen(_ point: NSPoint, panelSize: NSSize) -> NSPoint {
+        guard let screen = NSScreen.main?.visibleFrame else { return point }
+        var x = point.x
+        var y = point.y
+
+        if x + panelSize.width > screen.maxX { x = screen.maxX - panelSize.width - 8 }
+        if x < screen.minX { x = screen.minX + 8 }
+        if y + panelSize.height > screen.maxY { y = screen.maxY - panelSize.height - 8 }
+        if y < screen.minY { y = screen.minY + 8 }
+        return NSPoint(x: x, y: y)
+    }
+
+    // MARK: - Animation Loop
 
     private func startAnimation() {
         guard animationTimer == nil else { return }
@@ -137,7 +133,6 @@ final class MicPanel {
         animationTimer = nil
     }
 
-    /// Called every frame (~60fps) to update bar heights.
     private func tick() {
         // Smooth toward target (fast attack, slower decay)
         let attack: Float = 0.4
@@ -149,51 +144,59 @@ final class MicPanel {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 
-        // Animate compact bars
         if compactMode {
-            let ch = compactSize
-            for i in 0..<compactBars.count {
-                let bar = compactBars[i]
-                let levelContribution = CGFloat(smoothLevel) * barScale[i] * (ch * 0.6)
-                let phase = barPhase + barPhaseOffset[i]
-                let idle = (sin(phase) * 0.5 + 0.5) * 1.5
-                let height = max(2, levelContribution + CGFloat(idle))
-                let x: CGFloat = 4 + CGFloat(i) * (barWidth + 2)
-                let y = (ch - height) / 2
-                bar.frame = CGRect(x: x, y: y, width: barWidth, height: height)
-                let brightness = 0.5 + CGFloat(smoothLevel) * 0.5
-                bar.backgroundColor = NSColor(calibratedRed: 1.0, green: 0.3, blue: 0.3, alpha: brightness).cgColor
-            }
-            CATransaction.commit()
-            return
-        }
-
-        guard let contentView else { CATransaction.commit(); return }
-        let panelH = contentView.bounds.height
-
-        for i in 0..<barCount {
-            guard i < waveformBars.count else { break }
-            let bar = waveformBars[i]
-
-            // Base height from audio level, scaled per bar
-            let levelContribution = CGFloat(smoothLevel) * barScale[i] * barMaxHeight
-
-            // Subtle idle oscillation (visible even during silence)
-            let phase = barPhase + barPhaseOffset[i]
-            let idle = (sin(phase) * 0.5 + 0.5) * 2.0 // 0–2pt oscillation
-
-            let height = max(barMinHeight, levelContribution + CGFloat(idle))
-            let x = waveformLeft + CGFloat(i) * (barWidth + barSpacing)
-            let y = (panelH - height) / 2
-
-            bar.frame = CGRect(x: x, y: y, width: barWidth, height: height)
-
-            // Brightness follows level
-            let brightness = 0.5 + CGFloat(smoothLevel) * 0.5
-            bar.backgroundColor = NSColor(white: 1.0, alpha: brightness).cgColor
+            tickCompact()
+        } else {
+            tickPill()
         }
 
         CATransaction.commit()
+    }
+
+    /// Animate the pill's border glow and follow the mouse cursor.
+    private func tickPill() {
+        guard let panel, let contentView else { return }
+
+        // Border glow: brightens with audio level
+        let level = CGFloat(smoothLevel)
+        let borderWidth = 0.5 + level * 1.5
+        let borderAlpha = 0.08 + level * 0.35
+        contentView.layer?.borderWidth = borderWidth
+        contentView.layer?.borderColor = glowColor.withAlphaComponent(borderAlpha).cgColor
+
+        // Follow mouse cursor (smooth lerp — panel gently trails the cursor)
+        let mouse = NSEvent.mouseLocation
+        let targetX = mouse.x - panelWidth / 2
+        let targetY = mouse.y + cursorGap
+        let current = panel.frame.origin
+        let lerp: CGFloat = 0.12
+        let newX = current.x + (targetX - current.x) * lerp
+        let newY = current.y + (targetY - current.y) * lerp
+
+        let clamped = clampToScreen(
+            NSPoint(x: newX, y: newY),
+            panelSize: panel.frame.size
+        )
+        panel.setFrameOrigin(clamped)
+    }
+
+    /// Animate compact waveform bars.
+    private func tickCompact() {
+        let ch = compactSize
+        for i in 0..<compactBars.count {
+            let bar = compactBars[i]
+            let levelContribution = CGFloat(smoothLevel) * barScale[i] * (ch * 0.6)
+            let phase = barPhase + barPhaseOffset[i]
+            let idle = (sin(phase) * 0.5 + 0.5) * 1.5
+            let height = max(2, levelContribution + CGFloat(idle))
+            let x: CGFloat = 4 + CGFloat(i) * (barWidth + 2)
+            let y = (ch - height) / 2
+            bar.frame = CGRect(x: x, y: y, width: barWidth, height: height)
+            let brightness = 0.5 + CGFloat(smoothLevel) * 0.5
+            bar.backgroundColor = NSColor(
+                calibratedRed: 1.0, green: 0.3, blue: 0.3, alpha: brightness
+            ).cgColor
+        }
     }
 
     // MARK: - Layout
@@ -201,8 +204,7 @@ final class MicPanel {
     private func resizeToFit() {
         guard let panel, let textView, let contentView else { return }
 
-        let waveformWidth = waveformLeft + CGFloat(barCount) * (barWidth + barSpacing) + 8
-        let textWidth = panelWidth - waveformWidth - padding
+        let textWidth = panelWidth - textPadding * 2
         let text = textView.string
 
         var neededHeight = minHeight
@@ -218,31 +220,28 @@ final class MicPanel {
             storage.addLayoutManager(lm)
             lm.ensureLayout(for: container)
             let textH = lm.usedRect(for: container).height
-            neededHeight = min(max(textH + 20, minHeight), maxHeight)
+
+            // No fixed cap — grow up to screen height minus margin
+            let screenH = NSScreen.main?.visibleFrame.height ?? 800
+            let maxHeight = screenH - 100
+            neededHeight = min(max(textH + verticalPadding * 2, minHeight), maxHeight)
         }
 
+        // Keep bottom edge fixed, grow upward
         var frame = panel.frame
-        // Keep the top edge fixed, grow downward
-        let top = frame.origin.y + frame.height
         frame.size.height = neededHeight
-        frame.origin.y = top - neededHeight
-        // Clamp to screen
-        let clamped = clampToScreen(frame.origin, panelSize: frame.size)
-        frame.origin = clamped
         panel.setFrame(frame, display: true, animate: false)
 
         contentView.frame = NSRect(x: 0, y: 0, width: panelWidth, height: neededHeight)
-
-        let waveformAreaWidth = waveformLeft + CGFloat(barCount) * (barWidth + barSpacing) + 8
         textView.frame = NSRect(
-            x: waveformAreaWidth,
-            y: 6,
+            x: textPadding,
+            y: verticalPadding,
             width: textWidth,
-            height: neededHeight - 12
+            height: neededHeight - verticalPadding * 2
         )
     }
 
-    // MARK: - Create
+    // MARK: - Panel Creation
 
     private func createPanel() {
         let p = NSPanel(
@@ -260,39 +259,28 @@ final class MicPanel {
         p.hidesOnDeactivate = false
         p.titleVisibility = .hidden
         p.titlebarAppearsTransparent = true
-        p.isMovableByWindowBackground = true
+        p.isMovableByWindowBackground = false // mouse-follow handles positioning
 
-        // Dark translucent pill
+        // Dark translucent pill — text only, no waveform bars
         let cv = NSView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: minHeight))
         cv.wantsLayer = true
         cv.layer?.cornerRadius = cornerRadius
         cv.layer?.masksToBounds = true
-        cv.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.92).cgColor
+        cv.layer?.backgroundColor = NSColor(white: 0.10, alpha: 0.92).cgColor
         cv.layer?.borderWidth = 0.5
         cv.layer?.borderColor = NSColor(white: 1, alpha: 0.08).cgColor
 
-        // Waveform bars
-        for i in 0..<barCount {
-            let bar = CALayer()
-            let x = waveformLeft + CGFloat(i) * (barWidth + barSpacing)
-            bar.frame = CGRect(x: x, y: (minHeight - barMinHeight) / 2,
-                               width: barWidth, height: barMinHeight)
-            bar.cornerRadius = barWidth / 2
-            bar.backgroundColor = NSColor(white: 1.0, alpha: 0.5).cgColor
-            cv.layer?.addSublayer(bar)
-            waveformBars.append(bar)
-        }
-
-        // Text view
-        let waveformAreaWidth = waveformLeft + CGFloat(barCount) * (barWidth + barSpacing) + 8
-        let textWidth = panelWidth - waveformAreaWidth - padding
-        let tv = NSTextView(frame: NSRect(x: waveformAreaWidth, y: 6,
-                                          width: textWidth, height: minHeight - 12))
+        // Text view — full-width, no waveform bars eating space
+        let textWidth = panelWidth - textPadding * 2
+        let tv = NSTextView(frame: NSRect(
+            x: textPadding, y: verticalPadding,
+            width: textWidth, height: minHeight - verticalPadding * 2
+        ))
         tv.isEditable = false
         tv.isSelectable = false
         tv.drawsBackground = false
         tv.font = .systemFont(ofSize: 15, weight: .regular)
-        tv.textColor = NSColor(white: 1, alpha: 0.9)
+        tv.textColor = NSColor(white: 1, alpha: 0.92)
         tv.isVerticallyResizable = false
         tv.isHorizontallyResizable = false
         tv.textContainer?.widthTracksTextView = true
@@ -329,7 +317,9 @@ final class MicPanel {
         cv.layer?.masksToBounds = true
         cv.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.85).cgColor
         cv.layer?.borderWidth = 0.5
-        cv.layer?.borderColor = NSColor(calibratedRed: 1.0, green: 0.3, blue: 0.3, alpha: 0.3).cgColor
+        cv.layer?.borderColor = NSColor(
+            calibratedRed: 1.0, green: 0.3, blue: 0.3, alpha: 0.3
+        ).cgColor
 
         compactBars = []
         for i in 0..<barCount {
@@ -337,7 +327,9 @@ final class MicPanel {
             let x: CGFloat = 4 + CGFloat(i) * (barWidth + 2)
             bar.frame = CGRect(x: x, y: (size - 2) / 2, width: barWidth, height: 2)
             bar.cornerRadius = barWidth / 2
-            bar.backgroundColor = NSColor(calibratedRed: 1.0, green: 0.3, blue: 0.3, alpha: 0.5).cgColor
+            bar.backgroundColor = NSColor(
+                calibratedRed: 1.0, green: 0.3, blue: 0.3, alpha: 0.5
+            ).cgColor
             cv.layer?.addSublayer(bar)
             compactBars.append(bar)
         }
