@@ -10,5 +10,10 @@ let package = Package(
             path: "Sources",
             exclude: ["sidecar"]
         ),
+        .testTarget(
+            name: "YuwpTests",
+            dependencies: ["Yuwp"],
+            path: "Tests"
+        ),
     ]
 )

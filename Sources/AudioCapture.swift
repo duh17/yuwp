@@ -3,7 +3,7 @@ import Foundation
 
 /// Captures microphone audio at 16kHz mono PCM and delivers raw buffers.
 /// Also computes real-time RMS audio level for waveform visualization.
-final class AudioCapture: @unchecked Sendable {
+final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturing conformance
     private let engine = AVAudioEngine()
     private var isRunning = false
     private let targetSampleRate: Double = 16000

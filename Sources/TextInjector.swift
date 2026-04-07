@@ -13,7 +13,7 @@ import ApplicationServices
 ///   3. commit(_:) — finalize text (AX or clipboard fallback)
 ///   4. release() — cleanup
 @MainActor
-final class TextInjector {
+final class TextInjector: TextInjecting {
 
     // MARK: - Public
 
