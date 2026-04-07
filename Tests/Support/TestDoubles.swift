@@ -53,10 +53,15 @@ final class MockAudioCapture: AudioCapturing, @unchecked Sendable {
     var stopCallCount = 0
     var onBufferCallback: ((@Sendable (Data) -> Void))?
     var stopReturnData: Data?
+    var startShouldSucceed = true
 
-    func start(onBuffer: @escaping @Sendable (Data) -> Void) {
+    @discardableResult
+    func start(onBuffer: @escaping @Sendable (Data) -> Void) -> Bool {
         startCallCount += 1
-        onBufferCallback = onBuffer
+        if startShouldSucceed {
+            onBufferCallback = onBuffer
+        }
+        return startShouldSucceed
     }
 
     func stop() -> Data? {

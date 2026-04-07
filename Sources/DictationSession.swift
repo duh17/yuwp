@@ -39,7 +39,8 @@ protocol SttSession: AnyObject, Sendable {
 /// Not actor-isolated — AudioCapture is `@unchecked Sendable`.
 protocol AudioCapturing: AnyObject, Sendable {
     var onAudioLevel: (@Sendable (Float) -> Void)? { get set }
-    func start(onBuffer: @escaping @Sendable (Data) -> Void)
+    @discardableResult
+    func start(onBuffer: @escaping @Sendable (Data) -> Void) -> Bool
     func stop() -> Data?
 }
 
@@ -84,9 +85,15 @@ final class DictationSession {
     private let typewriter = TypewriterAnimator()
     private var typewriterDriveTask: Task<Void, Never>?
     private var finalTimeoutTask: Task<Void, Never>?
+    private var maxDurationTask: Task<Void, Never>?
+    private static let maxDurationSeconds: UInt64 = 5 * 60 // 5 minutes
 
     /// Callback for events — set by AppDelegate to update UI.
     var onEvent: ((DictationEvent) -> Void)?
+
+    /// Called when session needs external stop (e.g., max duration).
+    /// Set by AppDelegate to trigger stopDictation().
+    var onRequestStop: (() -> Void)?
 
     private(set) var isActive = false
 
@@ -125,11 +132,27 @@ final class DictationSession {
             }
         }
 
-        audioCapture.start { [weak self] buffer in
+        let started = audioCapture.start { [weak self] buffer in
             self?.sttSession.feedAudio(buffer)
         }
 
+        if !started {
+            yuwpLog("Audio capture failed to start — aborting session")
+            isActive = false
+            sttSession.end()
+            finalize()
+            return
+        }
+
         yuwpLog("Listening...")
+
+        // Safety net: auto-stop after max duration
+        maxDurationTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.maxDurationSeconds * 1_000_000_000)
+            guard let self, self.isActive else { return }
+            yuwpLog("Max session duration (\(Self.maxDurationSeconds)s) reached — auto-stopping")
+            self.onRequestStop?()
+        }
     }
 
     /// Stop recording and wait for the final transcription.
@@ -139,6 +162,8 @@ final class DictationSession {
         guard isActive else { return nil }
         isActive = false
 
+        maxDurationTask?.cancel()
+        maxDurationTask = nil
         let pcmData = audioCapture.stop()
         sttSession.end()
         typewriterDriveTask?.cancel()

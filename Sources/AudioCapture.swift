@@ -18,8 +18,13 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
     var onAudioLevel: (@Sendable (Float) -> Void)?
 
     /// Start capturing. `onBuffer` is called with raw Int16 PCM data at 16kHz mono.
-    func start(onBuffer: @escaping @Sendable (Data) -> Void) {
-        guard !isRunning else { return }
+    /// Returns true if capture started successfully.
+    @discardableResult
+    func start(onBuffer: @escaping @Sendable (Data) -> Void) -> Bool {
+        guard !isRunning else {
+            yuwpLog("Audio capture already running — skipping start")
+            return false
+        }
 
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
@@ -32,13 +37,13 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
             interleaved: true
         ) else {
             yuwpLog("Failed to create target audio format")
-            return
+            return false
         }
 
         // Create converter from mic format to target format
         guard let conv = AVAudioConverter(from: inputFormat, to: targetFormat) else {
             yuwpLog("Failed to create audio converter: \(inputFormat) -> \(targetFormat)")
-            return
+            return false
         }
         converter = conv
 
@@ -109,8 +114,13 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
             try engine.start()
             isRunning = true
             yuwpLog("Audio capture started (\(Int(inputFormat.sampleRate))Hz -> 16kHz mono)")
+            return true
         } catch {
             yuwpLog("Failed to start audio engine: \(error)")
+            // Clean up the tap we just installed
+            inputNode.removeTap(onBus: 0)
+            converter = nil
+            return false
         }
     }
 

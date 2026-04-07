@@ -1,1 +1,1 @@
-Okay, seems like our server is dead.
+Okay, this is working quite well. Great. I love this. 中英文混输。然后我觉得，咱们下一个就是稍微的 polish 一下。我觉得可以换不同的这个 animation 啊，不同的 style 啊，然后 make things a bit more configurable. 但是整体我觉得效果已经很好了。啊，来，我们先加一些 end-to-end test behavior test，确保我们现在的 behavior 可以被固定下来，然后我们再来做其他的 polish。
