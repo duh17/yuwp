@@ -1,1 +1,1 @@
-So the panel is hidden, but I do not see a little microphone. I do still want to see if we can have a little indicator or something that's following the cursor. In addition, when the text are being inputted, the text box just keeps blinking.
+Hello.

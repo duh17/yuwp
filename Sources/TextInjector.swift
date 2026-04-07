@@ -17,7 +17,7 @@ final class TextInjector {
 
     // MARK: - Public
 
-    /// Screen position of the captured target (for panel positioning)
+    /// Current screen position of the caret (updated on each inject)
     private(set) var targetPosition: NSPoint = .zero
 
     /// Whether live AX injection is active (text streams directly into the target field).
@@ -77,6 +77,10 @@ final class TextInjector {
                 AXUIElementSetAttributeValue(
                     anchor.element, kAXSelectedTextRangeAttribute as CFString, val
                 )
+            }
+            // Update caret screen position so the indicator can follow
+            if let pt = caretScreenPoint(from: anchor.element) {
+                targetPosition = pt
             }
         } else {
             // Value write failed — degrade to clipboard for commit
