@@ -34,7 +34,18 @@ final class TypewriterAnimator {
         // If the common prefix doesn't cover the old text, something changed
         // mid-text (a correction). Snap the corrected portion immediately
         // and only animate chars beyond the old target length.
-        let isCorrection = commonCount < previousTarget.count
+        //
+        // Exception: if the only removed characters are trailing punctuation
+        // (.!?。！？) and there's new text after, treat it as a pure append.
+        // The ASR commonly outputs "word." then corrects to "word more text."
+        // — the period was speculative, not a real correction.
+        let removedCount = previousTarget.count - commonCount
+        let isTrailingPunctOnly = removedCount > 0
+            && fullText.count > previousTarget.count
+            && Self.isOnlyTrailingPunctuation(
+                previousTarget, from: commonCount
+            )
+        let isCorrection = removedCount > 0 && !isTrailingPunctOnly
 
         if isCorrection {
             // Snap to the end of the old text (corrected), animate only truly new chars
@@ -45,7 +56,7 @@ final class TypewriterAnimator {
             // If no new chars beyond old length, we're done
             guard fullText.count > previousTarget.count else { return }
         } else {
-            // Pure append — show common prefix, animate the delta
+            // Pure append (or period-merge) — show common prefix, animate the delta
             let prefixEnd = fullText.index(fullText.startIndex, offsetBy: commonCount)
             displayText = String(fullText[..<prefixEnd])
         }
@@ -101,6 +112,21 @@ final class TypewriterAnimator {
         targetText = ""
         displayText = ""
         isAnimating = false
+    }
+
+    private static let trailingPunctuation: Set<Character> = [".", "!", "?", "\u{3002}", "\u{FF01}", "\u{FF1F}"]
+
+    /// Check if all characters from `fromIndex` to the end are trailing punctuation.
+    private static func isOnlyTrailingPunctuation(_ text: String, from offset: Int) -> Bool {
+        var idx = text.index(text.startIndex, offsetBy: offset)
+        while idx < text.endIndex {
+            let ch = text[idx]
+            if !ch.isWhitespace && !trailingPunctuation.contains(ch) {
+                return false
+            }
+            idx = text.index(after: idx)
+        }
+        return true
     }
 
     private func commonPrefixCount(_ a: String, _ b: String) -> Int {
