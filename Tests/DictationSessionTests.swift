@@ -310,6 +310,70 @@ struct DictationSessionTests {
         #expect(stopRequested)
     }
 
+    // MARK: - Repeated Sessions
+
+    @Test func threeConsecutiveSessionsAllStart() async {
+        let stt = MockSttSession()
+        let audio = MockAudioCapture()
+        let injector = MockTextInjector()
+
+        for i in 1...3 {
+            let session = DictationSession(
+                sttSession: stt,
+                textInjector: injector,
+                audioCapture: audio
+            )
+            let events = EventCollector()
+            session.onEvent = { events.handler($0) }
+
+            session.start()
+            #expect(session.isActive, "Session \(i) should be active after start")
+            #expect(audio.startCallCount == i, "Audio start should be called for session \(i)")
+
+            // Simulate some audio + partial
+            audio.simulateBuffer(Data([1, 2]))
+            stt.simulatePartial("hello")
+            await Task.yield()
+
+            // Stop and finalize
+            _ = session.stop()
+            stt.simulateFinal("hello")
+            await Task.yield()
+
+            #expect(!session.isActive, "Session \(i) should be inactive after final")
+            #expect(events.events.contains(.finished), "Session \(i) should have finished")
+        }
+    }
+
+    @Test func rapidStartStopStartDoesNotHang() async {
+        let (session, stt, audio, _, events) = makeSession()
+
+        // Start and immediately stop (0 audio, like key repeat scenario)
+        session.start()
+        _ = session.stop()
+        stt.simulateFinal("")
+        await Task.yield()
+        #expect(events.events.contains(.finished))
+
+        // Second session on same components should work
+        let session2 = DictationSession(
+            sttSession: stt,
+            textInjector: MockTextInjector(),
+            audioCapture: audio
+        )
+        let events2 = EventCollector()
+        session2.onEvent = { events2.handler($0) }
+
+        session2.start()
+        #expect(session2.isActive, "Second session should start after rapid stop")
+        #expect(audio.startCallCount == 2)
+
+        _ = session2.stop()
+        stt.simulateFinal("ok")
+        await Task.yield()
+        #expect(events2.events.contains(.finished))
+    }
+
     // MARK: - Audio Forwarding
 
     @Test func audioBuffersForwardedToSttSession() {

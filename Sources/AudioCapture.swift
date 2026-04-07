@@ -4,7 +4,7 @@ import Foundation
 /// Captures microphone audio at 16kHz mono PCM and delivers raw buffers.
 /// Also computes real-time RMS audio level for waveform visualization.
 final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturing conformance
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private var isRunning = false
     private let targetSampleRate: Double = 16000
     private var converter: AVAudioConverter?
@@ -128,6 +128,7 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
         guard isRunning else { return nil }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        engine.reset()
         converter = nil
         isRunning = false
 
