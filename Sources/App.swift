@@ -25,7 +25,11 @@ struct YuwpApp {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     // Infrastructure — live for the app's lifetime
     private let hotkeyManager = HotkeyManager()
-    private let sttProvider: any SttProvider = ASRSidecar()
+    private let sttProvider: any SttProvider = {
+        let sidecar = ASRSidecar()
+        sidecar.modelName = Config.shared.modelName
+        return sidecar
+    }()
     private let audioCapture = AudioCapture()
     private let textInjector = TextInjector()
     private let micPanel = MicPanel()
