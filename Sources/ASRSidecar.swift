@@ -15,8 +15,12 @@ final class ASRSidecar: @unchecked Sendable, SttProvider {
     var onPartialResult: (@Sendable (String) -> Void)?
     var onFinalResult: (@Sendable (String) -> Void)?
 
-    /// Model name or HuggingFace path passed to the sidecar process.
-    var modelName: String = "mlx-community/Qwen3-ASR-1.7B-bf16"
+    /// Model for streaming partials (low-latency).
+    var streamingModel: String = "mlx-community/Qwen3-ASR-0.6B-4bit"
+    /// Model for batch retranscription (high-quality correction).
+    var batchModel: String = "mlx-community/Qwen3-ASR-1.7B-bf16"
+    /// Whether to run batch retranscription for quality correction.
+    var batchRetranscribeEnabled: Bool = true
 
     private var _isReady = false
 
@@ -60,7 +64,13 @@ final class ASRSidecar: @unchecked Sendable, SttProvider {
         // Use uv to run the script with inline dependencies.
         // --serve starts the HTTP server alongside stdio for external clients.
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = ["uv", "run", "--script", sidecarPath, modelName, "--serve"]
+        var args = ["uv", "run", "--script", sidecarPath, streamingModel, "--serve"]
+        if batchRetranscribeEnabled {
+            args += ["--batch-model", batchModel]
+        } else {
+            args.append("--no-batch-retranscribe")
+        }
+        proc.arguments = args
         proc.standardInput = stdin
         proc.standardOutput = stdout
         proc.standardError = stderr
