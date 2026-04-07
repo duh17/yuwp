@@ -66,7 +66,10 @@ DEFAULT_MAX_ENC_WINDOWS = 4
 DEFAULT_MAX_PREFIX_TOKENS = 20
 
 _SILENCE_RMS_THRESHOLD = 0.003
+_PAUSE_RMS_THRESHOLD = 0.020  # higher threshold for pause detection (real mic noise ~0.015)
 _EOS_TOKENS = {151645, 151643}
+_SESSION_TIMEOUT = 300  # seconds
+_PAUSE_SILENCE_CHUNKS = 2  # consecutive quiet chunks before batch retranscribe (~2 * 2s = 4s)
 
 # Language header tokens to strip from prefix/output
 _ALL_LANG_TOKENS = {11528, 6364, 8453, 22574, 44923, 151704}
@@ -116,6 +119,10 @@ class StreamSession:
     chunk_idx: int = 0
     chunk_timings: list = field(default_factory=list)
     last_text: str = ""
+    last_activity: float = field(default_factory=time.time)
+    # Pause-triggered batch retranscription
+    consecutive_silence: int = 0
+    batch_done_for_pause: bool = False
 
     def __post_init__(self):
         n_window_infer = self.model.config.audio_config.n_window_infer
@@ -189,9 +196,12 @@ def _encode_incremental(session: StreamSession) -> mx.array:
 # Embedding construction + delta prefill
 # ---------------------------------------------------------------------------
 
-def _build_input_embeds(model, enc_output: mx.array, prefix_tokens: list[int]) -> mx.array:
+def _build_input_embeds(
+    model, enc_output: mx.array, prefix_tokens: list[int],
+    system_prompt: str | None = None,
+) -> mx.array:
     num_enc_tokens = enc_output.shape[0]
-    input_ids = model._build_prompt(num_enc_tokens, language=None)
+    input_ids = model._build_prompt(num_enc_tokens, language=None, system_prompt=system_prompt)
     inputs_embeds = model._build_inputs_embeds(input_ids, enc_output)
 
     if prefix_tokens:
@@ -264,6 +274,114 @@ def _extract_text(model, raw_tokens: list[int]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Repetition detection
+# ---------------------------------------------------------------------------
+
+def _detect_repetition(text: str, min_period: int = 30) -> int | None:
+    """Detect if text ends with a repeated phrase.
+
+    Checks if the last `p` characters match the preceding `p` characters
+    for increasing period lengths. When found, returns the character index
+    to trim at (keeping the first occurrence of the repeated phrase).
+
+    Returns None if no repetition detected.
+    """
+    n = len(text)
+    if n < min_period * 2:
+        return None
+
+    for p in range(min_period, n // 2 + 1):
+        if text[n - 2 * p : n - p] == text[n - p :]:
+            # Found repeated period. Find earliest occurrence to keep.
+            pattern = text[n - p :]
+            first = text.find(pattern)
+            if first < n - p:
+                return first + p
+    return None
+
+
+def _trim_repetition(session: StreamSession) -> str | None:
+    """Detect sentence-level repetition and trim raw_tokens.
+
+    When the streaming decoder enters a loop (same phrase generated repeatedly),
+    this function detects the repeated suffix, trims it from the text, and
+    re-encodes the trimmed text back into raw_tokens so subsequent chunks
+    don't continue the loop.
+
+    Returns trimmed text if repetition was found, None otherwise.
+    """
+    text = _extract_text(session.model, session.raw_tokens)
+    trim_at = _detect_repetition(text)
+    if trim_at is None:
+        return None
+
+    trimmed = text[:trim_at].rstrip()
+    # Re-tokenize the trimmed text so raw_tokens stays in sync.
+    # This may differ slightly from the original decode tokens, but
+    # the prefix mechanism will re-anchor the decoder on the next chunk.
+    new_tokens = session.model._tokenizer.encode(trimmed)
+    new_tokens = [t for t in new_tokens if t not in _ALL_LANG_TOKENS]
+    period = len(text) - trim_at
+    log(f"Repetition detected (period={period} chars, trimmed {len(text)}→{len(trimmed)} chars)")
+    session.raw_tokens = new_tokens
+    return trimmed
+
+
+# ---------------------------------------------------------------------------
+# Pause-triggered batch retranscription
+# ---------------------------------------------------------------------------
+
+def _batch_retranscribe(session: StreamSession) -> str | None:
+    """Run full batch transcription on accumulated audio.
+
+    Uses mlx-audio's generate_transcription for a single-pass decode
+    over the entire audio buffer. Returns corrected text, or None on
+    error. Also re-tokenizes raw_tokens so streaming can continue
+    from the corrected state.
+    """
+    if len(session.audio_buffer) < SAMPLE_RATE:  # <1s, skip
+        return None
+
+    try:
+        from mlx_audio.stt.generate import generate_transcription, load_model as _load_batch
+        import tempfile, soundfile as sf
+
+        # Write accumulated audio to temp WAV
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            tmp_path = f.name
+            sf.write(f, session.audio_buffer, SAMPLE_RATE)
+
+        # Use the model wrapper that generate_transcription expects
+        if not hasattr(session, '_batch_model'):
+            # Load the wrapper model once per session (generate_transcription
+            # expects the wrapper, not the unwrapped _model)
+            session._batch_model = _load_batch(session.config.model_name
+                if hasattr(session.config, 'model_name') else "mlx-community/Qwen3-ASR-1.7B-bf16")
+
+        t0 = time.time()
+        result = generate_transcription(session._batch_model, tmp_path)
+        batch_ms = (time.time() - t0) * 1000
+
+        import os
+        os.unlink(tmp_path)
+
+        text = result.text.strip()
+        audio_s = len(session.audio_buffer) / SAMPLE_RATE
+        log(f"Batch retranscribe: {audio_s:.1f}s audio in {batch_ms:.0f}ms → {len(text)} chars")
+
+        # Re-tokenize so streaming prefix tokens continue from batch result
+        if text:
+            new_tokens = session.model._tokenizer.encode(text)
+            new_tokens = [t for t in new_tokens if t not in _ALL_LANG_TOKENS]
+            session.raw_tokens = new_tokens
+
+        return text
+    except Exception as e:
+        log(f"Batch retranscribe error: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Core: process one chunk
 # ---------------------------------------------------------------------------
 
@@ -272,10 +390,39 @@ def process_chunk(session: StreamSession, audio_chunk: np.ndarray) -> dict:
     chunk_t0 = time.time()
     cfg = session.config
 
-    # Skip silence
+    # Track audio level for both silence skip and pause detection
     rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
+
+    # Pause detection uses a higher threshold than encoding skip
+    if rms < _PAUSE_RMS_THRESHOLD:
+        session.consecutive_silence += 1
+    else:
+        session.consecutive_silence = 0
+        session.batch_done_for_pause = False
+
+    # Pause detected: batch retranscribe synchronously.
+    # This runs on the main thread (MLX is not thread-safe) but only during
+    # silence, so it doesn't block speech processing. The ~1s batch runs
+    # while the user is pausing — the next feed arrives ~2s later.
+    if (session.consecutive_silence >= _PAUSE_SILENCE_CHUNKS
+            and not session.batch_done_for_pause
+            and session.raw_tokens):
+        session.batch_done_for_pause = True
+        batch_text = _batch_retranscribe(session)
+        if batch_text is not None:
+            session.last_text = batch_text
+            session.chunk_idx += 1
+            session.last_activity = time.time()
+            return {
+                "text": batch_text,
+                "is_partial": True,
+                "batch_corrected": True,
+                "total_ms": (time.time() - chunk_t0) * 1000,
+            }
+
     if rms < _SILENCE_RMS_THRESHOLD:
         session.chunk_idx += 1
+        session.last_activity = time.time()
         text = _extract_text(session.model, session.raw_tokens) if session.raw_tokens else ""
         session.last_text = text
         return {"text": text, "is_partial": True, "total_ms": (time.time() - chunk_t0) * 1000}
@@ -304,7 +451,10 @@ def process_chunk(session: StreamSession, audio_chunk: np.ndarray) -> dict:
             prefix_tokens = prefix_tokens[-cfg.max_prefix_tokens:]
 
     # Build input embeddings
-    input_embeds = _build_input_embeds(session.model, enc_output, prefix_tokens)
+    input_embeds = _build_input_embeds(
+        session.model, enc_output, prefix_tokens,
+        system_prompt=cfg.system_prompt,
+    )
     mx.eval(input_embeds)
 
     # Delta prefill
@@ -346,7 +496,14 @@ def process_chunk(session: StreamSession, audio_chunk: np.ndarray) -> dict:
         session.raw_tokens = uncapped_prefix + new_tokens
 
     text = _extract_text(session.model, session.raw_tokens)
+
+    # Detect and trim sentence-level repetition loops
+    trimmed = _trim_repetition(session)
+    if trimmed is not None:
+        text = trimmed
+
     session.last_text = text
+    session.last_activity = time.time()
 
     total_ms = (time.time() - chunk_t0) * 1000
     session.chunk_timings.append(total_ms)
@@ -391,6 +548,11 @@ class SessionManager:
         self.sessions: dict[str, StreamSession] = {}
         self.pending_audio: dict[str, np.ndarray] = {}
         self.lock = threading.Lock()
+        # Start cleanup thread
+        self._cleanup_thread = threading.Thread(
+            target=self._cleanup_loop, daemon=True, name="session-cleanup"
+        )
+        self._cleanup_thread.start()
 
     def create(self, stream_config: dict | None = None) -> str:
         sid = uuid.uuid4().hex[:12]
@@ -404,8 +566,8 @@ class SessionManager:
         log(f"HTTP session created: {sid}")
         return sid
 
-    def feed(self, sid: str, pcm_bytes: bytes) -> str | None:
-        """Feed raw s16le 16kHz mono PCM. Returns current text or None if session missing."""
+    def feed(self, sid: str, pcm_bytes: bytes) -> dict | None:
+        """Feed raw s16le 16kHz mono PCM. Returns {text, batch_corrected?} or None."""
         with self.lock:
             session = self.sessions.get(sid)
             pending = self.pending_audio.get(sid)
@@ -415,12 +577,15 @@ class SessionManager:
         samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         pending = np.concatenate([pending, samples])
 
+        batch_corrected = False
         chunk_samples = int(session.config.chunk_sec * SAMPLE_RATE)
         while len(pending) >= chunk_samples:
             chunk = pending[:chunk_samples]
             pending = pending[chunk_samples:]
             try:
-                process_chunk(session, chunk)
+                result = process_chunk(session, chunk)
+                if result.get("batch_corrected"):
+                    batch_corrected = True
             except Exception as e:
                 log(f"HTTP feed error ({sid}): {e}")
 
@@ -428,7 +593,10 @@ class SessionManager:
             if sid in self.pending_audio:
                 self.pending_audio[sid] = pending
 
-        return session.last_text
+        resp = {"text": session.last_text}
+        if batch_corrected:
+            resp["batch_corrected"] = True
+        return resp
 
     def stop(self, sid: str) -> str | None:
         """Stop session, process remaining audio, return final text."""
@@ -445,9 +613,14 @@ class SessionManager:
             except Exception as e:
                 log(f"HTTP final chunk error ({sid}): {e}")
 
-        text = _extract_text(session.model, session.raw_tokens) if session.raw_tokens else ""
+        streaming_text = _extract_text(session.model, session.raw_tokens) if session.raw_tokens else ""
         total_audio = len(session.audio_buffer) / SAMPLE_RATE
         avg_ms = sum(session.chunk_timings) / max(len(session.chunk_timings), 1)
+
+        # Final batch retranscribe for best quality
+        batch_text = _batch_retranscribe(session) if session.raw_tokens else None
+        text = batch_text if batch_text else streaming_text
+
         log(f"HTTP session stopped ({sid}): {total_audio:.1f}s audio, {session.chunk_idx} chunks, {avg_ms:.0f}ms avg")
         return text
 
@@ -457,6 +630,21 @@ class SessionManager:
             removed = self.sessions.pop(sid, None) is not None
             self.pending_audio.pop(sid, None)
         return removed
+
+    def _cleanup_loop(self) -> None:
+        """Periodically clean up expired sessions."""
+        while True:
+            time.sleep(30)
+            now = time.time()
+            with self.lock:
+                expired = [
+                    sid for sid, s in self.sessions.items()
+                    if now - s.last_activity > _SESSION_TIMEOUT
+                ]
+                for sid in expired:
+                    self.sessions.pop(sid, None)
+                    self.pending_audio.pop(sid, None)
+                    log(f"Session {sid} expired (timeout)")
 
 
 def make_app(session_mgr: SessionManager):
@@ -475,10 +663,10 @@ def make_app(session_mgr: SessionManager):
     async def feed_audio(request: Request) -> JSONResponse:
         sid = request.path_params["session_id"]
         pcm = await request.body()
-        text = session_mgr.feed(sid, pcm)
-        if text is None:
+        result = session_mgr.feed(sid, pcm)
+        if result is None:
             return JSONResponse({"error": "session not found"}, status_code=404)
-        return JSONResponse({"text": text})
+        return JSONResponse(result)
 
     async def stop_session(request: Request) -> JSONResponse:
         sid = request.path_params["session_id"]

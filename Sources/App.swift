@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let micPanel = MicPanel()
     private let sidecar = ASRSidecar()
     private let typewriter = TypewriterAnimator()
+    private var typewriterDriveTask: Task<Void, Never>?
     private var isListening = false
     private var sidecarReady = false
     private var permissionTimer: Timer?
@@ -232,9 +233,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.typewriter.commitCurrentAnimation()
                 self.textInjector.commit(text)
                 self.micPanel.updateTranscript(text)
-                self.stopListening()
+                self.finalizeDictation()
             }
         }
+
         sidecar.onError = { error in
             Task { @MainActor in
                 yuwpLog("ASR error: \(error)")
@@ -288,9 +290,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func driveTypewriterDisplay() {
         guard typewriter.isAnimating else { return }
-        Task { @MainActor in
+        // Cancel any previous drive loop to avoid multiple concurrent injectors
+        typewriterDriveTask?.cancel()
+        typewriterDriveTask = Task { @MainActor in
             while typewriter.isAnimating {
                 try? await Task.sleep(nanoseconds: 16_000_000)
+                guard !Task.isCancelled else { break }
                 micPanel.updateTranscript(typewriter.displayText)
                 textInjector.inject(typewriter.displayText)
             }
@@ -303,9 +308,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let pcmData = audioCapture.stop()
         sidecar.endSession()
-        typewriter.reset()
-        textInjector.release()
-        micPanel.hide()
+        typewriterDriveTask?.cancel()
+        typewriterDriveTask = nil
+        // Don't release injector yet — wait for onFinalResult to commit text
+        yuwpLog("Waiting for final result...")
 
         if let pcmData, !pcmData.isEmpty {
             saveRecording(pcmData)
@@ -316,7 +322,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             accessibilityDescription: "Yuwp"
         )
 
+        // Timeout: if sidecar doesn't send final within 10s, clean up anyway
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard let self else { return }
+            if !self.isListening {
+                yuwpLog("Final result timeout — releasing injector")
+                self.finalizeDictation()
+            }
+        }
+
         yuwpLog("Stopped.")
+    }
+
+    /// Called by onFinalResult (or timeout) to commit text and clean up.
+    private func finalizeDictation() {
+        typewriter.reset()
+        textInjector.release()
+        micPanel.hide()
     }
 
     // MARK: - Recording
