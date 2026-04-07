@@ -3,7 +3,6 @@ import Foundation
 /// Animates text appearing character-by-character when the sidecar sends
 /// full-replacement transcript updates every ~2s.
 ///
-/// Ported from an earlier project's TypewriterAnimator.
 /// Computes the delta (new chars appended) and reveals them gradually
 /// over ~1.5s, leaving a 0.5s buffer before the next update.
 /// If a new update arrives mid-animation, snaps to completion and starts fresh.

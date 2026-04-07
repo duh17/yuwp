@@ -1,1 +1,1 @@
-This is good. Okay, I think I can speak in any spot in the photograph. Let's go up. 我看一下，我待会试试别的 app.
+So let's get this working. I think I'm ready to publish this project to a as a public open source project. So let's do a good audit, and I think we look at our backlog, see what we need to finish before we actually go open source. I think the core product is working well enough for its purpose for at least my use cases. Make sure our README have the correct acknowledgement and correct setup. I do want to set up this app my Mac Mini as well.

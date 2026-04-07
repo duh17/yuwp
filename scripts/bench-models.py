@@ -417,23 +417,16 @@ def find_audio_files(args: argparse.Namespace) -> list[str]:
                 print(f"WARNING: file not found: {f}")
         return expanded
 
-    # Search both sources
+    # Search for recordings in the default Yuwp directory
     yuwp_dir = os.path.expanduser("~/Library/Application Support/Yuwp/recordings/")
-    recordings_dir = os.path.expanduser("~/Library/Application Support/Yuwp/recordings/")
 
     candidates: list[str] = []
     candidates.extend(sorted(glob.glob(os.path.join(yuwp_dir, "*.wav"))))
-    candidates.extend(sorted(glob.glob(os.path.join(recordings_dir, "**/*.flac"), recursive=True)))
+    candidates.extend(sorted(glob.glob(os.path.join(yuwp_dir, "**/*.flac"), recursive=True)))
 
     if args.date:
-        # Filter to files from a specific date
         date_str = args.date.replace("-", "")
         filtered = [f for f in candidates if args.date in f or date_str in f]
-        if not filtered:
-            # Try date-based directory structure
-            parts = args.date.split("-")
-            date_dir = os.path.join(recordings_dir, *parts)
-            filtered = sorted(glob.glob(os.path.join(date_dir, "*.flac")))
         return filtered
 
     # Default: last N files (sorted by path/date)

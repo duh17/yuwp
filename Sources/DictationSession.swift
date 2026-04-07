@@ -7,7 +7,7 @@ import Foundation
 ///
 /// Implementations:
 ///   - `ASRSidecar` — local Python sidecar (Qwen3-ASR via mlx-audio)
-///   - Future: Apple Speech, remote Whisper API, external clients, etc.
+///   - Future: Apple Speech, remote Whisper API, etc.
 /// Not actor-isolated — implementations handle their own thread safety.
 /// ASRSidecar is `@unchecked Sendable`; future providers may be actors.
 protocol SttProvider: AnyObject, Sendable {
