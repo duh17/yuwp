@@ -79,6 +79,9 @@ _PAUSE_SILENCE_CHUNKS = 2  # consecutive quiet chunks before batch retranscribe 
 # Language header tokens to strip from prefix/output
 _ALL_LANG_TOKENS = {11528, 6364, 8453, 22574, 44923, 151704}
 
+# Tracks which model was loaded at startup (set by load_model)
+_loaded_model_name: str = ""
+
 
 # ---------------------------------------------------------------------------
 # IO helpers
@@ -105,6 +108,7 @@ class StreamConfig:
     max_enc_windows: int = DEFAULT_MAX_ENC_WINDOWS
     max_prefix_tokens: int = DEFAULT_MAX_PREFIX_TOKENS
     system_prompt: str | None = None
+    model_name: str = ""
 
 
 @dataclass
@@ -360,8 +364,7 @@ def _batch_retranscribe(session: StreamSession) -> str | None:
         if not hasattr(session, '_batch_model'):
             # Load the wrapper model once per session (generate_transcription
             # expects the wrapper, not the unwrapped _model)
-            session._batch_model = _load_batch(session.config.model_name
-                if hasattr(session.config, 'model_name') else "mlx-community/Qwen3-ASR-1.7B-bf16")
+            session._batch_model = _load_batch(session.config.model_name)
 
         t0 = time.time()
         result = generate_transcription(session._batch_model, tmp_path)
@@ -530,6 +533,7 @@ def process_chunk(session: StreamSession, audio_chunk: np.ndarray) -> dict:
 # ---------------------------------------------------------------------------
 
 def load_model(model_name: str = "mlx-community/Qwen3-ASR-1.7B-bf16"):
+    global _loaded_model_name
     from mlx_audio.stt import load_model as _load
 
     log(f"Loading model: {model_name}")
@@ -537,6 +541,7 @@ def load_model(model_name: str = "mlx-community/Qwen3-ASR-1.7B-bf16"):
     model_wrapper = _load(model_name)
     # Unwrap to get Qwen3ASRModel
     model = model_wrapper._model if hasattr(model_wrapper, "_model") else model_wrapper
+    _loaded_model_name = model_name
     log(f"Model loaded in {time.time() - t0:.1f}s")
     return model
 
@@ -561,7 +566,7 @@ class SessionManager:
 
     def create(self, stream_config: dict | None = None) -> str:
         sid = uuid.uuid4().hex[:12]
-        cfg = StreamConfig()
+        cfg = StreamConfig(model_name=_loaded_model_name)
         if stream_config and isinstance(stream_config, dict):
             if "system_prompt" in stream_config:
                 cfg.system_prompt = stream_config["system_prompt"]
@@ -683,7 +688,16 @@ def make_app(session_mgr: SessionManager):
             return JSONResponse({"error": "session not found"}, status_code=404)
         return JSONResponse({"text": text})
 
+    async def info(request: Request) -> JSONResponse:
+        return JSONResponse({
+            "model": _loaded_model_name,
+            "sample_rate": SAMPLE_RATE,
+            "chunk_sec": DEFAULT_CHUNK_SEC,
+            "status": "ready",
+        })
+
     return Starlette(routes=[
+        Route("/v1/info", info, methods=["GET"]),
         Route("/v1/audio/transcriptions/stream", create_session, methods=["POST"]),
         Route("/v1/audio/transcriptions/stream/{session_id}", feed_audio, methods=["POST"]),
         Route("/v1/audio/transcriptions/stream/{session_id}", stop_session, methods=["DELETE"]),
@@ -733,7 +747,8 @@ def run_stdio(model) -> None:
         cmd = msg.get("cmd")
 
         if cmd == "start":
-            session = StreamSession(model=model, config=StreamConfig())
+            cfg = StreamConfig(model_name=_loaded_model_name)
+            session = StreamSession(model=model, config=cfg)
             pending_audio = np.array([], dtype=np.float32)
             log("Session started")
 

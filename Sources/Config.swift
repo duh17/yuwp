@@ -95,6 +95,14 @@ final class Config {
         }
     }
 
+    // MARK: - Model
+
+    /// ASR model name or HuggingFace path (e.g., "mlx-community/Qwen3-ASR-0.6B-8bit")
+    var modelName: String {
+        get { defaults.string(forKey: "modelName") ?? "mlx-community/Qwen3-ASR-1.7B-bf16" }
+        set { defaults.set(newValue, forKey: "modelName") }
+    }
+
     // MARK: - Recordings
 
     var saveRecordings: Bool {
