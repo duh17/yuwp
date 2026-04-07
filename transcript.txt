@@ -1,1 +1,1 @@
-The main thing I want to prevent is seeing the bubble, because we can already see the messages get input directly into the chat box or not chat box text input.
+So the panel is hidden, but I do not see a little microphone. I do still want to see if we can have a little indicator or something that's following the cursor. In addition, when the text are being inputted, the text box just keeps blinking.

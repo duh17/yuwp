@@ -271,10 +271,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             accessibilityDescription: "Yuwp — Listening"
         )
 
-        // Show floating mic indicator only when using clipboard fallback.
-        // When AX injection is live, text streams directly into the target field
-        // and the panel would just be a redundant overlay.
-        if !textInjector.isLiveInjecting {
+        // AX mode: tiny waveform dot near caret (text streams into the field).
+        // Clipboard mode: full panel with transcript (user can't see text until paste).
+        if textInjector.isLiveInjecting {
+            micPanel.showCompact(near: textInjector.targetPosition)
+        } else {
             micPanel.show(near: textInjector.targetPosition)
         }
 
