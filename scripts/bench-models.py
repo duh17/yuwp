@@ -207,6 +207,9 @@ class FileResult:
     total_time_s: float
     chunk_latencies_ms: list[float]
     text: str
+    stream_text: str  # streaming-only (before batch correction)
+    batch_text: str   # batch-corrected (from session stop)
+    saved_text: str   # saved transcript from companion JSON (if available)
     cjk_count: int
 
     @property
@@ -274,7 +277,7 @@ def stream_file(path: str, port: int) -> FileResult:
     sid = resp.json()["session_id"]
 
     # Feed chunks
-    last_text = ""
+    stream_text = ""
     for i in range(0, len(pcm), CHUNK_SAMPLES):
         chunk = pcm[i:i + CHUNK_SAMPLES]
         t_chunk = time.time()
@@ -287,22 +290,38 @@ def stream_file(path: str, port: int) -> FileResult:
         chunk_latencies.append(chunk_ms)
         if resp.ok:
             data = resp.json()
-            last_text = data.get("text", last_text)
+            stream_text = data.get("text", stream_text)
 
-    # Stop session — get final text
+    # Stop session — get batch-corrected final text
+    batch_text = stream_text
     resp = requests.delete(f"{base_url}/v1/audio/transcriptions/stream/{sid}")
     if resp.ok:
-        last_text = resp.json().get("text", last_text)
+        batch_text = resp.json().get("text", batch_text)
+
+    # Load saved transcript from companion JSON if available
+    saved_text = ""
+    json_path = path.replace(".flac", ".json").replace(".wav", ".json")
+    if os.path.exists(json_path):
+        try:
+            with open(json_path) as f:
+                meta = json.load(f)
+            saved_text = meta.get("transcript", "")
+        except (json.JSONDecodeError, OSError):
+            pass
 
     total_time = time.time() - t_total
+    final_text = batch_text or stream_text
 
     return FileResult(
         file=os.path.basename(path),
         duration_s=duration_s,
         total_time_s=total_time,
         chunk_latencies_ms=chunk_latencies,
-        text=last_text,
-        cjk_count=count_cjk(last_text),
+        text=final_text,
+        stream_text=stream_text,
+        batch_text=batch_text,
+        saved_text=saved_text,
+        cjk_count=count_cjk(final_text),
     )
 
 
@@ -467,10 +486,7 @@ def print_comparison(results: list[ModelResult]) -> None:
 
 
 def print_text_comparison(results: list[ModelResult]) -> None:
-    """Print per-file text comparison across models."""
-    if len(results) < 2:
-        return
-
+    """Print per-file text comparison across models, showing streaming vs batch."""
     # Collect all filenames
     all_files: list[str] = []
     seen: set[str] = set()
@@ -481,32 +497,57 @@ def print_text_comparison(results: list[ModelResult]) -> None:
                 seen.add(fr.file)
 
     print(f"\n{'='*70}")
-    print("TEXT COMPARISON")
+    print("TEXT COMPARISON (streaming vs batch vs saved)")
     print(f"{'='*70}")
 
     diffs_found = 0
     for fname in all_files:
-        texts: dict[str, str] = {}
+        file_results: list[tuple[str, FileResult]] = []
         for r in results:
             for fr in r.file_results:
                 if fr.file == fname:
-                    texts[r.short_name] = fr.text
+                    file_results.append((r.short_name, fr))
                     break
 
-        if len(texts) < 2:
+        if not file_results:
             continue
 
-        values = list(texts.values())
-        if all(v.strip() == values[0].strip() for v in values):
+        # Check if there are any interesting differences
+        all_texts: list[str] = []
+        for name, fr in file_results:
+            all_texts.extend([fr.stream_text, fr.batch_text])
+        if file_results[0][1].saved_text:
+            all_texts.append(file_results[0][1].saved_text)
+
+        stripped = [t.strip() for t in all_texts if t]
+        if len(set(stripped)) <= 1:
             continue
 
         diffs_found += 1
-        print(f"\n  {fname}:")
-        for name, text in texts.items():
-            preview = text[:120].replace("\n", " ")
-            cjk = count_cjk(text)
+        dur = file_results[0][1].duration_s
+        print(f"\n  {fname} ({dur:.1f}s):")
+
+        # Show saved transcript first if available
+        saved = file_results[0][1].saved_text
+        if saved:
+            preview = saved[:120].replace("\n", " ")
+            cjk = count_cjk(saved)
             cjk_note = f" [CJK: {cjk}]" if cjk > 0 else ""
-            print(f"    {name:>14}: ({len(text)} chars{cjk_note}) {preview}{'...' if len(text) > 120 else ''}")
+            print(f"    {'saved':>20}: ({len(saved)} chars{cjk_note}) {preview}{'...' if len(saved) > 120 else ''}")
+
+        for name, fr in file_results:
+            # Streaming text
+            s_preview = fr.stream_text[:120].replace("\n", " ")
+            s_cjk = count_cjk(fr.stream_text)
+            s_note = f" [CJK: {s_cjk}]" if s_cjk > 0 else ""
+            print(f"    {name + ' stream':>20}: ({len(fr.stream_text)} chars{s_note}) {s_preview}{'...' if len(fr.stream_text) > 120 else ''}")
+
+            # Batch text (only if different from streaming)
+            if fr.batch_text.strip() != fr.stream_text.strip():
+                b_preview = fr.batch_text[:120].replace("\n", " ")
+                b_cjk = count_cjk(fr.batch_text)
+                b_note = f" [CJK: {b_cjk}]" if b_cjk > 0 else ""
+                print(f"    {name + ' batch':>20}: ({len(fr.batch_text)} chars{b_note}) {b_preview}{'...' if len(fr.batch_text) > 120 else ''}")
 
     if diffs_found == 0:
         print("  All transcriptions identical across models.")
@@ -551,7 +592,9 @@ def save_json(results: list[ModelResult], path: str) -> None:
                 "avg_chunk_ms": round(fr.avg_chunk_ms, 1),
                 "realtime_factor": round(fr.realtime_factor, 4),
                 "cjk_count": fr.cjk_count,
-                "text": fr.text,
+                "stream_text": fr.stream_text,
+                "batch_text": fr.batch_text,
+                "saved_text": fr.saved_text,
                 "chunk_latencies_ms": [round(l, 1) for l in fr.chunk_latencies_ms],
             })
         out.append(entry)
