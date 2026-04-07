@@ -134,12 +134,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - STT Provider
 
     private func startSttProvider() {
-        asrSidecar.onReady = { [weak self] in
+        asrSidecar.onStateChange = { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
-                self.providerReady = true
-                if self.hasPermission { self.updateMenuForReady() }
-                yuwpLog("STT provider ready")
+                self.providerReady = state == .ready
+                self.updateStatus()
+                if state == .ready {
+                    yuwpLog("STT provider ready")
+                }
             }
         }
         asrSidecar.onError = { error in
@@ -171,9 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let opts = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(opts)
 
-            statusMenuItem.title = "⚠ Grant Accessibility Permission"
-            statusMenuItem.action = #selector(openAccessibilitySettings)
-            statusMenuItem.target = self
+            updateStatus()
             yuwpLog("Waiting for Accessibility permission...")
 
             permissionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) {
@@ -192,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func onPermissionGranted() {
         hasPermission = true
-        updateMenuForReady()
+        updateStatus()
         yuwpLog("Ready. \(Config.shared.hotkeyMode.description) to dictate.")
     }
 
@@ -260,18 +260,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func updateMenuForReady() {
-        if providerReady {
-            statusMenuItem.title = "✓ Ready"
-            statusMenuItem.action = nil
-            statusMenuItem.isEnabled = false
-        } else {
-            statusMenuItem.title = "Loading model..."
-            statusMenuItem.action = nil
-            statusMenuItem.isEnabled = false
+    private func updateStatus() {
+        if !hasPermission {
+            statusMenuItem.title = "⚠ Grant Accessibility Permission"
+            statusMenuItem.action = #selector(openAccessibilitySettings)
+            statusMenuItem.target = self
+            statusMenuItem.isEnabled = true
+            return
         }
-        hotkeyMenuItem.title = "Hotkey: \(Config.shared.hotkeyMode.description)"
-        modelMenuItem.title = modelMenuTitle()
+
+        switch asrSidecar.state {
+        case .stopped:
+            statusMenuItem.title = "Stopped"
+        case .starting:
+            statusMenuItem.title = "Loading model..."
+        case .ready:
+            statusMenuItem.title = "✓ Ready"
+        case .error(let msg):
+            statusMenuItem.title = "⚠ \(msg)"
+        }
+        statusMenuItem.action = nil
+        statusMenuItem.isEnabled = false
+        modelMenuItem?.title = modelMenuTitle()
     }
 
     // MARK: - Model Menu
@@ -313,16 +323,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Config.shared.batchModel = preset.batchModel
         Config.shared.batchRetranscribeEnabled = preset.batchEnabled
 
-        // Update sidecar and restart
+        // Update sidecar and restart — onStateChange handles menu updates
         asrSidecar.streamingModel = preset.streamingModel
         asrSidecar.batchModel = preset.batchModel
         asrSidecar.batchRetranscribeEnabled = preset.batchEnabled
-
-        providerReady = false
-        updateMenuForReady()
-        rebuildModelSubmenu()
         asrSidecar.shutdown()
         asrSidecar.start()
+        rebuildModelSubmenu()
 
         yuwpLog("Model changed to: \(preset.label) (\(preset.summary))")
     }

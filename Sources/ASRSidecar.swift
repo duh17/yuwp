@@ -1,15 +1,28 @@
 import Foundation
 
+/// Sidecar process state, observed by the menu bar.
+enum SidecarState: Sendable, Equatable {
+    case stopped
+    case starting       // process launched, model loading
+    case ready          // accepting dictation
+    case error(String)  // crashed or failed to start
+}
+
 /// Manages the Python ASR sidecar process.
 /// Communicates via JSON lines over stdin/stdout.
+/// Monitors process health and auto-restarts on unexpected exit.
 ///
 /// Swift sends:  {"cmd": "start"}, {"cmd": "audio", "pcm_b64": "..."}, {"cmd": "stop"}
 /// Python sends: {"type": "ready"}, {"type": "partial", "text": "..."}, {"type": "final", "text": "..."}
 final class ASRSidecar: @unchecked Sendable, SttProvider {
     // SttProvider
-    var isReady: Bool { _isReady }
+    var isReady: Bool { state == .ready }
     var onReady: (@Sendable () -> Void)?
     var onError: (@Sendable (String) -> Void)?
+
+    // State observation (for menu bar)
+    private(set) var state: SidecarState = .stopped
+    var onStateChange: (@Sendable (SidecarState) -> Void)?
 
     // Internal — forwarded to the active SttSession
     var onPartialResult: (@Sendable (String) -> Void)?
@@ -22,12 +35,17 @@ final class ASRSidecar: @unchecked Sendable, SttProvider {
     /// Whether to run batch retranscription for quality correction.
     var batchRetranscribeEnabled: Bool = true
 
-    private var _isReady = false
-
+    // Process management
     private var process: Process?
     private var stdinPipe: Pipe?
     private var stdoutPipe: Pipe?
     private var readTask: Task<Void, Never>?
+
+    // Crash recovery
+    private var isIntentionalShutdown = false
+    private var restartAttempts = 0
+    private var restartTask: Task<Void, Never>?
+    private static let maxRestartAttempts = 5
 
     private let sidecarPath: String
 
@@ -55,7 +73,12 @@ final class ASRSidecar: @unchecked Sendable, SttProvider {
             ?? candidates.last!
     }
 
+    // MARK: - Lifecycle
+
     func start() {
+        isIntentionalShutdown = false
+        updateState(.starting)
+
         let proc = Process()
         let stdin = Pipe()
         let stdout = Pipe()
@@ -86,13 +109,17 @@ final class ASRSidecar: @unchecked Sendable, SttProvider {
         do {
             try proc.run()
         } catch {
-            onError?("Failed to start ASR sidecar: \(error)")
+            yuwpLog("Failed to start sidecar: \(error)")
+            updateState(.error("Failed to start sidecar"))
+            scheduleRestart()
             return
         }
 
         process = proc
         stdinPipe = stdin
         stdoutPipe = stdout
+
+        yuwpLog("ASR sidecar started (PID: \(proc.processIdentifier))")
 
         // Read stdout line by line in a background task
         readTask = Task.detached { [weak self] in
@@ -116,8 +143,8 @@ final class ASRSidecar: @unchecked Sendable, SttProvider {
 
                     switch type {
                     case "ready":
-                        self._isReady = true
-                        self.onReady?()
+                        self.restartAttempts = 0
+                        self.updateState(.ready)
                     case "partial":
                         if let text = json["text"] as? String {
                             self.onPartialResult?(text)
@@ -134,10 +161,69 @@ final class ASRSidecar: @unchecked Sendable, SttProvider {
                     }
                 }
             }
+
+            // Process exited — detect unexpected crash
+            guard let self, !self.isIntentionalShutdown else { return }
+            let code = self.process?.terminationStatus ?? -1
+            yuwpLog("Sidecar exited unexpectedly (code \(code))")
+            self.process = nil
+            self.stdinPipe = nil
+            self.stdoutPipe = nil
+            self.updateState(.error("Sidecar crashed (exit \(code))"))
+            self.scheduleRestart()
+        }
+    }
+
+    func shutdown() {
+        isIntentionalShutdown = true
+        restartTask?.cancel()
+        restartTask = nil
+        readTask?.cancel()
+        readTask = nil
+
+        send(["cmd": "quit"])
+        process?.terminate()
+        process?.waitUntilExit() // fast after terminate
+
+        process = nil
+        stdinPipe = nil
+        stdoutPipe = nil
+        updateState(.stopped)
+        yuwpLog("ASR sidecar stopped")
+    }
+
+    // MARK: - State Management
+
+    private func updateState(_ newState: SidecarState) {
+        state = newState
+        onStateChange?(newState)
+        if case .ready = newState {
+            onReady?()
+        }
+    }
+
+    // MARK: - Crash Recovery
+
+    private func scheduleRestart() {
+        guard !isIntentionalShutdown else { return }
+        guard restartAttempts < Self.maxRestartAttempts else {
+            yuwpLog("Max restart attempts (\(Self.maxRestartAttempts)) reached")
+            updateState(.error("Sidecar failed after \(Self.maxRestartAttempts) attempts"))
+            return
         }
 
-        yuwpLog("ASR sidecar started (PID: \(proc.processIdentifier))")
+        restartAttempts += 1
+        let delay = min(Double(1 << restartAttempts), 30.0) // 2, 4, 8, 16, 30s
+        yuwpLog("Restarting sidecar in \(Int(delay))s (attempt \(restartAttempts)/\(Self.maxRestartAttempts))")
+
+        restartTask = Task.detached { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.start()
+        }
     }
+
+    // MARK: - Session Commands
 
     func beginSession(language: String? = nil) {
         var msg: [String: Any] = ["cmd": "start"]
@@ -152,17 +238,6 @@ final class ASRSidecar: @unchecked Sendable, SttProvider {
 
     func endSession() {
         send(["cmd": "stop"])
-    }
-
-    func shutdown() {
-        send(["cmd": "quit"])
-        readTask?.cancel()
-        readTask = nil
-        process?.terminate()
-        process = nil
-        stdinPipe = nil
-        stdoutPipe = nil
-        yuwpLog("ASR sidecar stopped")
     }
 
     // MARK: - SttProvider
