@@ -49,7 +49,9 @@ final class MicPanel {
         guard let panel else { return }
 
         let anchor = (position == .zero) ? NSEvent.mouseLocation : position
-        panel.setFrameOrigin(NSPoint(x: anchor.x + 16, y: anchor.y - minHeight - 16))
+        // Position above the anchor so the panel grows upward, not off-screen
+        let origin = clampToScreen(NSPoint(x: anchor.x, y: anchor.y + 8), panelSize: panel.frame.size)
+        panel.setFrameOrigin(origin)
 
         textView?.string = ""
         resizeToFit()
@@ -66,8 +68,9 @@ final class MicPanel {
         guard let cp = compactPanel else { return }
 
         let anchor = (position == .zero) ? NSEvent.mouseLocation : position
-        // Position just below and right of the caret
-        cp.setFrameOrigin(NSPoint(x: anchor.x + 4, y: anchor.y - compactSize - 4))
+        // Position just above and right of the caret
+        let origin = clampToScreen(NSPoint(x: anchor.x + 4, y: anchor.y + 4), panelSize: cp.frame.size)
+        cp.setFrameOrigin(origin)
 
         panel?.orderOut(nil)
         cp.orderFront(nil)
@@ -82,6 +85,32 @@ final class MicPanel {
     /// Feed normalized audio level (0.0–1.0).
     func updateAudioLevel(_ level: Float) {
         targetLevel = level
+    }
+
+    /// Clamp a panel origin so it stays fully on-screen.
+    /// The origin is the bottom-left of the panel (macOS coordinate system).
+    private func clampToScreen(_ point: NSPoint, panelSize: NSSize) -> NSPoint {
+        guard let screen = NSScreen.main?.visibleFrame else { return point }
+        var x = point.x
+        var y = point.y
+
+        // Keep right edge on screen
+        if x + panelSize.width > screen.maxX {
+            x = screen.maxX - panelSize.width - 8
+        }
+        // Keep left edge on screen
+        if x < screen.minX {
+            x = screen.minX + 8
+        }
+        // Keep top edge on screen
+        if y + panelSize.height > screen.maxY {
+            y = screen.maxY - panelSize.height - 8
+        }
+        // Keep bottom edge on screen
+        if y < screen.minY {
+            y = screen.minY + 8
+        }
+        return NSPoint(x: x, y: y)
     }
 
     func hide() {
@@ -193,9 +222,13 @@ final class MicPanel {
         }
 
         var frame = panel.frame
-        let bottom = frame.origin.y + frame.height - neededHeight
+        // Keep the top edge fixed, grow downward
+        let top = frame.origin.y + frame.height
         frame.size.height = neededHeight
-        frame.origin.y = bottom
+        frame.origin.y = top - neededHeight
+        // Clamp to screen
+        let clamped = clampToScreen(frame.origin, panelSize: frame.size)
+        frame.origin = clamped
         panel.setFrame(frame, display: true, animate: false)
 
         contentView.frame = NSRect(x: 0, y: 0, width: panelWidth, height: neededHeight)
