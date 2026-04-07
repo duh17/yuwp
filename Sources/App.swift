@@ -33,11 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return s
     }()
     private let audioCapture = AudioCapture()
-    private let textInjector = TextInjector()
     private let micPanel = MicPanel()
 
     // Per-dictation session (created on start, torn down on stop)
     private var session: DictationSession?
+    /// Set when Enter was intercepted mid-session; triggers Enter replay after final commit.
+    private var pendingEnter = false
 
     // Menu bar state
     private var statusItem: NSStatusItem!
@@ -70,6 +71,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.stopDictation()
             }
         }
+
+        hotkeyManager.onEnterDuringSession = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                yuwpLog("Enter intercepted — stopping dictation, will replay Enter after commit")
+                self.pendingEnter = true
+                self.stopDictation()
+            }
+        }
     }
 
     private func toggleListening() {
@@ -86,9 +96,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        HotkeyManager.sessionActive = true
+        let injector = TextInjectorFactory.capture()
         let s = DictationSession(
             sttSession: asrSidecar.makeSession(),
-            textInjector: textInjector,
+            textInjector: injector,
             audioCapture: audioCapture
         )
         s.onEvent = { [weak self] event in self?.handleSessionEvent(event) }
@@ -105,13 +117,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Start with minimal waveform pill. Upgrades to full text pill
         // only if we enter clipboard-fallback mode (first .partialTranscript event).
-        micPanel.show(near: textInjector.targetPosition, minimal: true)
+        micPanel.show(near: injector.targetPosition, minimal: true)
 
         s.start()
     }
 
     private func stopDictation() {
         guard let s = session else { return }
+        HotkeyManager.sessionActive = false
         let pcmData = s.stop()
 
         statusItem.button?.image = NSImage(
@@ -133,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         case .partialTranscript(let text):
             // Non-live mode — upgrade from compact dot to full pill to show text
-            micPanel.show(near: textInjector.targetPosition)
+            micPanel.show(near: session?.textInjector.targetPosition ?? .zero)
             micPanel.updateTranscript(text)
 
         case .caretMoved:
@@ -145,6 +158,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .finished:
             micPanel.hide()
             session = nil
+            if pendingEnter {
+                pendingEnter = false
+                replayEnterKey()
+            }
         }
     }
 
@@ -359,6 +376,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return ak == bk
         default: return false
         }
+    }
+
+    // MARK: - Enter Replay
+
+    /// Post a Return key event to the focused app after dictation commits.
+    private func replayEnterKey() {
+        let returnKeyCode: CGKeyCode = 36
+        if let down = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: true) {
+            down.post(tap: .cgSessionEventTap)
+        }
+        if let up = CGEvent(keyboardEventSource: nil, virtualKey: returnKeyCode, keyDown: false) {
+            up.post(tap: .cgSessionEventTap)
+        }
+        yuwpLog("Enter replayed after commit")
     }
 
     // MARK: - Recording
