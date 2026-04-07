@@ -40,8 +40,11 @@ final class MicPanel {
         if panel == nil { createPanel() }
         guard let panel else { return }
 
-        let mouse = NSEvent.mouseLocation
-        panel.setFrameOrigin(NSPoint(x: mouse.x + 16, y: mouse.y - minHeight - 16))
+        // Prefer the caret/element position from TextInjector.
+        // Fall back to mouse location if the AX position is zero (no target found).
+        let anchor = (position == .zero) ? NSEvent.mouseLocation : position
+        // Position below and to the right of the anchor point
+        panel.setFrameOrigin(NSPoint(x: anchor.x + 16, y: anchor.y - minHeight - 16))
 
         textView?.string = ""
         resizeToFit()
