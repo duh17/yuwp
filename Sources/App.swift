@@ -223,9 +223,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !trimmed.isEmpty, trimmed.lowercased() != "none" else { return }
                 self.typewriter.update(fullText: text)
                 self.textInjector.inject(self.typewriter.displayText)
-                // Only show transcript in panel when text isn't already
-                // streaming into the target field via AX injection.
-                if !self.textInjector.isLiveInjecting {
+                if self.textInjector.isLiveInjecting {
+                    // Move the compact indicator to follow the caret
+                    self.micPanel.showCompact(near: self.textInjector.targetPosition)
+                } else {
                     self.micPanel.updateTranscript(self.typewriter.displayText)
                 }
                 self.driveTypewriterDisplay()
