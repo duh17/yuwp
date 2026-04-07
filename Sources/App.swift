@@ -54,12 +54,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenuBar()
+        setupMicPanelDismiss()
         startSttProvider()
         requestMicPermission()
         checkPermission()
     }
 
     // MARK: - Hotkey Toggle
+
+    private func setupMicPanelDismiss() {
+        micPanel.onDismiss = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.session?.isActive == true else { return }
+                yuwpLog("Escape pressed — stopping dictation")
+                self.stopDictation()
+            }
+        }
+    }
 
     private func toggleListening() {
         if session?.isActive == true {
@@ -81,6 +92,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             audioCapture: audioCapture
         )
         s.onEvent = { [weak self] event in self?.handleSessionEvent(event) }
+        s.onRequestStop = { [weak self] in
+            Task { @MainActor in self?.stopDictation() }
+        }
         session = s
 
         // Update menu bar icon
@@ -89,8 +103,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             accessibilityDescription: "Yuwp — Listening"
         )
 
-        // Show full panel initially; switches to compact dot if AX verifies
-        micPanel.show(near: textInjector.targetPosition)
+        // Start with minimal waveform pill. Upgrades to full text pill
+        // only if we enter clipboard-fallback mode (first .partialTranscript event).
+        micPanel.show(near: textInjector.targetPosition, minimal: true)
 
         s.start()
     }
@@ -113,14 +128,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleSessionEvent(_ event: DictationEvent) {
         switch event {
-        case .liveInjectionVerified(let caret):
-            micPanel.showCompact(near: caret)
+        case .liveInjectionVerified:
+            break // already showing minimal pill
 
         case .partialTranscript(let text):
+            // Non-live mode — upgrade from compact dot to full pill to show text
+            micPanel.show(near: textInjector.targetPosition)
             micPanel.updateTranscript(text)
 
-        case .caretMoved(let point):
-            micPanel.showCompact(near: point)
+        case .caretMoved:
+            break // pill stays in pinned position
 
         case .audioLevel(let level):
             micPanel.updateAudioLevel(level)

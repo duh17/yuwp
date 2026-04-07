@@ -23,9 +23,17 @@ final class TextInjector: TextInjecting {
     /// Whether live AX injection is active and verified (text streams directly into the target field).
     /// When true, callers can skip showing the transcript overlay.
     var isLiveInjecting: Bool {
-        guard let anchor, anchor.method == .accessibility else { return false }
-        // Not verified until the first inject succeeds and reads back correctly
-        return axVerified
+        guard let anchor else { return false }
+        switch anchor.method {
+        case .accessibility:
+            // Not verified until the first inject succeeds and reads back correctly
+            return axVerified
+        case .keyboardEvent:
+            // CGEvent always injects directly — live from the start
+            return true
+        case .paste:
+            return false
+        }
     }
 
     private var axVerified = false
@@ -56,10 +64,17 @@ final class TextInjector: TextInjecting {
     }
 
     /// Stream a partial transcription into the field.
-    /// Writes the full value directly to avoid selection flashing.
-    /// No-op when using clipboard method (text only committed on finish).
+    /// AX mode: writes the full value directly to avoid selection flashing.
+    /// CGEvent mode: diffs against previous text, backspaces removed chars, types new ones.
+    /// Paste mode: no-op (text only committed on finish).
     func inject(_ text: String) {
-        guard let anchor, anchor.method == .accessibility else { return }
+        guard let anchor else { return }
+
+        if anchor.method == .keyboardEvent {
+            injectViaCGEvent(text)
+            return
+        }
+        guard anchor.method == .accessibility else { return }
 
         // Read the existing text, splice our portion in, write the whole value back.
         // This avoids the visible select-then-replace flash that select+replace causes.
@@ -81,14 +96,14 @@ final class TextInjector: TextInjecting {
                     axVerified = true
                     yuwpLog("AX injection verified")
                 } else {
-                    yuwpLog("AX write accepted but verification failed — degrading to clipboard")
+                    yuwpLog("AX write accepted but verification failed — degrading to CGEvent")
                     // Undo the write attempt
                     AXUIElementSetAttributeValue(
                         anchor.element, kAXValueAttribute as CFString, existing as CFTypeRef
                     )
                     self.anchor = Anchor(
                         element: anchor.element,
-                        method: .paste,
+                        method: .keyboardEvent,
                         cursorPosition: anchor.cursorPosition,
                         screenPoint: anchor.screenPoint
                     )
@@ -110,28 +125,27 @@ final class TextInjector: TextInjecting {
                 targetPosition = pt
             }
         } else {
-            // Value write failed — degrade to clipboard for commit
+            // Value write failed — degrade to CGEvent for commit
             self.anchor = Anchor(
                 element: anchor.element,
-                method: .paste,
+                method: .keyboardEvent,
                 cursorPosition: anchor.cursorPosition,
                 screenPoint: anchor.screenPoint
             )
-            yuwpLog("AX value write failed — degrading to clipboard")
+            yuwpLog("AX value write failed — degrading to CGEvent")
         }
     }
 
     /// Commit the final transcription.
-    /// Uses clipboard paste if AX isn't available.
+    /// Routes to the appropriate injection method based on what was detected at capture time.
     func commit(_ text: String) {
         guard let anchor else {
             yuwpLog("commit: anchor is nil, text lost (\(text.count) chars)")
             return
         }
 
-        // Always use clipboard paste for the final commit — it's the most
-        // reliable path across all apps. AX inject is only for live preview.
-        // First, undo any AX-injected preview text by writing the value without it.
+        // Undo any AX-injected preview text before committing.
+        // AX inject is for live preview only; final commit goes through paste/CGEvent.
         if anchor.method == .accessibility && writtenLength > 0 {
             if let existing = readValue(from: anchor.element) {
                 let before = String(existing.prefix(anchor.cursorPosition))
@@ -150,7 +164,24 @@ final class TextInjector: TextInjecting {
             writtenLength = 0
         }
 
-        pasteViaClipboard(text)
+        switch anchor.method {
+        case .keyboardEvent:
+            // Replace streamed text with final batch-corrected version
+            if cgEventWrittenText != text {
+                sendBackspaces(count: cgEventWrittenText.count)
+                postKeyboardEvents(text)
+                yuwpLog("CGEvent commit: replaced \(cgEventWrittenText.count) chars with \(text.count) chars")
+            } else {
+                yuwpLog("CGEvent commit: text unchanged (\(text.count) chars)")
+            }
+            cgEventWrittenText = ""
+        case .accessibility, .paste:
+            // AX fields and unknown targets both use clipboard paste for final commit.
+            // Clipboard is the most reliable path for AX fields (avoids edge cases
+            // with undo history and text attributes). For .paste targets, it's the
+            // only option.
+            pasteViaClipboard(text)
+        }
     }
 
     /// Cleanup after dictation ends.
@@ -158,6 +189,7 @@ final class TextInjector: TextInjecting {
         anchor = nil
         writtenLength = 0
         axVerified = false
+        cgEventWrittenText = ""
         targetPosition = .zero
     }
 
@@ -166,12 +198,16 @@ final class TextInjector: TextInjecting {
     private enum Method: CustomStringConvertible {
         /// Direct AX text manipulation (read/write cursor + selection)
         case accessibility
-        /// Clipboard save → paste → restore
+        /// CGEvent keyboard simulation with Unicode strings
+        /// Works for terminals and apps that don't support AX text editing.
+        case keyboardEvent
+        /// Clipboard save → paste → restore (last resort)
         case paste
 
         var description: String {
             switch self {
             case .accessibility: "AX"
+            case .keyboardEvent: "CGEvent"
             case .paste: "clipboard"
             }
         }
@@ -188,6 +224,8 @@ final class TextInjector: TextInjecting {
 
     private var anchor: Anchor?
     private var writtenLength = 0
+    /// Text currently typed into the target via CGEvent (for diff-based streaming correction)
+    private var cgEventWrittenText = ""
 
     // Roles that are known to support AX text editing
     private static let editableRoles: Set<String> = [
@@ -222,17 +260,18 @@ final class TextInjector: TextInjecting {
         guard AXUIElementCopyAttributeValue(
             element, kAXRoleAttribute as CFString, &roleRef
         ) == .success, let role = roleRef as? String else {
-            return .paste
+            return .keyboardEvent
         }
 
-        // AXWebArea can sometimes work, but is unreliable — prefer clipboard
-        guard Self.editableRoles.contains(role) else { return .paste }
+        // AXWebArea can sometimes work, but is unreliable.
+        // Non-editable roles (terminals, etc.) → CGEvent keyboard injection.
+        guard Self.editableRoles.contains(role) else { return .keyboardEvent }
 
         // Verify we can actually read and write the selection range
         var rangeRef: AnyObject?
         guard AXUIElementCopyAttributeValue(
             element, kAXSelectedTextRangeAttribute as CFString, &rangeRef
-        ) == .success else { return .paste }
+        ) == .success else { return .keyboardEvent }
 
         // Verify we can write selected text (the operation we'll use for injection)
         let writeOK = AXUIElementSetAttributeValue(
@@ -299,6 +338,70 @@ final class TextInjector: TextInjecting {
         AXUIElementSetAttributeValue(
             element, kAXSelectedTextAttribute as CFString, text as CFTypeRef
         ) == .success
+    }
+
+    // MARK: - CGEvent Keyboard Injection
+
+    /// Stream a partial into the target via CGEvent.
+    /// Diffs against previously typed text: backspaces removed chars, types new ones.
+    private func injectViaCGEvent(_ text: String) {
+        let oldText = cgEventWrittenText
+
+        // Find common prefix length
+        let commonLen = zip(oldText, text).prefix(while: { $0 == $1 }).count
+        let backspaceCount = oldText.count - commonLen
+        let newSuffix = String(text.dropFirst(commonLen))
+
+        if backspaceCount > 0 {
+            sendBackspaces(count: backspaceCount)
+        }
+        if !newSuffix.isEmpty {
+            postKeyboardEvents(newSuffix)
+        }
+
+        cgEventWrittenText = text
+    }
+
+    /// Post text as synthetic keyboard events with Unicode strings.
+    /// The target app receives these as typed characters — works for terminals,
+    /// code editors, and any app that processes keyboard input.
+    private func postKeyboardEvents(_ text: String) {
+        guard !text.isEmpty else { return }
+
+        // CGEvent Unicode string has a practical limit per event.
+        // macOS handles up to ~20 UTF-16 units per event reliably.
+        let maxChunkUTF16 = 20
+        let utf16 = Array(text.utf16)
+        var offset = 0
+
+        while offset < utf16.count {
+            let end = min(offset + maxChunkUTF16, utf16.count)
+            var chunk = Array(utf16[offset..<end])
+            let len = chunk.count
+
+            if let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) {
+                down.keyboardSetUnicodeString(stringLength: len, unicodeString: &chunk)
+                down.post(tap: .cgSessionEventTap)
+            }
+            if let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) {
+                up.post(tap: .cgSessionEventTap)
+            }
+
+            offset = end
+        }
+    }
+
+    /// Send backspace key events to erase characters from the target.
+    private func sendBackspaces(count: Int) {
+        let backspaceKeyCode: CGKeyCode = 51
+        for _ in 0..<count {
+            if let down = CGEvent(keyboardEventSource: nil, virtualKey: backspaceKeyCode, keyDown: true) {
+                down.post(tap: .cgSessionEventTap)
+            }
+            if let up = CGEvent(keyboardEventSource: nil, virtualKey: backspaceKeyCode, keyDown: false) {
+                up.post(tap: .cgSessionEventTap)
+            }
+        }
     }
 
     // MARK: - Clipboard Fallback

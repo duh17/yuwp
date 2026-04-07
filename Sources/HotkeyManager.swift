@@ -117,6 +117,10 @@ final class HotkeyManager {
     ) -> Unmanaged<CGEvent>? {
         guard type == .keyDown else { return Unmanaged.passRetained(event) }
 
+        // Ignore auto-repeat — only fire on initial press
+        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat)
+        guard isRepeat == 0 else { return Unmanaged.passRetained(event) }
+
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         guard keyCode == Int64(targetKey) else { return Unmanaged.passRetained(event) }
 

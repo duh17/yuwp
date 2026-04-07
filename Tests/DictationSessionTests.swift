@@ -163,6 +163,21 @@ struct DictationSessionTests {
         #expect(injector.releaseCallCount == 1)
     }
 
+    // MARK: - Audio Start Failure
+
+    @Test func startAbortsWhenAudioCaptureFails() {
+        let (session, stt, audio, injector, events) = makeSession()
+        audio.startShouldSucceed = false
+
+        session.start()
+
+        // Session should have aborted
+        #expect(!session.isActive)
+        #expect(stt.endCallCount == 1) // stt session cleaned up
+        #expect(injector.releaseCallCount == 1) // injector released
+        #expect(events.events.contains(.finished))
+    }
+
     // MARK: - Audio Forwarding
 
     @Test func audioBuffersForwardedToSttSession() {
