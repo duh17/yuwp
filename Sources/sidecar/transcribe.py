@@ -66,6 +66,11 @@ DEFAULT_MAX_ENC_WINDOWS = 4
 DEFAULT_MAX_PREFIX_TOKENS = 20
 
 _SILENCE_RMS_THRESHOLD = 0.003
+
+# Global inference lock — MLX Metal backend is not thread-safe.
+# Concurrent matmul calls corrupt the command encoder (EXC_BAD_ACCESS in steel_matmul).
+# Both stdio and HTTP paths must hold this lock during process_chunk / batch_retranscribe.
+_inference_lock = threading.Lock()
 _PAUSE_RMS_THRESHOLD = 0.020  # higher threshold for pause detection (real mic noise ~0.015)
 _EOS_TOKENS = {151645, 151643}
 _SESSION_TIMEOUT = 300  # seconds
@@ -582,12 +587,13 @@ class SessionManager:
         while len(pending) >= chunk_samples:
             chunk = pending[:chunk_samples]
             pending = pending[chunk_samples:]
-            try:
-                result = process_chunk(session, chunk)
-                if result.get("batch_corrected"):
-                    batch_corrected = True
-            except Exception as e:
-                log(f"HTTP feed error ({sid}): {e}")
+            with _inference_lock:
+                try:
+                    result = process_chunk(session, chunk)
+                    if result.get("batch_corrected"):
+                        batch_corrected = True
+                except Exception as e:
+                    log(f"HTTP feed error ({sid}): {e}")
 
         with self.lock:
             if sid in self.pending_audio:
@@ -606,20 +612,22 @@ class SessionManager:
             if session is None:
                 return None
 
-        # Process leftover audio
-        if pending is not None and len(pending) > 0:
-            try:
-                process_chunk(session, pending)
-            except Exception as e:
-                log(f"HTTP final chunk error ({sid}): {e}")
+        # Process leftover audio + final batch (under inference lock)
+        with _inference_lock:
+            if pending is not None and len(pending) > 0:
+                try:
+                    process_chunk(session, pending)
+                except Exception as e:
+                    log(f"HTTP final chunk error ({sid}): {e}")
 
-        streaming_text = _extract_text(session.model, session.raw_tokens) if session.raw_tokens else ""
+            streaming_text = _extract_text(session.model, session.raw_tokens) if session.raw_tokens else ""
+
+            # Final batch retranscribe for best quality
+            batch_text = _batch_retranscribe(session) if session.raw_tokens else None
+            text = batch_text if batch_text else streaming_text
+
         total_audio = len(session.audio_buffer) / SAMPLE_RATE
         avg_ms = sum(session.chunk_timings) / max(len(session.chunk_timings), 1)
-
-        # Final batch retranscribe for best quality
-        batch_text = _batch_retranscribe(session) if session.raw_tokens else None
-        text = batch_text if batch_text else streaming_text
 
         log(f"HTTP session stopped ({sid}): {total_audio:.1f}s audio, {session.chunk_idx} chunks, {avg_ms:.0f}ms avg")
         return text
@@ -737,19 +745,21 @@ def run_stdio(model) -> None:
             while len(pending_audio) >= chunk_samples:
                 chunk = pending_audio[:chunk_samples]
                 pending_audio = pending_audio[chunk_samples:]
-                try:
-                    result = process_chunk(session, chunk)
-                    send({"type": "partial", "text": result["text"]})
-                except Exception as e:
-                    log(f"Chunk error: {e}")
-                    send({"type": "error", "message": str(e)})
+                with _inference_lock:
+                    try:
+                        result = process_chunk(session, chunk)
+                        send({"type": "partial", "text": result["text"]})
+                    except Exception as e:
+                        log(f"Chunk error: {e}")
+                        send({"type": "error", "message": str(e)})
 
         elif cmd == "stop" and session is not None:
-            if len(pending_audio) > 0:
-                try:
-                    process_chunk(session, pending_audio)
-                except Exception as e:
-                    log(f"Final chunk error: {e}")
+            with _inference_lock:
+                if len(pending_audio) > 0:
+                    try:
+                        process_chunk(session, pending_audio)
+                    except Exception as e:
+                        log(f"Final chunk error: {e}")
 
             text = _extract_text(model, session.raw_tokens) if session.raw_tokens else ""
             total_audio = len(session.audio_buffer) / SAMPLE_RATE
