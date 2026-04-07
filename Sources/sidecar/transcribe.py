@@ -136,6 +136,8 @@ class StreamSession:
     # Pause-triggered batch retranscription
     consecutive_silence: int = 0
     batch_done_for_pause: bool = False
+    # Speech detection — don't decode until we hear actual speech
+    has_speech: bool = False
 
     def __post_init__(self):
         n_window_infer = self.model.config.audio_config.n_window_infer
@@ -440,6 +442,20 @@ def process_chunk(session: StreamSession, audio_chunk: np.ndarray) -> dict:
         text = _extract_text(session.model, session.raw_tokens) if session.raw_tokens else ""
         session.last_text = text
         return {"text": text, "is_partial": True, "total_ms": (time.time() - chunk_t0) * 1000}
+
+    # Mark that we've heard actual speech (above pause threshold).
+    # Until this fires, we skip decoding to prevent the model from
+    # hallucinating the system prompt over background noise.
+    if rms >= _PAUSE_RMS_THRESHOLD:
+        session.has_speech = True
+
+    if not session.has_speech:
+        # Above silence floor but below speech — just accumulate audio
+        # without decoding.  No text to send yet.
+        session.audio_buffer = np.concatenate([session.audio_buffer, audio_chunk])
+        session.chunk_idx += 1
+        session.last_activity = time.time()
+        return {"text": "", "is_partial": True, "total_ms": (time.time() - chunk_t0) * 1000}
 
     # Append audio
     session.audio_buffer = np.concatenate([session.audio_buffer, audio_chunk])
