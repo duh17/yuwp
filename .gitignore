@@ -3,4 +3,5 @@
 *.xcodeproj
 DerivedData/
 .DS_Store
+.pi/
 transcript.txt
