@@ -1,0 +1,342 @@
+[
+  {
+    "file": "dict_d793a37de0c74fb9.flac",
+    "duration_s": 8.5,
+    "stream_text": "This is a server extension. It's within our own repo",
+    "batch_text": "This is a server extension. It's within our own repo.",
+    "saved_text": "This is a server extension. It's within our own repo.",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "This is a server extension, it is within our own repo",
+        "elapsed_ms": 464.8
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "This is a server extension. It's within our own repo.",
+        "elapsed_ms": 189.6
+      }
+    }
+  },
+  {
+    "file": "dict_d82d212775b2af54.flac",
+    "duration_s": 33.7,
+    "stream_text": "Hello. It looks like our type writing. Or, yeah. Take a look at our dictation. Something seems to broke, it only return the text. After I tap on the cloud icon to close, dictation",
+    "batch_text": "Hello. It looks like our type writing. Or. Yeah, take a look at our dictation. Something seems to broke. It only returned the text. After I tap on the cloud icon to close the dictation again.",
+    "saved_text": "Hello, it looks like our typewriting or yeah, take a look at our dictation. Something seems to broke, it only returned the text after I tap on the cloud icon to close the dictation again.",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "Hello. It looks like our type writing. Or, yeah. Take a look at our dictation. Something seems to break, it only returns the text. After I tap on the cloud icon to close, dictation",
+        "elapsed_ms": 242.8
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "Hello. It looks like our type writing. Or, yeah. Take a look at our dictation. Something seems to break, it only returns the text. After I tap on the cloud icon to close, dictation",
+        "elapsed_ms": 300.8
+      }
+    }
+  },
+  {
+    "file": "dict_da79a0095756686a.flac",
+    "duration_s": 55.9,
+    "stream_text": "So look at our work around remote ASR. For today. Currently, the behavior is working. And switching to different language should also work.现在我讲中文，应该是可以识别的。 Okay. Now let's. Commit, what we have. Then make sure we have enough regression test to ensure the behavior stays. And then we can create some other to do, to further polish the experience.",
+    "batch_text": "So look at our work around remote ASR for today. Currently, the behavior is working. And switching to different language should also work. 现在我讲中文应该是可以识别的。 Okay. Now let's. Commit. What we have. Then make sure we have enough regression test to ensure the behavior. Stays. And then we can create some other to do to further polish the experience.",
+    "saved_text": "So look at our work around remote ASR for today. Currently, the behavior is working. And switching to different language should also work. 现在我讲中文，应该是可以识别的。 Okay. Now let's commit what we have. Then make sure we have enough regression test to ensure the behavior stays. And then we can create some other to do to further polish the experience.",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "So look at our work around remote ASR. For today. Currently, the behavior is working. And switching to different language should also work. Now we speak Chinese, so it should be recognizable. Okay. Now let's commit what we have. Then make sure we have enough regression tests to ensure the behavior stays. And then we can create some other to do, to further polish the experience.",
+        "elapsed_ms": 339.4
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "So, let's look at our work around remote ASR. For today, the behavior is working. Switching to a different language should also work. Now I speak Chinese, and it should be recognized. Okay. Now let's commit what we have. Then we must ensure we have enough regression tests to ensure the behavior stays. And then we can create some other tasks to further polish the experience.",
+        "elapsed_ms": 431.1
+      }
+    }
+  },
+  {
+    "file": "dict_dc3e72933961c4f4.flac",
+    "duration_s": 26.7,
+    "stream_text": "I mean, you need to implement the pause on. And retranscribe a batch, basically use pause as a stop signal to trigger the batch transcript. But if I start speaking again, then we'll do the streaming. You know",
+    "batch_text": "I mean, you need to implement the pause on. And retranscribe a batch. Basically, use pause as a stop signal to trigger the batch transcript. But if I start speaking again, then we'll do the streaming. You know.",
+    "saved_text": "I mean, you need to implement the pause on and retranscribe batch. Basically, use pause as a stop signal to trigger the batch transcript. But if I start speaking again, then we'll do the streaming. You know?",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "- You need to implement the pause on. And retranscribe a batch, basically use pause as a stop signal to trigger the batch transcript. But if I start speaking again, then we'll do the streaming. You know",
+        "elapsed_ms": 246.1
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "I mean, you need to implement the pause on. And retranscribe a batch, basically use pause as a stop signal to trigger the batch transcript. But if I start speaking again, then we'll do the streaming. You know",
+        "elapsed_ms": 312.0
+      }
+    }
+  },
+  {
+    "file": "dict_df1480477d2c8a13.flac",
+    "duration_s": 54.0,
+    "stream_text": "This actually works now. Okay, let's. Now, hardening with some, I guess more high level behavior. Then, ah? We can.进一步的优化我们的代码，先把测试加上好吗？",
+    "batch_text": "This actually works now. Okay, let's. Now, hardening with some, I guess more high level behavior. Then, ah, we can.进一步的优化我们的代码，先把测试加上，好吗？",
+    "saved_text": "This actually works now. Okay, let's. Now hardening with some, I guess, more high level behavior, then we can.进一步的优化我们的代码，先把测试加上，好吗？",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "This actually works now. Okay, let's. Now, hardening with some, I guess more high level behavior. Then, ah? We can.进一步的优化我们的代码，先把测试加上好吗？",
+        "elapsed_ms": 240.4
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "This actually works now. Okay, let's. Now, hardening with some, I guess more high-level behavior. Then, ah? We can. Further optimizations to our code, shall we add tests first?",
+        "elapsed_ms": 294.8
+      }
+    }
+  },
+  {
+    "file": "dict_e2a2a2395fe1c66c.flac",
+    "duration_s": 28.2,
+    "stream_text": "But this means we also need a change on the iOS client side right because we basically need to wait the transcription server to come back t with the retranscribed messages before it can send",
+    "batch_text": "But this means we also need a change on the iOS client side, right? Because we basically need to wait the transcription server to come back to with the retranscribed messages before it can send.",
+    "saved_text": "But this means we also need a change on the iOS client side, right? Because we basically need to wait the transcription server to come back to with the retranscribed messages before it can send.",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "But this means we also need a change on the iOS client side right because we basically need to wait the transcription server to come back with the retranscribed messages before it can send",
+        "elapsed_ms": 225.7
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "But this means we also need a change on the iOS client side right because we basically need to wait for the transcription server to come back with the retranscribed messages before it can send",
+        "elapsed_ms": 273.6
+      }
+    }
+  },
+  {
+    "file": "dict_e53eaa2d00d4daf3.flac",
+    "duration_s": 86.5,
+    "stream_text": "那我们这基本上就是实时语音，我想说多少说多少。那我现在来给你stress test一下。我就一直说话，看你能keep track多久。Now I'm switching back to, and we'll see if this is stable. And yeah, so far so good. This looks very good to be honest. And now I'm pausing for a long period. Okay, that's about a ten second pause. Now we're going to change the language to. Okay, that's about a ten second pause. Now we're going to change the language.. Okay, that's about a ten second pause. Now we're going to change the language to.. Okay, that's about a ten second pause. Now we're going to change the language. To, okay? That is about a ten second pause. Now we're going to change the language.",
+    "batch_text": "那我们这基本上就是实时语音，我想说多少说多少。那我现在来给你stress test一下。我就一直说话，看你能keep track多久。现在我们换成中文，继续。哈哈，换成中文以后，现在看到它出现的还是英文。我想来看一下这个语言的转换，到底是怎么handle的。好。",
+    "saved_text": "那我们这基本上就是实时语音，我想说多少，说多少。那我现在来给你 stress test 一下，我就一直说话，看你能 keep track 多久，好吧？ Now I'm switching back to and we'll see if this is stable and yeah so far so good this looks very good to be honest and now I'm pausing for a long period okay that's about a ten second pause now we switch to continue haha switch to chinese now we see it appears still in I want to see how the language translation is handled",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "We're basically just real-time voice, let's say how much we say. Now let's stress test it. I'm speaking continuously, watching how long you can keep track. Now I'm switching back, and we'll see if this is stable. And yeah, so far so good. This looks very good to be honest. And now I'm pausing for a long period. Okay, that's about a ten second pause. Now we're going to change the language to. Okay, that's about a ten second pause. Now we're going to change the language. Okay, that's about a ten second pause. Now we're going to change the language to. Okay, that's about a ten second pause. Now we're going to change the language. To, okay? That is about a ten second pause. Now we're going to change the language.",
+        "elapsed_ms": 603.9
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "We basically just do real-time speech, and I'll say as much as I can. Now I'm going to do a stress test. I'll just keep talking and see how long you can keep track. Now I'm switching back to, and we'll see if this is stable. And yeah, so far so good. This looks very good to be honest. Now I'm pausing for a long period. Okay, that's about a ten-second pause. Now we're going to change the language to. Okay, that's about a ten-second pause. Now we're going to change the language. Okay, that's about a ten-second pause. Now we're going to change the language to. Okay, that's about a ten-second pause. Now we're going to change the language. To, okay? That's about a ten-second pause. Now we're going to change the language.",
+        "elapsed_ms": 809.4
+      }
+    }
+  },
+  {
+    "file": "dict_ecf0bbd2b2eaa7a7.flac",
+    "duration_s": 16.5,
+    "stream_text": "Let's just write a script to run through all of our dictation. Against our streaming, results.",
+    "batch_text": "Let's just write a script to run through all of our dictation. Against our streaming, results.",
+    "saved_text": "Let's just write a script to run through all of our dictation against our streaming results.",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "Let's just write a script to run through all of our dictation. Against our streaming, results.",
+        "elapsed_ms": 196.3
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "Let's just write a script to run through all of our dictation. Against our streaming, results.",
+        "elapsed_ms": 230.8
+      }
+    }
+  },
+  {
+    "file": "dict_ef39407d7ed53128.flac",
+    "duration_s": 111.4,
+    "stream_text": "I think we should do option A. And also, I'm thinking. When going through, the daily sessions. We should. Get reminded, of some, of things that we should. Pick. Or continue to work on. I'm just thinking how we can make this automated process. Or, I think. Yeah, I think this will just do one thing. Actually, it's just. Be the librarian. Agent. That will sort through our. Summaries. Capture. Then cross. Validate. And consolidate. And maintain a. Like a memory knowledge base.",
+    "batch_text": "I think we should do option A. And also, I'm thinking. When going through, the daily sessions. We should. Get reminded, of some, of things that we should. Pick. Or continue to work on. I'm just thinking how we can make this automated process. Or, I think. Yeah, I think this will just do one thing. Actually, it's just. Be the librarian. Agent. That will sort through our. Summaries. Capture. Then cross. Validate. And consolidate. And maintain a. Like a memory knowledge base.",
+    "saved_text": "I think we should do option A, and also, I'm thinking when going through the daily sessions, we should maybe get reminded of some of things that we should pick up or continue to work on. I'm just thinking how we can make this automated process. Um, or I think, yeah. , I think this will just do one thing. Actually, it's just be the librarian agent that will sort through our summaries, captured",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "I think we should do option A. And also, I'm thinking. When going through, the daily sessions. We should get reminded of some things that we should pick or continue to work on. I'm just thinking how we can make this automated process. Or, I think. Yeah, I think this will just do one thing. Actually, it's just. Be the librarian. Agent. That will sort through our summaries. Capture. Then cross validate. And consolidate. And maintain a like a memory knowledge base.",
+        "elapsed_ms": 419.3
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "I think we should do option A. And also, I'm thinking about the daily sessions. We should get reminded of some things that we should pick or continue to work on. I'm just thinking how we can make this automated process. I think this will just do one thing. Actually, it's just the librarian agent. That will sort through our summaries, capture them, cross-validate them, and consolidate and maintain a like a memory knowledge base.",
+        "elapsed_ms": 475.6
+      }
+    }
+  },
+  {
+    "file": "dict_f21866940b0ebd35.flac",
+    "duration_s": 33.2,
+    "stream_text": "Well, I think you actually need to verify with these claims. Then, I think we. Because there are many wrong decisions eventually. Cause throughout the day. I think we eventually decided to have a separate server. Can you trace that?",
+    "batch_text": "Well, I think you actually need to verify with these claims. Then, I think we. Because there are many wrong decisions eventually. Because throughout the day, I think we eventually decided to have a separate server. Can you trace that?",
+    "saved_text": "Well, I think you actually need to verify with these claims. Then, I think we missed a step, because there are many wrong decisions eventually, because throughout the day, I think we eventually decided to have a separate server. Can you trace that?",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "Well, you need to verify these claims. Then we have to decide on a separate server. Can you trace that?",
+        "elapsed_ms": 195.7
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "Well, I think you actually need to verify these claims. Then we need to verify that there are many wrong decisions eventually. Because throughout the day, I think we eventually decided to have a separate server. Can you trace that?",
+        "elapsed_ms": 309.2
+      }
+    }
+  },
+  {
+    "file": "dict_f6d2d7b5589286dc.flac",
+    "duration_s": 32.1,
+    "stream_text": "But you only updated the prompt. You didn't update extension itself to support this. You need to look into your pi's implementation for prompting. Use dev-doc to look into Anthropic's documentation about prompt caching. Make sure",
+    "batch_text": "But you only updated the prompt. You didn't update extension itself to support this. You need to look into your pi's implementation for porging. Use dev-doc to look into Anthropic's documentation about prompt caching. Make sure.",
+    "saved_text": "But you only updated the prompt. You didn't update the extension itself to support this. You need to look into Py's implementation for Forking and use DevDoc to look into Anthropic's documentation about prompt caching. Make sure this works",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "But you only updated the prompt. You didn't update the extension itself to support this. You need to look into your pi's implementation for prompting. Use dev-doc to look into Anthropic's documentation about prompt caching. Make sure",
+        "elapsed_ms": 248.2
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "But you only updated the prompt. You didn't update the extension itself to support this. You need to look into your Pi's implementation for prompting. Use dev-doc to look into Anthropic's documentation about prompt caching. Make sure",
+        "elapsed_ms": 306.6
+      }
+    }
+  },
+  {
+    "file": "dict_fdebb478cc8f3eeb.flac",
+    "duration_s": 68.9,
+    "stream_text": "Does this work now? Okay, it works great. But somehow it feels a little bit slow. Is this expected? I'm just speaking, speaking, speaking, and try to stress test this. You know, fucking great. This live typing thing. Just work, really great. 我就说啊说啊说说。说话换成中文。我就一直换。你可以识别出来吗？哎呀，卡住了。哈。卡住了，卡住了。Is getting crazy. Gosh, is this some kind of bug? We need to take a look into it.",
+    "batch_text": "Does this work now? Okay, it works great. But somehow it feels a little bit slow. Is this expected? I'm just speaking, speaking, speaking, and try to stress test this. You know, fucking great. This live typing thing. Just work, really great. We just说啊说说说。说话换成中文。我就一直换。你可以识别出来吗？哎呀，卡住了。Ha.卡住了，卡住了。It's getting crazy. Gosh, is this some kind of bug? We need to take a look into it.",
+    "saved_text": "Does this work now? Okay, it works great, but somehow it feels a little slow. Is this expected? I'm just speaking, speaking, speaking and try to stress test this. You know, fucking great. This live typing thing just work really great. We are talking, speaking and try to stress test this. You know, fucking great This live typing thing just work really great. We are talking, speaking and try to stress test this. You know, fucking great This live typing thing just work really great. We are talking, speaking and try to stress test this. You know, fucking great This live typing thing just work really great. We are talking, speaking and try to stress test this. You know, fucking great This live typing thing just work really great. We are talking, speaking and try to stress test this. You know, fucking great This live typing thing just work really great. We are talking, speaking and try to stress test this. You know, fucking great This live typing thing just work really great. We are talking, speaking and try to stress test this. You know, fucking great",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "Does this work now? Okay, it works great. But somehow it feels a little bit slow. Is this expected? I'm just speaking, speaking, speaking, and try to stress test this. You know, fucking great. This live typing thing. Just work, really great. 说话换成中文。我就一直换。你可以识别出来吗？哎呀，卡住了。哈。卡住了，卡住了。Is getting crazy. Gosh, is this some kind of bug? We need to take a look into it.",
+        "elapsed_ms": 406.0
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "Does this work now? Okay, it works great. But somehow it feels a little bit slow. Is this expected? I'm just speaking, speaking, speaking, and try to stress test this. You know, fucking great. This live typing thing. Just work, really great. 我就说啊说啊说说。说话换成中文。我就一直换。你可以识别出来吗？哎呀，卡住了。哈。卡住了，卡住了。Is getting crazy. Gosh, is this some kind of bug? We need to take a look into it.",
+        "elapsed_ms": 560.1
+      }
+    }
+  },
+  {
+    "file": "dict_fe8b6710513a31fa.flac",
+    "duration_s": 5.3,
+    "stream_text": "You should just take care of it yourself.",
+    "batch_text": "You should just take care of it yourself.",
+    "saved_text": "You should just take care of it yourself.",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "You should just take care of it yourself.",
+        "elapsed_ms": 149.6
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "You should just take care of it yourself.",
+        "elapsed_ms": 170.8
+      }
+    }
+  },
+  {
+    "file": "dict_2e429938edb66a51.flac",
+    "duration_s": 20.9,
+    "stream_text": "语音。是可，咱们用的就是千问三点五，AS。",
+    "batch_text": "语音。是可，咱们用的就是千问三点五，AS。",
+    "saved_text": "语音是可以用的，咱们用的就是千问三点五，A S R的。",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "语音。是可，咱们用的是千问三点五 AS。",
+        "elapsed_ms": 161.3
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "语音。是可，咱们用的就是千问三点五，AS。",
+        "elapsed_ms": 187.6
+      }
+    }
+  },
+  {
+    "file": "dict_3166506096b8ed1f.flac",
+    "duration_s": 60.6,
+    "stream_text": "Yep, I agree. I think. I think we should just do, number three, to do. And get rid of the other ones. You can do that right now. Make sure. There is also regression test for it. If you can first simulate a problem, we can add or fix the test.",
+    "batch_text": "Yep, I agree. I think. I think we should just do number three, to do. And get rid of the other ones. You can do that right now. Make sure. There is also regression test for it. If you can first simulate a problem, we can add or fix the test.",
+    "saved_text": "Yep, I agree. I think, I think we should just do number three to do, and get rid of the other ones. You can do that right now. Make sure there's also regression test for it. If you can first simulate a problem, we can add or fix the test.",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "Yep, I agree. I think we should just do, number three, to do. And get rid of the other ones. You can do that right now. Make sure. There is also regression test for it. If you can first simulate a problem, we can add or fix the test.",
+        "elapsed_ms": 289.2
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "Yep, I agree. I think we should just do number three. And get rid of the other ones. You can do that right now. Make sure there is also a regression test for it. If you can first simulate a problem, we can add or fix the test.",
+        "elapsed_ms": 346.5
+      }
+    }
+  },
+  {
+    "file": "dict_37b2967b8a5df9f4.flac",
+    "duration_s": 13.6,
+    "stream_text": "Works quite well. The accuracy is decent.",
+    "batch_text": "Works quite well. The accuracy is decent.",
+    "saved_text": "Works quite well. The accuracy is decent.",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "Works quite well. The accuracy is decent.",
+        "elapsed_ms": 153.9
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "Works quite well. The accuracy is decent.",
+        "elapsed_ms": 173.8
+      }
+    }
+  },
+  {
+    "file": "dict_5b2071ddc4fb3978.flac",
+    "duration_s": 23.5,
+    "stream_text": "Let's have GPT five point four as a sub agent to review the four to do you created to evaluate what whether they are actually worth doing.",
+    "batch_text": "Let's have GPT five point four as a sub agent to review the four to do you created to evaluate what whether they are actually worth doing.",
+    "saved_text": "Let's have GPT five point four as a sub agent to review the four to do you created to evaluate what whether they are actually worth doing.",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "Let's have GPT five point four as a sub agent to review the four to do you created to evaluate what whether they are actually worth doing.",
+        "elapsed_ms": 213.1
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "Let's have GPT five point four as a sub agent to review the four to do you created to evaluate what whether they are actually worth doing.",
+        "elapsed_ms": 259.1
+      }
+    }
+  },
+  {
+    "file": "dict_af571c0140bb8e7a.flac",
+    "duration_s": 39.7,
+    "stream_text": "Start, dictation from actually speaking. From both the phone and. The Mac app, I'm wondering how this is getting handled.好像现在可以了，你看一下服务器端那边的log.",
+    "batch_text": "Start dictation from actually speaking from both the phone and the Mac app. I'm wondering how this is getting handled. 好像现在可以了，你看一下服务器端那边的log。",
+    "saved_text": "Dictation from Bose. I'm actually speaking from Bose, the phone, and the Mac app. I'm wondering how this is getting handled. 好像现在可以啊，你看一下服务器端那边的 log.",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "Start, dictation from actually speaking. From both the phone and the Mac app, I'm wondering how this is getting handled. 好像现在可以了，你看一下服务器端那边的 log。",
+        "elapsed_ms": 231.4
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "Start, dictation from actually speaking. From both the phone and the Mac app, I'm wondering how this is getting handled. Now it works, so let's check the server-side logs.",
+        "elapsed_ms": 282.9
+      }
+    }
+  },
+  {
+    "file": "dict_ccc67081f3895df3.flac",
+    "duration_s": 47.6,
+    "stream_text": "Is this okay? This is working. 所以呢，感觉还可以啊。今晚睡觉了，累了。明天再搞啦！",
+    "batch_text": "Is this okay? This is working. 今天感觉还可以啊。今晚睡觉了，累了。明天再搞了。",
+    "saved_text": "Is this okay? This is working. 现在感觉还可以啊。今晚睡觉，累了。明天再搞了。",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "Is this okay? This is working. So, it's okay. Tonight, sleep, tired. Tomorrow, let's do it!",
+        "elapsed_ms": 203.1
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "Is this okay? This is working. So, it feels okay. I'm going to sleep tonight, tired. Tomorrow I'll do it!",
+        "elapsed_ms": 244.8
+      }
+    }
+  },
+  {
+    "file": "dict_f429ca233cff8e68.flac",
+    "duration_s": 9.1,
+    "stream_text": "Okay, seems like our server.",
+    "batch_text": "Okay, seems like our server is dead.",
+    "saved_text": "",
+    "llm_results": {
+      "Qwen3.5-0.8B-4bit": {
+        "text": "Okay, seems like our server.",
+        "elapsed_ms": 150.6
+      },
+      "Qwen3.5-2B-4bit": {
+        "text": "Okay, seems like our server.",
+        "elapsed_ms": 170.1
+      }
+    }
+  }
+]
