@@ -20,11 +20,15 @@ final class TextInjector {
     /// Current screen position of the caret (updated on each inject)
     private(set) var targetPosition: NSPoint = .zero
 
-    /// Whether live AX injection is active (text streams directly into the target field).
+    /// Whether live AX injection is active and verified (text streams directly into the target field).
     /// When true, callers can skip showing the transcript overlay.
     var isLiveInjecting: Bool {
-        anchor?.method == .accessibility
+        guard let anchor, anchor.method == .accessibility else { return false }
+        // Not verified until the first inject succeeds and reads back correctly
+        return axVerified
     }
+
+    private var axVerified = false
 
     /// Snapshot the currently focused text element.
     /// Must be called before showing any panel that could steal focus.
@@ -69,6 +73,29 @@ final class TextInjector {
         ) == .success
 
         if writeOK {
+            // Verify the write actually took effect by reading back.
+            // Terminal emulators accept AX writes but don't route them to the shell.
+            if !axVerified {
+                if let readBack = readValue(from: anchor.element),
+                   readBack.contains(text) {
+                    axVerified = true
+                    yuwpLog("AX injection verified")
+                } else {
+                    yuwpLog("AX write accepted but verification failed — degrading to clipboard")
+                    // Undo the write attempt
+                    AXUIElementSetAttributeValue(
+                        anchor.element, kAXValueAttribute as CFString, existing as CFTypeRef
+                    )
+                    self.anchor = Anchor(
+                        element: anchor.element,
+                        method: .paste,
+                        cursorPosition: anchor.cursorPosition,
+                        screenPoint: anchor.screenPoint
+                    )
+                    return
+                }
+            }
+
             writtenLength = text.count
             // Move cursor to end of injected text
             let cursorEnd = anchor.cursorPosition + text.count
@@ -130,6 +157,7 @@ final class TextInjector {
     func release() {
         anchor = nil
         writtenLength = 0
+        axVerified = false
         targetPosition = .zero
     }
 
