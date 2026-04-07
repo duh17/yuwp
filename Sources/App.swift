@@ -127,6 +127,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HotkeyManager.sessionActive = false
         let pcmData = s.stop()
 
+        // Hide panel and reset icon immediately — don't wait for sidecar's final
+        micPanel.hide()
         statusItem.button?.image = NSImage(
             systemSymbolName: "waveform",
             accessibilityDescription: "Yuwp"
@@ -157,6 +159,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         case .finished:
             micPanel.hide()
+            HotkeyManager.sessionActive = false
+            statusItem.button?.image = NSImage(
+                systemSymbolName: "waveform",
+                accessibilityDescription: "Yuwp"
+            )
             session = nil
             if pendingEnter {
                 pendingEnter = false

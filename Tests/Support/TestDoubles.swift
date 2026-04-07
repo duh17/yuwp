@@ -48,6 +48,7 @@ final class MockSttSession: SttSession, @unchecked Sendable {
 
 final class MockAudioCapture: AudioCapturing, @unchecked Sendable {
     var onAudioLevel: (@Sendable (Float) -> Void)?
+    var onWarning: (@Sendable (AudioCaptureWarning) -> Void)?
 
     var startCallCount = 0
     var stopCallCount = 0

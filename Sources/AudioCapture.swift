@@ -1,6 +1,16 @@
 @preconcurrency import AVFoundation
 import Foundation
 
+/// Warnings emitted by audio capture for the session to handle.
+enum AudioCaptureWarning: Sendable, Equatable {
+    /// Audio hardware route changed (mic plugged/unplugged).
+    /// The engine may still work, or it may need a restart.
+    case routeChanged
+    /// Consecutive silent buffers detected — mic may be dead.
+    /// Fires once after `seconds` of silence, not repeatedly.
+    case silentInput(seconds: Double)
+}
+
 /// Captures microphone audio at 16kHz mono PCM and delivers raw buffers.
 /// Also computes real-time RMS audio level for waveform visualization.
 final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturing conformance
@@ -10,12 +20,29 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
     private var converter: AVAudioConverter?
 
     /// Accumulated raw PCM for saving
-    private var recordingBuffer: [Int16] = []
+    private var recordingBuffer = Data()
     private let bufferLock = NSLock()
+
+    // Silent buffer detection
+    private var consecutiveSilentBuffers = 0
+    private var silenceWarningFired = false
+    /// RMS below this for a 100ms buffer means functionally silent (codec conflict, dead mic)
+    private static let deadMicRmsThreshold: Float = 0.0005
+    /// Fire warning after this many seconds of dead silence
+    private static let silenceWarningSeconds: Double = 2.0
+    /// Buffers per second at ~100ms tap interval
+    private static let buffersPerSecond: Int = 10
+
+    // Route change observation
+    private var routeChangeObserver: NSObjectProtocol?
 
     /// Audio level callback — fires with normalized RMS (0.0–1.0) per tap (~100ms).
     /// Called on the audio thread; dispatch to main if needed.
     var onAudioLevel: (@Sendable (Float) -> Void)?
+
+    /// Warning callback — fires for route changes and sustained silence.
+    /// Called on the audio thread (route change) or audio render thread (silence).
+    var onWarning: (@Sendable (AudioCaptureWarning) -> Void)?
 
     /// Start capturing. `onBuffer` is called with raw Int16 PCM data at 16kHz mono.
     /// Returns true if capture started successfully.
@@ -26,8 +53,30 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
             return false
         }
 
+        // Reset silence tracking
+        consecutiveSilentBuffers = 0
+        silenceWarningFired = false
+
+        // Check for a usable audio input device before touching the engine.
+        // Accessing engine.inputNode with no input device can crash.
+        let inputDevices = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone, .external],
+            mediaType: .audio,
+            position: .unspecified
+        ).devices
+        if inputDevices.isEmpty {
+            yuwpLog("No audio input device found — cannot start capture")
+            return false
+        }
+
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
+
+        // Sanity-check the input format (invalid when device disappeared mid-access)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            yuwpLog("Invalid input format (\(inputFormat.sampleRate)Hz, \(inputFormat.channelCount)ch) — no usable mic?")
+            return false
+        }
 
         // Target format: 16kHz, mono, Int16
         guard let targetFormat = AVAudioFormat(
@@ -46,6 +95,9 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
             return false
         }
         converter = conv
+
+        // Observe audio route changes (mic plugged/unplugged, Bluetooth disconnect)
+        startRouteChangeObserver()
 
         // Buffer size: ~100ms at input sample rate
         let bufferSize = AVAudioFrameCount(inputFormat.sampleRate * 0.1)
@@ -82,29 +134,29 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
 
             guard let channelData = outputBuffer.int16ChannelData else { return }
             let frameCount = Int(outputBuffer.frameLength)
-            let byteCount = frameCount * 2
-            let data = Data(bytes: channelData[0], count: byteCount)
+            let data = Data(bytes: channelData[0], count: frameCount * 2)
 
-            // Compute RMS from the Int16 samples and fire level callback
-            if let levelCallback = self.onAudioLevel, frameCount > 0 {
+            // Compute RMS from the Int16 samples
+            var rms: Float = 0
+            if frameCount > 0 {
                 let ptr = channelData[0]
                 var sumSq: Float = 0
                 for i in 0..<frameCount {
                     let sample = Float(ptr[i]) / 32768.0
                     sumSq += sample * sample
                 }
-                let rms = sqrt(sumSq / Float(frameCount))
-                // Normalize: typical speech RMS ~0.02-0.15, map to 0.0-1.0
-                let normalized = min(rms / 0.12, 1.0)
-                levelCallback(normalized)
+                rms = sqrt(sumSq / Float(frameCount))
+
+                // Fire level callback (normalized: speech RMS ~0.02-0.15 → 0.0-1.0)
+                self.onAudioLevel?(min(rms / 0.12, 1.0))
             }
 
-            // Accumulate for saving
+            // Silent buffer detection — Bluetooth codec conflicts, dead mics
+            self.trackSilence(rms: rms)
+
+            // Accumulate for recording (bulk append, not per-sample)
             self.bufferLock.lock()
-            let ptr = channelData[0]
-            for i in 0..<frameCount {
-                self.recordingBuffer.append(ptr[i])
-            }
+            self.recordingBuffer.append(data)
             self.bufferLock.unlock()
 
             onBuffer(data)
@@ -120,6 +172,7 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
             // Clean up the tap we just installed
             inputNode.removeTap(onBus: 0)
             converter = nil
+            stopRouteChangeObserver()
             return false
         }
     }
@@ -131,17 +184,54 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
         engine.reset()
         converter = nil
         isRunning = false
+        stopRouteChangeObserver()
 
         bufferLock.lock()
-        let pcm = recordingBuffer
-        recordingBuffer = []
+        let pcmData = recordingBuffer
+        recordingBuffer = Data()
         bufferLock.unlock()
 
-        yuwpLog("Audio capture stopped (\(pcm.count) samples, \(String(format: "%.1f", Double(pcm.count) / targetSampleRate))s)")
+        let sampleCount = pcmData.count / 2
+        yuwpLog("Audio capture stopped (\(sampleCount) samples, \(String(format: "%.1f", Double(sampleCount) / targetSampleRate))s)")
 
-        guard !pcm.isEmpty else { return nil }
-        return pcm.withUnsafeBufferPointer { ptr in
-            Data(buffer: ptr)
+        return pcmData.isEmpty ? nil : pcmData
+    }
+
+    // MARK: - Silent Buffer Detection
+
+    private func trackSilence(rms: Float) {
+        if rms < Self.deadMicRmsThreshold {
+            consecutiveSilentBuffers += 1
+            let threshold = Int(Self.silenceWarningSeconds) * Self.buffersPerSecond
+            if consecutiveSilentBuffers >= threshold, !silenceWarningFired {
+                silenceWarningFired = true
+                yuwpLog("Warning: \(Self.silenceWarningSeconds)s of dead silence — mic may not be working")
+                onWarning?(.silentInput(seconds: Self.silenceWarningSeconds))
+            }
+        } else {
+            consecutiveSilentBuffers = 0
+            // Don't reset silenceWarningFired — only warn once per session
+        }
+    }
+
+    // MARK: - Audio Route Change
+
+    private func startRouteChangeObserver() {
+        routeChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            guard let self, self.isRunning else { return }
+            yuwpLog("Audio route changed mid-session")
+            self.onWarning?(.routeChanged)
+        }
+    }
+
+    private func stopRouteChangeObserver() {
+        if let observer = routeChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            routeChangeObserver = nil
         }
     }
 }

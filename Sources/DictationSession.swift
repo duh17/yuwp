@@ -39,6 +39,7 @@ protocol SttSession: AnyObject, Sendable {
 /// Not actor-isolated — AudioCapture is `@unchecked Sendable`.
 protocol AudioCapturing: AnyObject, Sendable {
     var onAudioLevel: (@Sendable (Float) -> Void)? { get set }
+    var onWarning: (@Sendable (AudioCaptureWarning) -> Void)? { get set }
     @discardableResult
     func start(onBuffer: @escaping @Sendable (Data) -> Void) -> Bool
     func stop() -> Data?
@@ -129,6 +130,20 @@ final class DictationSession {
         audioCapture.onAudioLevel = { [weak self] level in
             Task { @MainActor in
                 self?.onEvent?(.audioLevel(level))
+            }
+        }
+
+        audioCapture.onWarning = { [weak self] warning in
+            Task { @MainActor in
+                guard let self else { return }
+                switch warning {
+                case .routeChanged:
+                    yuwpLog("Audio route changed — stopping session")
+                    self.onRequestStop?()
+                case .silentInput(let seconds):
+                    yuwpLog("Dead mic detected (\(seconds)s silence) — stopping session")
+                    self.onRequestStop?()
+                }
             }
         }
 
