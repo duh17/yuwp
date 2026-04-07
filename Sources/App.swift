@@ -224,12 +224,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.typewriter.update(fullText: text)
                 self.textInjector.inject(self.typewriter.displayText)
                 if self.textInjector.isLiveInjecting {
-                    // Move the compact indicator to follow the caret
+                    // AX verified — switch to compact dot tracking the caret
                     self.micPanel.showCompact(near: self.textInjector.targetPosition)
                 } else {
+                    // Clipboard fallback — show transcript in the full panel
                     self.micPanel.updateTranscript(self.typewriter.displayText)
+                    self.driveTypewriterDisplay()
                 }
-                self.driveTypewriterDisplay()
             }
         }
         sidecar.onFinalResult = { [weak self] text in
@@ -272,13 +273,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             accessibilityDescription: "Yuwp — Listening"
         )
 
-        // AX mode: tiny waveform dot near caret (text streams into the field).
-        // Clipboard mode: full panel with transcript (user can't see text until paste).
-        if textInjector.isLiveInjecting {
-            micPanel.showCompact(near: textInjector.targetPosition)
-        } else {
-            micPanel.show(near: textInjector.targetPosition)
-        }
+        // Always start with the full panel. After the first partial,
+        // if AX injection is verified, we'll switch to the compact dot.
+        micPanel.show(near: textInjector.targetPosition)
 
         // Tell sidecar to start a new session
         sidecar.beginSession()
