@@ -113,6 +113,72 @@ struct TypewriterAnimatorTests {
         #expect(tw.displayText == "Hello, testing this now.")
     }
 
+    // MARK: - Period Merge (trailing punct removal treated as append)
+
+    @Test func periodRemovalPlusAppendIsNotCorrection() {
+        let tw = TypewriterAnimator()
+
+        // ASR outputs "word." then corrects to "word more text."
+        tw.update(fullText: "Hello.")
+        tw.commitCurrentAnimation()
+        #expect(tw.displayText == "Hello.")
+
+        // Period removed, new text appended — should animate, NOT snap
+        tw.update(fullText: "Hello world.")
+        #expect(tw.isAnimating, "Period-merge should animate, not snap")
+        tw.commitCurrentAnimation()
+        #expect(tw.displayText == "Hello world.")
+    }
+
+    @Test func chinesePeriodMerge() {
+        let tw = TypewriterAnimator()
+
+        tw.update(fullText: "\u{8BED}\u{97F3}\u{3002}")  // 语音。
+        tw.commitCurrentAnimation()
+
+        tw.update(fullText: "\u{8BED}\u{97F3}\u{662F}\u{53EF}\u{4EE5}\u{3002}")  // 语音是可以。
+        #expect(tw.isAnimating, "Chinese period merge should animate")
+        tw.commitCurrentAnimation()
+        #expect(tw.displayText == "\u{8BED}\u{97F3}\u{662F}\u{53EF}\u{4EE5}\u{3002}")
+    }
+
+    @Test func realCorrectionStillSnaps() {
+        let tw = TypewriterAnimator()
+
+        // "i think we should just" → "I think we should just do" (capitalization change)
+        tw.update(fullText: "i think we should just")
+        tw.commitCurrentAnimation()
+
+        tw.update(fullText: "I think we should just do")
+        // This changes "i" to "I" — a real correction, should snap
+        #expect(!tw.isAnimating || tw.displayText.hasPrefix("I think"),
+                "Real correction should snap the changed portion")
+    }
+
+    @Test func periodOnlyRemovalWithShorterTextIsCorrection() {
+        let tw = TypewriterAnimator()
+
+        tw.update(fullText: "Hello world.")
+        tw.commitCurrentAnimation()
+
+        // Just removing the period with no new text — this IS a correction
+        tw.update(fullText: "Hello world")
+        #expect(tw.displayText == "Hello world", "Shorter text should snap")
+        #expect(!tw.isAnimating)
+    }
+
+    @Test func multiPunctRemovalPlusAppend() {
+        let tw = TypewriterAnimator()
+
+        tw.update(fullText: "Okay.")
+        tw.commitCurrentAnimation()
+
+        tw.update(fullText: "Okay, seems like our server.")
+        #expect(tw.isAnimating, "Period-merge with comma replacement should animate")
+        tw.commitCurrentAnimation()
+        #expect(tw.displayText == "Okay, seems like our server.")
+    }
+
     // MARK: - Edge Cases
 
     @Test func emptyUpdateSnaps() {
