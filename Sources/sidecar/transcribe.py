@@ -361,7 +361,11 @@ def _batch_retranscribe(session: StreamSession) -> str | None:
 
     try:
         from mlx_audio.stt.generate import generate_transcription
-        import tempfile, soundfile as sf
+        import tempfile, soundfile as sf, os
+
+        # mlx_audio writes transcript.txt to CWD; ensure it's writable
+        prev_cwd = os.getcwd()
+        os.chdir(tempfile.gettempdir())
 
         # Write accumulated audio to temp WAV
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -372,8 +376,8 @@ def _batch_retranscribe(session: StreamSession) -> str | None:
         result = generate_transcription(_batch_model_wrapper, tmp_path)
         batch_ms = (time.time() - t0) * 1000
 
-        import os
         os.unlink(tmp_path)
+        os.chdir(prev_cwd)
 
         text = result.text.strip()
         audio_s = len(session.audio_buffer) / SAMPLE_RATE
