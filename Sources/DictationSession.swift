@@ -174,6 +174,7 @@ final class DictationSession {
         // Timeout: if STT doesn't send final within 10s, clean up
         finalTimeoutTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard !Task.isCancelled else { return }
             guard let self, !self.isActive else { return }
             yuwpLog("Final result timeout — releasing injector")
             self.finalize()

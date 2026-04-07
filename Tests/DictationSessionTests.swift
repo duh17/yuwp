@@ -178,6 +178,138 @@ struct DictationSessionTests {
         #expect(events.events.contains(.finished))
     }
 
+    // MARK: - Full Session Lifecycle
+
+    @Test func fullLifecycleWithLiveInjection() async {
+        let (session, stt, audio, injector, events) = makeSession()
+        injector.isLiveInjecting = true
+        injector.targetPosition = NSPoint(x: 50, y: 50)
+
+        // Start
+        session.start()
+        #expect(session.isActive)
+        #expect(injector.captureCallCount == 1)
+
+        // Stream audio
+        audio.simulateBuffer(Data([1, 2, 3, 4]))
+        #expect(stt.feedCallCount == 1)
+
+        // Partials arrive — inject into target, emit liveInjectionVerified (not partialTranscript)
+        stt.simulatePartial("Hello")
+        await Task.yield()
+        #expect(injector.injectCallCount >= 1)
+        let liveEvents = events.events.filter {
+            if case .liveInjectionVerified = $0 { return true }
+            return false
+        }
+        #expect(!liveEvents.isEmpty)
+        let transcriptEvents = events.events.filter {
+            if case .partialTranscript = $0 { return true }
+            return false
+        }
+        #expect(transcriptEvents.isEmpty, "Live injection should NOT emit partialTranscript")
+
+        // More partials
+        stt.simulatePartial("Hello world")
+        await Task.yield()
+        #expect(injector.injectCallCount >= 2)
+
+        // Stop
+        _ = session.stop()
+        #expect(!session.isActive)
+
+        // Final arrives with batch-corrected text
+        stt.simulateFinal("Hello, world.")
+        await Task.yield()
+        #expect(injector.commitCallCount == 1)
+        #expect(injector.lastCommitted == "Hello, world.")
+        #expect(injector.releaseCallCount == 1)
+        #expect(events.events.contains(.finished))
+    }
+
+    @Test func fullLifecycleWithClipboardFallback() async {
+        let (session, stt, audio, injector, events) = makeSession()
+        injector.isLiveInjecting = false // clipboard mode
+
+        // Start
+        session.start()
+
+        // Stream audio
+        audio.simulateBuffer(Data([1, 2, 3, 4]))
+
+        // Partials — should emit partialTranscript (for pill text display), NOT liveInjectionVerified
+        stt.simulatePartial("Hello")
+        await Task.yield()
+        let transcriptEvents = events.events.filter {
+            if case .partialTranscript = $0 { return true }
+            return false
+        }
+        #expect(!transcriptEvents.isEmpty)
+        let liveEvents = events.events.filter {
+            if case .liveInjectionVerified = $0 { return true }
+            return false
+        }
+        #expect(liveEvents.isEmpty, "Clipboard mode should NOT emit liveInjectionVerified")
+
+        // Stop + final
+        _ = session.stop()
+        stt.simulateFinal("Hello")
+        await Task.yield()
+        #expect(injector.commitCallCount == 1)
+        #expect(events.events.contains(.finished))
+    }
+
+    @Test func multiplePartialsAllInjected() async {
+        let (session, stt, _, injector, _) = makeSession()
+        injector.isLiveInjecting = true
+        session.start()
+
+        stt.simulatePartial("H")
+        await Task.yield()
+        stt.simulatePartial("He")
+        await Task.yield()
+        stt.simulatePartial("Hel")
+        await Task.yield()
+        stt.simulatePartial("Hell")
+        await Task.yield()
+        stt.simulatePartial("Hello")
+        await Task.yield()
+
+        // Each partial should trigger an inject call
+        #expect(injector.injectCallCount >= 5)
+    }
+
+    @Test func finalCommitOverridesPartials() async {
+        let (session, stt, _, injector, _) = makeSession()
+        session.start()
+
+        // Stream partials with typos
+        stt.simulatePartial("Helo wrld")
+        await Task.yield()
+
+        _ = session.stop()
+
+        // Final has batch-corrected text
+        stt.simulateFinal("Hello world")
+        await Task.yield()
+
+        // Commit should use the final text, not the last partial
+        #expect(injector.lastCommitted == "Hello world")
+    }
+
+    @Test func onRequestStopCallbackWorks() async {
+        let (session, _, _, _, _) = makeSession()
+        var stopRequested = false
+        session.onRequestStop = { stopRequested = true }
+
+        session.start()
+        #expect(session.isActive)
+
+        // Simulate the max duration firing
+        session.onRequestStop?()
+        #expect(stopRequested)
+    }
+
     // MARK: - Audio Forwarding
 
     @Test func audioBuffersForwardedToSttSession() {
