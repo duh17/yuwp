@@ -25,12 +25,12 @@ struct YuwpApp {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     // Infrastructure — live for the app's lifetime
     private let hotkeyManager = HotkeyManager()
-    private let sttProvider: any SttProvider = {
-        let sidecar = ASRSidecar()
-        sidecar.streamingModel = Config.shared.streamingModel
-        sidecar.batchModel = Config.shared.batchModel
-        sidecar.batchRetranscribeEnabled = Config.shared.batchRetranscribeEnabled
-        return sidecar
+    private let asrSidecar: ASRSidecar = {
+        let s = ASRSidecar()
+        s.streamingModel = Config.shared.streamingModel
+        s.batchModel = Config.shared.batchModel
+        s.batchRetranscribeEnabled = Config.shared.batchRetranscribeEnabled
+        return s
     }()
     private let audioCapture = AudioCapture()
     private let textInjector = TextInjector()
@@ -44,6 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenuItem: NSMenuItem!
     private var hotkeyMenuItem: NSMenuItem!
     private var hotkeySubmenu: NSMenu!
+    private var modelMenuItem: NSMenuItem!
+    private var modelSubmenu: NSMenu!
     private var providerReady = false
     private var hasPermission = false
     private var permissionTimer: Timer?
@@ -74,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let s = DictationSession(
-            sttSession: sttProvider.makeSession(),
+            sttSession: asrSidecar.makeSession(),
             textInjector: textInjector,
             audioCapture: audioCapture
         )
@@ -132,7 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - STT Provider
 
     private func startSttProvider() {
-        sttProvider.onReady = { [weak self] in
+        asrSidecar.onReady = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
                 self.providerReady = true
@@ -140,10 +142,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 yuwpLog("STT provider ready")
             }
         }
-        sttProvider.onError = { error in
+        asrSidecar.onError = { error in
             Task { @MainActor in yuwpLog("STT error: \(error)") }
         }
-        sttProvider.start()
+        asrSidecar.start()
     }
 
     // MARK: - Microphone Permission
@@ -219,6 +221,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyMenuItem.submenu = hotkeySubmenu
         menu.addItem(hotkeyMenuItem)
 
+        modelMenuItem = NSMenuItem(title: modelMenuTitle(), action: nil, keyEquivalent: "")
+        modelSubmenu = NSMenu()
+        rebuildModelSubmenu()
+        modelMenuItem.submenu = modelSubmenu
+        menu.addItem(modelMenuItem)
+
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Yuwp", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
@@ -257,8 +265,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusMenuItem.title = "✓ Ready"
             statusMenuItem.action = nil
             statusMenuItem.isEnabled = false
+        } else {
+            statusMenuItem.title = "Loading model..."
+            statusMenuItem.action = nil
+            statusMenuItem.isEnabled = false
         }
         hotkeyMenuItem.title = "Hotkey: \(Config.shared.hotkeyMode.description)"
+        modelMenuItem.title = modelMenuTitle()
+    }
+
+    // MARK: - Model Menu
+
+    private func modelMenuTitle() -> String {
+        let label = ModelPreset.current()?.label ?? "Custom"
+        return "Model: \(label)"
+    }
+
+    private func rebuildModelSubmenu() {
+        modelSubmenu.removeAllItems()
+        let currentPreset = ModelPreset.current()
+        for (idx, preset) in ModelPreset.presets.enumerated() {
+            let item = NSMenuItem(
+                title: "\(preset.label)  (\(preset.summary))",
+                action: #selector(changeModel(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = idx
+            item.state = currentPreset?.label == preset.label ? .on : .off
+            modelSubmenu.addItem(item)
+        }
+    }
+
+    @objc private func changeModel(_ sender: NSMenuItem) {
+        guard let idx = sender.representedObject as? Int,
+              idx < ModelPreset.presets.count else { return }
+        let preset = ModelPreset.presets[idx]
+
+        // Skip if already active
+        if ModelPreset.current()?.label == preset.label { return }
+
+        // Stop any active dictation
+        if session?.isActive == true { stopDictation() }
+
+        // Persist
+        Config.shared.streamingModel = preset.streamingModel
+        Config.shared.batchModel = preset.batchModel
+        Config.shared.batchRetranscribeEnabled = preset.batchEnabled
+
+        // Update sidecar and restart
+        asrSidecar.streamingModel = preset.streamingModel
+        asrSidecar.batchModel = preset.batchModel
+        asrSidecar.batchRetranscribeEnabled = preset.batchEnabled
+
+        providerReady = false
+        updateMenuForReady()
+        rebuildModelSubmenu()
+        asrSidecar.shutdown()
+        asrSidecar.start()
+
+        yuwpLog("Model changed to: \(preset.label) (\(preset.summary))")
     }
 
     private func modesMatch(_ a: HotkeyMode, _ b: HotkeyMode) -> Bool {

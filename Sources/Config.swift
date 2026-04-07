@@ -134,6 +134,67 @@ final class Config {
     }
 }
 
+// MARK: - Model Presets
+
+struct ModelPreset {
+    let label: String
+    let streamingModel: String
+    let batchModel: String
+    let batchEnabled: Bool
+
+    /// Short description for status display (e.g. "0.6B + 1.7B batch")
+    var summary: String {
+        let streaming = Self.shortName(streamingModel)
+        if batchEnabled {
+            return "\(streaming) + \(Self.shortName(batchModel)) batch"
+        }
+        return "\(streaming) only"
+    }
+
+    /// Extract short label: "mlx-community/Qwen3-ASR-1.7B-bf16" -> "1.7B-bf16"
+    static func shortName(_ model: String) -> String {
+        if let last = model.split(separator: "/").last {
+            let parts = last.split(separator: "-").dropFirst(2)
+            if !parts.isEmpty {
+                return parts.joined(separator: "-")
+            }
+        }
+        return model
+    }
+
+    static let presets: [ModelPreset] = [
+        ModelPreset(
+            label: "Fast + Accurate",
+            streamingModel: "mlx-community/Qwen3-ASR-0.6B-4bit",
+            batchModel: "mlx-community/Qwen3-ASR-1.7B-bf16",
+            batchEnabled: true
+        ),
+        ModelPreset(
+            label: "Accurate",
+            streamingModel: "mlx-community/Qwen3-ASR-1.7B-bf16",
+            batchModel: "",
+            batchEnabled: false
+        ),
+        ModelPreset(
+            label: "Fast",
+            streamingModel: "mlx-community/Qwen3-ASR-0.6B-4bit",
+            batchModel: "",
+            batchEnabled: false
+        ),
+    ]
+
+    /// Find which preset matches the current config, if any.
+    @MainActor
+    static func current() -> ModelPreset? {
+        let cfg = Config.shared
+        return presets.first { p in
+            p.streamingModel == cfg.streamingModel
+                && p.batchEnabled == cfg.batchRetranscribeEnabled
+                && (!p.batchEnabled || p.batchModel == cfg.batchModel)
+        }
+    }
+}
+
 private extension UInt16 {
     var nonZero: UInt16? { self == 0 ? nil : self }
 }
