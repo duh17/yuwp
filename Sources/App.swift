@@ -223,7 +223,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !trimmed.isEmpty, trimmed.lowercased() != "none" else { return }
                 self.typewriter.update(fullText: text)
                 self.textInjector.inject(self.typewriter.displayText)
-                self.micPanel.updateTranscript(self.typewriter.displayText)
+                // Only show transcript in panel when text isn't already
+                // streaming into the target field via AX injection.
+                if !self.textInjector.isLiveInjecting {
+                    self.micPanel.updateTranscript(self.typewriter.displayText)
+                }
                 self.driveTypewriterDisplay()
             }
         }
@@ -267,8 +271,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             accessibilityDescription: "Yuwp — Listening"
         )
 
-        // Show floating mic indicator
-        micPanel.show(near: textInjector.targetPosition)
+        // Show floating mic indicator only when using clipboard fallback.
+        // When AX injection is live, text streams directly into the target field
+        // and the panel would just be a redundant overlay.
+        if !textInjector.isLiveInjecting {
+            micPanel.show(near: textInjector.targetPosition)
+        }
 
         // Tell sidecar to start a new session
         sidecar.beginSession()

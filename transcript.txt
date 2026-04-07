@@ -1,1 +1,1 @@
-Let's test whether this works natively or not.
+The main thing I want to prevent is seeing the bubble, because we can already see the messages get input directly into the chat box or not chat box text input.
