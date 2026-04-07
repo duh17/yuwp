@@ -396,4 +396,30 @@ struct DictationSessionTests {
 
         #expect(events.events.contains(.audioLevel(0.75)))
     }
+
+    // MARK: - Audio Warnings
+
+    @Test func routeChangeRequestsStop() async {
+        let (session, _, audio, _, _) = makeSession()
+        var stopRequested = false
+        session.onRequestStop = { stopRequested = true }
+        session.start()
+
+        audio.onWarning?(.routeChanged)
+        await Task.yield()
+
+        #expect(stopRequested)
+    }
+
+    @Test func silentInputRequestsStop() async {
+        let (session, _, audio, _, _) = makeSession()
+        var stopRequested = false
+        session.onRequestStop = { stopRequested = true }
+        session.start()
+
+        audio.onWarning?(.silentInput(seconds: 2.0))
+        await Task.yield()
+
+        #expect(stopRequested)
+    }
 }
