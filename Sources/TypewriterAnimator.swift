@@ -19,7 +19,10 @@ final class TypewriterAnimator {
     static let animationDurationNs: UInt64 = 800_000_000  // 0.8s (was 1.5s)
     static let minimumIntervalNs: UInt64 = 8_000_000 // ~8ms, one frame at 120Hz
 
-    /// Feed a new full replacement transcript. Animates the delta.
+    /// Feed a new full replacement transcript. Animates new text only.
+    ///
+    /// Corrections (batch retranscription, punctuation changes) snap instantly.
+    /// Only genuinely new characters appended to the end get animated.
     func update(fullText: String) {
         commitCurrentAnimation()
 
@@ -28,17 +31,33 @@ final class TypewriterAnimator {
 
         let commonCount = commonPrefixCount(previousTarget, fullText)
 
-        // If text got shorter or unchanged (correction/deletion), snap
-        guard fullText.count > commonCount else {
+        // If the common prefix doesn't cover the old text, something changed
+        // mid-text (a correction). Snap the corrected portion immediately
+        // and only animate chars beyond the old target length.
+        let isCorrection = commonCount < previousTarget.count
+
+        if isCorrection {
+            // Snap to the end of the old text (corrected), animate only truly new chars
+            let snapTo = min(previousTarget.count, fullText.count)
+            let snapEnd = fullText.index(fullText.startIndex, offsetBy: snapTo)
+            displayText = String(fullText[..<snapEnd])
+
+            // If no new chars beyond old length, we're done
+            guard fullText.count > previousTarget.count else { return }
+        } else {
+            // Pure append — show common prefix, animate the delta
+            let prefixEnd = fullText.index(fullText.startIndex, offsetBy: commonCount)
+            displayText = String(fullText[..<prefixEnd])
+        }
+
+        // Nothing new to animate?
+        guard fullText.count > displayText.count else {
             displayText = fullText
             return
         }
 
-        // Show common prefix immediately, animate the delta
-        let prefixEnd = fullText.index(fullText.startIndex, offsetBy: commonCount)
-        displayText = String(fullText[..<prefixEnd])
-
-        let deltaCount = fullText.count - commonCount
+        let animateFrom = fullText.index(fullText.startIndex, offsetBy: displayText.count)
+        let deltaCount = fullText.count - displayText.count
         let intervalNs = max(
             Self.minimumIntervalNs,
             Self.animationDurationNs / UInt64(max(1, deltaCount))
@@ -47,7 +66,7 @@ final class TypewriterAnimator {
         isAnimating = true
 
         animationTask = Task { [weak self] in
-            var currentIndex = prefixEnd
+            var currentIndex = animateFrom
             let target = fullText
 
             while currentIndex < target.endIndex {
