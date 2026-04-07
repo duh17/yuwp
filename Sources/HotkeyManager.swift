@@ -14,12 +14,19 @@ import CoreGraphics
 final class HotkeyManager {
     var onToggle: (@Sendable () -> Void)?
 
+    /// Called when Enter/Return is pressed during an active dictation session.
+    /// Set by AppDelegate. The event is swallowed; caller is responsible for
+    /// stopping dictation and replaying Enter after final commit.
+    var onEnterDuringSession: (@Sendable () -> Void)?
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
     // Static state for the C callback (no captures allowed)
     nonisolated(unsafe) private static var instance: HotkeyManager?
     nonisolated(unsafe) private static var activeMode: HotkeyMode = .doubleTapRightOption
+    /// When true, Enter/Return keys are intercepted during dictation.
+    nonisolated(unsafe) static var sessionActive = false
 
     // Double-tap state machine
     nonisolated(unsafe) private static var lastCleanTapTime: CFAbsoluteTime = 0
@@ -96,6 +103,15 @@ final class HotkeyManager {
             yuwpLog("Event tap re-enabled")
             Task { @MainActor in HotkeyManager.instance?.reenable() }
             return Unmanaged.passRetained(event)
+        }
+
+        // Intercept Enter/Return during active dictation session
+        if sessionActive && type == .keyDown {
+            let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+            if keyCode == 36 || keyCode == 76 { // Return or numpad Enter
+                Task { @MainActor in HotkeyManager.instance?.onEnterDuringSession?() }
+                return nil // swallow
+            }
         }
 
         switch activeMode {
