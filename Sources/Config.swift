@@ -97,10 +97,26 @@ final class Config {
 
     // MARK: - Model
 
-    /// ASR model name or HuggingFace path (e.g., "mlx-community/Qwen3-ASR-0.6B-8bit")
-    var modelName: String {
-        get { defaults.string(forKey: "modelName") ?? "mlx-community/Qwen3-ASR-1.7B-bf16" }
-        set { defaults.set(newValue, forKey: "modelName") }
+    /// ASR model for streaming partials (low-latency, runs on every audio chunk)
+    var streamingModel: String {
+        get { defaults.string(forKey: "streamingModel") ?? "mlx-community/Qwen3-ASR-0.6B-4bit" }
+        set { defaults.set(newValue, forKey: "streamingModel") }
+    }
+
+    /// ASR model for batch retranscription (high-quality correction on pause/stop)
+    var batchModel: String {
+        get { defaults.string(forKey: "batchModel") ?? "mlx-community/Qwen3-ASR-1.7B-bf16" }
+        set { defaults.set(newValue, forKey: "batchModel") }
+    }
+
+    /// Whether to run batch retranscription with a second model for quality correction
+    var batchRetranscribeEnabled: Bool {
+        get {
+            defaults.object(forKey: "batchRetranscribeEnabled") != nil
+                ? defaults.bool(forKey: "batchRetranscribeEnabled")
+                : true
+        }
+        set { defaults.set(newValue, forKey: "batchRetranscribeEnabled") }
     }
 
     // MARK: - Recordings

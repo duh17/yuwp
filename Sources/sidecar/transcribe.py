@@ -79,8 +79,12 @@ _PAUSE_SILENCE_CHUNKS = 2  # consecutive quiet chunks before batch retranscribe 
 # Language header tokens to strip from prefix/output
 _ALL_LANG_TOKENS = {11528, 6364, 8453, 22574, 44923, 151704}
 
-# Tracks which model was loaded at startup (set by load_model)
-_loaded_model_name: str = ""
+# Global model state (set by load_models)
+_streaming_model: Any = None
+_streaming_model_name: str = ""
+_batch_model_wrapper: Any = None  # wrapper needed by generate_transcription
+_batch_model_name: str = ""
+_batch_retranscribe_enabled: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -343,16 +347,20 @@ def _trim_repetition(session: StreamSession) -> str | None:
 def _batch_retranscribe(session: StreamSession) -> str | None:
     """Run full batch transcription on accumulated audio.
 
-    Uses mlx-audio's generate_transcription for a single-pass decode
-    over the entire audio buffer. Returns corrected text, or None on
-    error. Also re-tokenizes raw_tokens so streaming can continue
-    from the corrected state.
+    Uses the global _batch_model_wrapper for a single-pass decode
+    over the entire audio buffer. Returns corrected text, or None if
+    disabled/unavailable. Re-tokenizes raw_tokens so streaming can
+    continue from the corrected state.
     """
+    if not _batch_retranscribe_enabled:
+        return None
+    if _batch_model_wrapper is None:
+        return None  # batch model not loaded yet (background load in progress)
     if len(session.audio_buffer) < SAMPLE_RATE:  # <1s, skip
         return None
 
     try:
-        from mlx_audio.stt.generate import generate_transcription, load_model as _load_batch
+        from mlx_audio.stt.generate import generate_transcription
         import tempfile, soundfile as sf
 
         # Write accumulated audio to temp WAV
@@ -360,14 +368,8 @@ def _batch_retranscribe(session: StreamSession) -> str | None:
             tmp_path = f.name
             sf.write(f, session.audio_buffer, SAMPLE_RATE)
 
-        # Use the model wrapper that generate_transcription expects
-        if not hasattr(session, '_batch_model'):
-            # Load the wrapper model once per session (generate_transcription
-            # expects the wrapper, not the unwrapped _model)
-            session._batch_model = _load_batch(session.config.model_name)
-
         t0 = time.time()
-        result = generate_transcription(session._batch_model, tmp_path)
+        result = generate_transcription(_batch_model_wrapper, tmp_path)
         batch_ms = (time.time() - t0) * 1000
 
         import os
@@ -532,18 +534,62 @@ def process_chunk(session: StreamSession, audio_chunk: np.ndarray) -> dict:
 # Model loading
 # ---------------------------------------------------------------------------
 
-def load_model(model_name: str = "mlx-community/Qwen3-ASR-1.7B-bf16"):
-    global _loaded_model_name
+def load_models(
+    streaming_name: str,
+    batch_name: str | None = None,
+    batch_enabled: bool = True,
+) -> Any:
+    """Load streaming model (returned) and optionally a batch model.
+
+    If batch is enabled and uses the same model, the wrapper is shared (zero
+    extra memory). If batch uses a different model, it loads in a background
+    thread so streaming is available immediately.
+
+    Returns the unwrapped streaming model for use in StreamSession.
+    """
+    global _streaming_model, _streaming_model_name
+    global _batch_model_wrapper, _batch_model_name, _batch_retranscribe_enabled
     from mlx_audio.stt import load_model as _load
 
-    log(f"Loading model: {model_name}")
+    _batch_retranscribe_enabled = batch_enabled
+
+    # Load streaming model (always needed)
+    log(f"Loading streaming model: {streaming_name}")
     t0 = time.time()
-    model_wrapper = _load(model_name)
-    # Unwrap to get Qwen3ASRModel
-    model = model_wrapper._model if hasattr(model_wrapper, "_model") else model_wrapper
-    _loaded_model_name = model_name
-    log(f"Model loaded in {time.time() - t0:.1f}s")
-    return model
+    streaming_wrapper = _load(streaming_name)
+    streaming_model = (
+        streaming_wrapper._model
+        if hasattr(streaming_wrapper, "_model")
+        else streaming_wrapper
+    )
+    _streaming_model = streaming_model
+    _streaming_model_name = streaming_name
+    log(f"Streaming model loaded in {time.time() - t0:.1f}s")
+
+    # Batch model
+    if batch_enabled:
+        batch_name = batch_name or streaming_name
+        _batch_model_name = batch_name
+
+        if batch_name == streaming_name:
+            _batch_model_wrapper = streaming_wrapper
+            log(f"Batch model: reusing streaming model ({batch_name})")
+        else:
+            # Load in background so streaming is available immediately
+            def _load_batch_bg() -> None:
+                global _batch_model_wrapper
+                log(f"Loading batch model: {batch_name}")
+                bt0 = time.time()
+                _batch_model_wrapper = _load(batch_name)
+                log(f"Batch model loaded in {time.time() - bt0:.1f}s")
+
+            threading.Thread(
+                target=_load_batch_bg, daemon=True, name="batch-model-load"
+            ).start()
+    else:
+        log("Batch retranscription disabled")
+
+    return streaming_model
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +612,7 @@ class SessionManager:
 
     def create(self, stream_config: dict | None = None) -> str:
         sid = uuid.uuid4().hex[:12]
-        cfg = StreamConfig(model_name=_loaded_model_name)
+        cfg = StreamConfig(model_name=_streaming_model_name)
         if stream_config and isinstance(stream_config, dict):
             if "system_prompt" in stream_config:
                 cfg.system_prompt = stream_config["system_prompt"]
@@ -689,12 +735,17 @@ def make_app(session_mgr: SessionManager):
         return JSONResponse({"text": text})
 
     async def info(request: Request) -> JSONResponse:
-        return JSONResponse({
-            "model": _loaded_model_name,
+        resp: dict[str, Any] = {
+            "streaming_model": _streaming_model_name,
             "sample_rate": SAMPLE_RATE,
             "chunk_sec": DEFAULT_CHUNK_SEC,
             "status": "ready",
-        })
+            "batch_retranscribe": _batch_retranscribe_enabled,
+        }
+        if _batch_retranscribe_enabled:
+            resp["batch_model"] = _batch_model_name
+            resp["batch_model_loaded"] = _batch_model_wrapper is not None
+        return JSONResponse(resp)
 
     return Starlette(routes=[
         Route("/v1/info", info, methods=["GET"]),
@@ -747,7 +798,7 @@ def run_stdio(model) -> None:
         cmd = msg.get("cmd")
 
         if cmd == "start":
-            cfg = StreamConfig(model_name=_loaded_model_name)
+            cfg = StreamConfig(model_name=_streaming_model_name)
             session = StreamSession(model=model, config=cfg)
             pending_audio = np.array([], dtype=np.float32)
             log("Session started")
@@ -776,7 +827,13 @@ def run_stdio(model) -> None:
                     except Exception as e:
                         log(f"Final chunk error: {e}")
 
-            text = _extract_text(model, session.raw_tokens) if session.raw_tokens else ""
+                # Streaming text
+                streaming_text = _extract_text(model, session.raw_tokens) if session.raw_tokens else ""
+
+                # Final batch retranscribe for best quality (same as HTTP stop)
+                batch_text = _batch_retranscribe(session) if session.raw_tokens else None
+                text = batch_text if batch_text else streaming_text
+
             total_audio = len(session.audio_buffer) / SAMPLE_RATE
             avg_ms = sum(session.chunk_timings) / max(len(session.chunk_timings), 1)
             log(f"Session stopped: {total_audio:.1f}s audio, {session.chunk_idx} chunks, {avg_ms:.0f}ms avg")
@@ -800,8 +857,12 @@ def run_stdio(model) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Yuwp ASR — streaming speech-to-text")
-    parser.add_argument("model", nargs="?", default="mlx-community/Qwen3-ASR-1.7B-bf16",
-                        help="Model name or path (default: mlx-community/Qwen3-ASR-1.7B-bf16)")
+    parser.add_argument("model", nargs="?", default="mlx-community/Qwen3-ASR-0.6B-4bit",
+                        help="Streaming model name or path (default: mlx-community/Qwen3-ASR-0.6B-4bit)")
+    parser.add_argument("--batch-model", default=None,
+                        help="Batch retranscription model (default: same as streaming model)")
+    parser.add_argument("--no-batch-retranscribe", action="store_true",
+                        help="Disable batch retranscription entirely")
     parser.add_argument("--serve", action="store_true",
                         help="Start HTTP server alongside stdio (for external clients integration)")
     parser.add_argument("--host", default="127.0.0.1",
@@ -812,7 +873,8 @@ def main():
                         help="Run HTTP server only, no stdio (for standalone ASR server)")
     args = parser.parse_args()
 
-    model = load_model(args.model)
+    batch_enabled = not args.no_batch_retranscribe
+    model = load_models(args.model, args.batch_model, batch_enabled)
 
     if args.serve or args.serve_only:
         start_http_server(model, args.host, args.port)

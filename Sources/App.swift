@@ -27,7 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkeyManager = HotkeyManager()
     private let sttProvider: any SttProvider = {
         let sidecar = ASRSidecar()
-        sidecar.modelName = Config.shared.modelName
+        sidecar.streamingModel = Config.shared.streamingModel
+        sidecar.batchModel = Config.shared.batchModel
+        sidecar.batchRetranscribeEnabled = Config.shared.batchRetranscribeEnabled
         return sidecar
     }()
     private let audioCapture = AudioCapture()
