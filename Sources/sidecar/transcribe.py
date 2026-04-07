@@ -15,7 +15,7 @@
 
 Two modes:
   stdio   — JSON lines over stdin/stdout (Yuwp.app local dictation)
-  serve   — HTTP server on localhost (external clients, any streaming STT client)
+  serve   — HTTP server on localhost (external streaming STT clients)
 
 Both modes share the same loaded model and streaming algorithm.
 
@@ -864,7 +864,7 @@ def main():
     parser.add_argument("--no-batch-retranscribe", action="store_true",
                         help="Disable batch retranscription entirely")
     parser.add_argument("--serve", action="store_true",
-                        help="Start HTTP server alongside stdio (for external clients integration)")
+                        help="Start HTTP server alongside stdio (for external clients)")
     parser.add_argument("--host", default="127.0.0.1",
                         help="HTTP server bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
