@@ -12,9 +12,10 @@ struct EnterInterceptionTests {
     // MARK: - HotkeyManager state
 
     @Test func sessionActiveDefaultsFalse() {
-        // Ensure clean state for the test — reset after checking.
-        let original = HotkeyManager.sessionActive
-        defer { HotkeyManager.sessionActive = original }
+        // Reset to known state — tests run in parallel so another test
+        // may have set this to true before we get here.
+        HotkeyManager.sessionActive = false
+        defer { HotkeyManager.sessionActive = false }
 
         // The static flag must be false before any session starts.
         #expect(HotkeyManager.sessionActive == false)
