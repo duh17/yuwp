@@ -5,11 +5,17 @@ import Foundation
 ///
 /// Swift sends:  {"cmd": "start"}, {"cmd": "audio", "pcm_b64": "..."}, {"cmd": "stop"}
 /// Python sends: {"type": "ready"}, {"type": "partial", "text": "..."}, {"type": "final", "text": "..."}
-final class ASRSidecar: @unchecked Sendable {
+final class ASRSidecar: @unchecked Sendable, SttProvider {
+    // SttProvider
+    var isReady: Bool { _isReady }
     var onReady: (@Sendable () -> Void)?
+    var onError: (@Sendable (String) -> Void)?
+
+    // Internal — forwarded to the active SttSession
     var onPartialResult: (@Sendable (String) -> Void)?
     var onFinalResult: (@Sendable (String) -> Void)?
-    var onError: (@Sendable (String) -> Void)?
+
+    private var _isReady = false
 
     private var process: Process?
     private var stdinPipe: Pipe?
@@ -97,6 +103,7 @@ final class ASRSidecar: @unchecked Sendable {
 
                     switch type {
                     case "ready":
+                        self._isReady = true
                         self.onReady?()
                     case "partial":
                         if let text = json["text"] as? String {
@@ -145,11 +152,55 @@ final class ASRSidecar: @unchecked Sendable {
         yuwpLog("ASR sidecar stopped")
     }
 
+    // MARK: - SttProvider
+
+    func makeSession() -> any SttSession {
+        SidecarSttSession(sidecar: self)
+    }
+
     private func send(_ msg: [String: Any]) {
         guard let pipe = stdinPipe,
               let data = try? JSONSerialization.data(withJSONObject: msg),
               var line = String(data: data, encoding: .utf8) else { return }
         line += "\n"
         pipe.fileHandleForWriting.write(Data(line.utf8))
+    }
+}
+
+// MARK: - Sidecar STT Session
+
+/// Wraps ASRSidecar's per-session operations into the SttSession protocol.
+/// The sidecar process is shared across sessions (one model load, many sessions).
+final class SidecarSttSession: SttSession, @unchecked Sendable {
+    var onPartial: ((String) -> Void)?
+    var onFinal: ((String) -> Void)?
+    var onError: ((String) -> Void)?
+
+    private let sidecar: ASRSidecar
+
+    init(sidecar: ASRSidecar) {
+        self.sidecar = sidecar
+    }
+
+    func begin(language: String?) {
+        // Wire sidecar callbacks to this session's callbacks
+        sidecar.onPartialResult = { [weak self] text in
+            Task { @MainActor in self?.onPartial?(text) }
+        }
+        sidecar.onFinalResult = { [weak self] text in
+            Task { @MainActor in self?.onFinal?(text) }
+        }
+        sidecar.onError = { [weak self] msg in
+            Task { @MainActor in self?.onError?(msg) }
+        }
+        sidecar.beginSession(language: language)
+    }
+
+    func feedAudio(_ pcmData: Data) {
+        sidecar.sendAudio(pcmData)
+    }
+
+    func end() {
+        sidecar.endSession()
     }
 }
