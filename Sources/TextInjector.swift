@@ -20,6 +20,12 @@ final class TextInjector {
     /// Screen position of the captured target (for panel positioning)
     private(set) var targetPosition: NSPoint = .zero
 
+    /// Whether live AX injection is active (text streams directly into the target field).
+    /// When true, callers can skip showing the transcript overlay.
+    var isLiveInjecting: Bool {
+        anchor?.method == .accessibility
+    }
+
     /// Snapshot the currently focused text element.
     /// Must be called before showing any panel that could steal focus.
     func captureTarget() {
