@@ -41,11 +41,13 @@ enum HotkeyMode: Sendable {
 
 // Preset hotkey configurations
 extension HotkeyMode {
+    static let doubleTapRightControl = HotkeyMode.doubleTap(keyCode: 62, interval: 0.4)
     static let doubleTapRightOption = HotkeyMode.doubleTap(keyCode: 61, interval: 0.4)
     static let doubleTapFn = HotkeyMode.doubleTap(keyCode: 63, interval: 0.4)
     static let ctrlBacktick = HotkeyMode.combo(keyCode: 50, modifiers: 0x40000)
 
     static let presets: [(label: String, mode: HotkeyMode)] = [
+        ("Double-tap Right Ctrl", .doubleTapRightControl),
         ("Double-tap Right ⌥", .doubleTapRightOption),
         ("Double-tap Fn", .doubleTapFn),
         ("Ctrl + `", .ctrlBacktick),
@@ -72,7 +74,7 @@ final class Config {
                     : 0x40000
                 return .combo(keyCode: keyCode, modifiers: mods)
             default:
-                let keyCode = UInt16(defaults.integer(forKey: "hotkeyDoubleTapKeyCode")).nonZero ?? 61
+                let keyCode = UInt16(defaults.integer(forKey: "hotkeyDoubleTapKeyCode")).nonZero ?? 62
                 let interval = defaults.object(forKey: "hotkeyDoubleTapInterval") != nil
                     ? defaults.double(forKey: "hotkeyDoubleTapInterval")
                     : 0.4

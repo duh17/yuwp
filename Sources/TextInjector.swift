@@ -52,11 +52,12 @@ final class TextInjector {
         guard let anchor, anchor.method == .accessibility else { return }
 
         // Select the range of our previous injection
-        guard selectRange(
+        let selectOK = selectRange(
             in: anchor.element,
             location: anchor.cursorPosition,
             length: writtenLength
-        ) else {
+        )
+        if !selectOK {
             // AX broke mid-session — degrade to clipboard for commit
             self.anchor = Anchor(
                 element: anchor.element,
@@ -69,7 +70,8 @@ final class TextInjector {
         }
 
         // Replace selection with new text
-        if replaceSelection(in: anchor.element, with: text) {
+        let replaceOK = replaceSelection(in: anchor.element, with: text)
+        if replaceOK {
             writtenLength = text.count
         }
     }
@@ -77,14 +79,22 @@ final class TextInjector {
     /// Commit the final transcription.
     /// Uses clipboard paste if AX isn't available.
     func commit(_ text: String) {
-        guard let anchor else { return }
-
-        switch anchor.method {
-        case .accessibility:
-            inject(text)
-        case .paste:
-            pasteViaClipboard(text)
+        guard let anchor else {
+            yuwpLog("commit: anchor is nil, text lost (\(text.count) chars)")
+            return
         }
+
+        // Always use clipboard paste for the final commit — it's the most
+        // reliable path across all apps. AX inject is only for live preview.
+        // First, undo any AX-injected preview text by replacing it with empty.
+        if anchor.method == .accessibility && writtenLength > 0 {
+            if selectRange(in: anchor.element, location: anchor.cursorPosition, length: writtenLength) {
+                _ = replaceSelection(in: anchor.element, with: "")
+            }
+            writtenLength = 0
+        }
+
+        pasteViaClipboard(text)
     }
 
     /// Cleanup after dictation ends.

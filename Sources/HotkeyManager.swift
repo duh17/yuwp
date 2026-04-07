@@ -93,6 +93,7 @@ final class HotkeyManager {
 
         // Re-enable if system disabled the tap
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            yuwpLog("Event tap re-enabled")
             Task { @MainActor in HotkeyManager.instance?.reenable() }
             return Unmanaged.passRetained(event)
         }
