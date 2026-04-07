@@ -1,7 +1,7 @@
 #!/bin/bash
-# Build and run Yuwp as a proper .app bundle.
-# The app bundle is needed so macOS TCC can identify the binary
-# and properly prompt for Microphone + Accessibility permissions.
+# Build and install Yuwp to /Applications, then launch.
+# Installing to /Applications with Developer ID signing gives stable
+# TCC permissions (Accessibility + Microphone) across rebuilds.
 set -e
 
 cd "$(dirname "$0")/.."
@@ -9,15 +9,11 @@ cd "$(dirname "$0")/.."
 echo "Building..."
 swift build 2>&1 | tail -3
 
-# Create .app bundle
-APP=".build/Yuwp.app"
+# Install to /Applications
+APP="/Applications/Yuwp.app"
 mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 cp .build/debug/Yuwp "$APP/Contents/MacOS/"
-
-# Sign with stable identifier so TCC permissions persist across rebuilds
-codesign --force --sign - --identifier com.yuwp.app "$APP/Contents/MacOS/Yuwp" 2>/dev/null
-codesign --force --sign - --identifier com.yuwp.app "$APP" 2>/dev/null
 
 # Info.plist with required permission descriptions
 cat > "$APP/Contents/Info.plist" << 'EOF'
@@ -46,6 +42,12 @@ cat > "$APP/Contents/Info.plist" << 'EOF'
 </dict>
 </plist>
 EOF
+
+# Sign with Developer ID for stable TCC permissions
+codesign --force --sign "Developer ID Application: Da Chen (AZAQMY4SPZ)" \
+    --identifier com.yuwp.app "$APP/Contents/MacOS/Yuwp" 2>/dev/null
+codesign --force --sign "Developer ID Application: Da Chen (AZAQMY4SPZ)" \
+    --identifier com.yuwp.app "$APP" 2>/dev/null
 
 LOGFILE="/tmp/yuwp.log"
 > "$LOGFILE"
