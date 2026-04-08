@@ -18,6 +18,22 @@ import Glibc
 import Foundation
 import NativeASR
 
+// MARK: - Shutdown State
+
+nonisolated(unsafe) var serverSocket: Int32 = -1
+nonisolated(unsafe) var shuttingDown = false
+
+func handleShutdown(_: Int32) {
+    guard !shuttingDown else { return }
+    shuttingDown = true
+    let fd = serverSocket
+    serverSocket = -1
+    if fd >= 0 {
+        Darwin.shutdown(fd, SHUT_RDWR)
+        close(fd)
+    }
+}
+
 // MARK: - Session Manager
 
 final class SessionManager: @unchecked Sendable {
@@ -58,6 +74,7 @@ final class SessionManager: @unchecked Sendable {
         stateLock.lock()
         guard let session = sessions[sid] else { stateLock.unlock(); return nil }
         var pending = pendingAudio[sid] ?? []
+        pendingAudio[sid] = []  // Take ownership — prevents concurrent feed races
         lastActivity[sid] = Date()
         stateLock.unlock()
 
@@ -80,7 +97,10 @@ final class SessionManager: @unchecked Sendable {
         inferenceLock.unlock()
 
         stateLock.lock()
-        if sessions[sid] != nil { pendingAudio[sid] = pending }
+        if sessions[sid] != nil {
+            // Prepend remainder to any audio that arrived during inference
+            pendingAudio[sid] = pending + (pendingAudio[sid] ?? [])
+        }
         stateLock.unlock()
 
         var resp: [String: Any] = ["text": session.finalText()]
@@ -121,6 +141,8 @@ final class SessionManager: @unchecked Sendable {
 
 // MARK: - HTTP Parser (minimal, no deps)
 
+private let maxBodySize = 10 * 1024 * 1024  // 10MB
+
 struct HTTPRequest {
     let method: String
     let path: String
@@ -129,26 +151,34 @@ struct HTTPRequest {
 }
 
 func readHTTPRequest(fd: Int32) -> HTTPRequest? {
+    // Recv timeout — don't block forever on dead connections
+    var timeout = timeval(tv_sec: 30, tv_usec: 0)
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
     var headerBuf = Data()
     var readBuf = [UInt8](repeating: 0, count: 8192)
     var headerEnd = -1
 
-    // Read until we find \r\n\r\n (end of headers)
+    // Read until \r\n\r\n (end of headers)
     while headerEnd < 0 {
         let n = recv(fd, &readBuf, readBuf.count, 0)
-        if n <= 0 { return nil }
+        if n == 0 { return nil }  // Client closed
+        if n < 0 {
+            if errno == EINTR { continue }
+            return nil  // Timeout or error
+        }
         headerBuf.append(contentsOf: readBuf[..<n])
         if let range = headerBuf.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) {
             headerEnd = range.upperBound
         }
-        if headerBuf.count > 65536 { return nil }
+        if headerBuf.count > 65536 { return nil }  // Header too large
     }
 
     guard let headerStr = String(data: headerBuf[..<headerEnd], encoding: .utf8) else { return nil }
     let lines = headerStr.split(separator: "\r\n", omittingEmptySubsequences: false)
     guard let reqLine = lines.first else { return nil }
     let parts = reqLine.split(separator: " ", maxSplits: 2)
-    guard parts.count >= 2 else { return nil }
+    guard parts.count >= 2 else { return nil }  // Malformed request line
 
     var headers: [String: String] = [:]
     for line in lines.dropFirst() {
@@ -158,12 +188,22 @@ func readHTTPRequest(fd: Int32) -> HTTPRequest? {
         headers[key] = val
     }
 
-    // Read body
+    // Read body (capped at 10MB)
     let contentLength = Int(headers["content-length"] ?? "0") ?? 0
+    guard contentLength >= 0, contentLength <= maxBodySize else {
+        log("Rejected: body too large (\(contentLength) bytes)")
+        return nil
+    }
+
     var body = Data(headerBuf[headerEnd...])
     while body.count < contentLength {
-        let n = recv(fd, &readBuf, min(readBuf.count, contentLength - body.count), 0)
-        if n <= 0 { break }
+        let remain = contentLength - body.count
+        let n = recv(fd, &readBuf, min(readBuf.count, remain), 0)
+        if n == 0 { break }  // Client closed
+        if n < 0 {
+            if errno == EINTR { continue }
+            break  // Timeout or error
+        }
         body.append(contentsOf: readBuf[..<n])
     }
 
@@ -173,21 +213,32 @@ func readHTTPRequest(fd: Int32) -> HTTPRequest? {
     )
 }
 
+func sendAll(fd: Int32, _ data: Data) {
+    data.withUnsafeBytes { buf in
+        guard let base = buf.baseAddress else { return }
+        var offset = 0
+        while offset < buf.count {
+            let n = Darwin.send(fd, base + offset, buf.count - offset, 0)
+            if n <= 0 { return }  // EPIPE or error (SIGPIPE already ignored)
+            offset += n
+        }
+    }
+}
+
 func writeResponse(fd: Int32, status: Int, json: [String: Any]) {
     let body = (try? JSONSerialization.data(withJSONObject: json)) ?? Data("{}".utf8)
     let statusText: String = switch status {
     case 200: "OK"
     case 400: "Bad Request"
     case 404: "Not Found"
+    case 405: "Method Not Allowed"
+    case 413: "Payload Too Large"
     default: "Error"
     }
-    var header = "HTTP/1.1 \(status) \(statusText)\r\n"
-    header += "Content-Type: application/json\r\n"
-    header += "Content-Length: \(body.count)\r\n"
-    header += "Connection: close\r\n\r\n"
-
-    _ = header.withCString { ptr in Darwin.send(fd, ptr, header.utf8.count, 0) }
-    body.withUnsafeBytes { buf in _ = Darwin.send(fd, buf.baseAddress, buf.count, 0) }
+    let header = "HTTP/1.1 \(status) \(statusText)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+    var resp = Data(header.utf8)
+    resp.append(body)
+    sendAll(fd: fd, resp)
 }
 
 // MARK: - Router
@@ -196,7 +247,8 @@ func route(_ req: HTTPRequest, mgr: SessionManager, modelName: String) -> (Int, 
     let path = req.path.split(separator: "?").first.map(String.init) ?? req.path
     let streamPrefix = "/v1/audio/transcriptions/stream"
 
-    if req.method == "GET" && path == "/v1/info" {
+    if path == "/v1/info" {
+        guard req.method == "GET" else { return (405, ["error": "method not allowed"]) }
         return (200, [
             "streaming_model": modelName,
             "sample_rate": ASRAudio.sampleRate,
@@ -205,7 +257,8 @@ func route(_ req: HTTPRequest, mgr: SessionManager, modelName: String) -> (Int, 
         ])
     }
 
-    if req.method == "POST" && path == streamPrefix {
+    if path == streamPrefix {
+        guard req.method == "POST" else { return (405, ["error": "method not allowed"]) }
         return (200, ["session_id": mgr.create()])
     }
 
@@ -213,18 +266,19 @@ func route(_ req: HTTPRequest, mgr: SessionManager, modelName: String) -> (Int, 
         let sid = String(path.dropFirst(streamPrefix.count + 1))
         guard !sid.isEmpty else { return (400, ["error": "missing session_id"]) }
 
-        if req.method == "POST" {
+        switch req.method {
+        case "POST":
             guard let result = mgr.feed(sid, pcmData: req.body) else {
                 return (404, ["error": "session not found"])
             }
             return (200, result)
-        }
-
-        if req.method == "DELETE" {
+        case "DELETE":
             guard let text = mgr.stop(sid) else {
                 return (404, ["error": "session not found"])
             }
             return (200, ["text": text])
+        default:
+            return (405, ["error": "method not allowed"])
         }
     }
 
@@ -254,26 +308,52 @@ func startServer(host: String, port: UInt16, mgr: SessionManager, modelName: Str
     guard ok == 0 else { fputs("bind() failed on \(host):\(port) — errno \(errno)\n", stderr); exit(1) }
     guard listen(serverFd, 32) == 0 else { fputs("listen() failed\n", stderr); exit(1) }
 
+    // Register for graceful shutdown
+    serverSocket = serverFd
+    signal(SIGINT, handleShutdown)
+    signal(SIGTERM, handleShutdown)
+
     log("Listening on http://\(host):\(port)")
+
+    let inFlight = DispatchGroup()
 
     // Accept loop — dispatch each connection concurrently.
     // Inference is serialized by SessionManager.inferenceLock.
-    while true {
+    while !shuttingDown {
         var clientAddr = sockaddr_in()
         var addrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
         let clientFd = withUnsafeMutablePointer(to: &clientAddr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { accept(serverFd, $0, &addrLen) }
         }
-        guard clientFd >= 0 else { continue }
+        if clientFd < 0 {
+            if errno == EINTR { continue }
+            break  // Socket closed by signal handler or fatal error
+        }
 
+        inFlight.enter()
         DispatchQueue.global(qos: .userInitiated).async {
+            defer {
+                close(clientFd)
+                inFlight.leave()
+            }
             if let req = readHTTPRequest(fd: clientFd) {
                 let (status, json) = route(req, mgr: mgr, modelName: modelName)
                 writeResponse(fd: clientFd, status: status, json: json)
             }
-            close(clientFd)
         }
     }
+
+    // Wait for in-flight connections (with timeout)
+    log("Shutting down...")
+    let result = inFlight.wait(timeout: .now() + 5)
+    if result == .timedOut { log("Timed out waiting for in-flight requests") }
+
+    // Defensive cleanup (signal handler may have already closed)
+    let fd = serverSocket
+    serverSocket = -1
+    if fd >= 0 { close(fd) }
+
+    log("Server stopped")
 }
 
 // MARK: - Logging
