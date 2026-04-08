@@ -4,11 +4,35 @@ import PackageDescription
 let package = Package(
     name: "Yuwp",
     platforms: [.macOS(.v14)],
+    dependencies: [
+        .package(url: "https://github.com/ml-explore/mlx-swift", branch: "main"),
+    ],
     targets: [
         .executableTarget(
             name: "Yuwp",
             path: "Sources",
-            exclude: ["sidecar"]
+            exclude: ["sidecar", "NativeASR", "asr-test", "asr-bench"]
+        ),
+        .target(
+            name: "NativeASR",
+            dependencies: [
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXFast", package: "mlx-swift"),
+                .product(name: "MLXFFT", package: "mlx-swift"),
+                .product(name: "MLXRandom", package: "mlx-swift"),
+            ],
+            path: "Sources/NativeASR"
+        ),
+        .executableTarget(
+            name: "asr-test",
+            dependencies: ["NativeASR"],
+            path: "Sources/asr-test"
+        ),
+        .executableTarget(
+            name: "asr-bench",
+            dependencies: ["NativeASR"],
+            path: "Sources/asr-bench"
         ),
         .testTarget(
             name: "YuwpTests",
