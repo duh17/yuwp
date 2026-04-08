@@ -50,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var providerReady = false
     private var hasPermission = false
     private var permissionTimer: Timer?
+    private var modelDownloadStatus: String?
 
     // MARK: - Lifecycle
 
@@ -310,6 +311,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        if let modelDownloadStatus {
+            statusMenuItem.title = "⬇︎ \(modelDownloadStatus)"
+            statusMenuItem.action = nil
+            statusMenuItem.isEnabled = false
+            modelMenuItem?.title = modelMenuTitle()
+            return
+        }
+
         switch asrProvider.state {
         case .stopped:
             statusMenuItem.title = "Stopped"
@@ -327,6 +336,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Model Menu
 
+    private enum ModelRole {
+        case streaming
+        case batch
+
+        var label: String {
+            switch self {
+            case .streaming: "Streaming"
+            case .batch: "Batch"
+            }
+        }
+    }
+
     private func modelMenuTitle() -> String {
         let label = ModelPreset.current()?.label ?? "Custom"
         return "Model: \(label)"
@@ -335,6 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func rebuildModelSubmenu() {
         modelSubmenu.removeAllItems()
         let currentPreset = ModelPreset.current()
+
         for (idx, preset) in ModelPreset.presets.enumerated() {
             let item = NSMenuItem(
                 title: "\(preset.label)  (\(preset.summary))",
@@ -346,33 +368,278 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.state = currentPreset?.label == preset.label ? .on : .off
             modelSubmenu.addItem(item)
         }
+
+        modelSubmenu.addItem(.separator())
+
+        let batchToggle = NSMenuItem(
+            title: "Enable batch retranscribe",
+            action: #selector(toggleBatchRetranscribe(_:)),
+            keyEquivalent: ""
+        )
+        batchToggle.target = self
+        batchToggle.state = Config.shared.batchRetranscribeEnabled ? .on : .off
+        modelSubmenu.addItem(batchToggle)
+
+        modelSubmenu.addItem(.separator())
+
+        let streamingInfo = NSMenuItem(title: currentModelStatusText(for: .streaming), action: nil, keyEquivalent: "")
+        streamingInfo.isEnabled = false
+        modelSubmenu.addItem(streamingInfo)
+        let setStreaming = modelSubmenu.addItem(withTitle: "Set Streaming Model ID or Path…", action: #selector(setStreamingModelSpec), keyEquivalent: "")
+        setStreaming.target = self
+        let chooseStreaming = modelSubmenu.addItem(withTitle: "Choose Streaming Model Folder…", action: #selector(chooseStreamingModelFolder), keyEquivalent: "")
+        chooseStreaming.target = self
+        let streamingDownloads = NSMenuItem(title: "Download Streaming Model", action: nil, keyEquivalent: "")
+        streamingDownloads.submenu = makeDownloadSubmenu(role: .streaming)
+        modelSubmenu.addItem(streamingDownloads)
+
+        modelSubmenu.addItem(.separator())
+
+        let batchInfo = NSMenuItem(title: currentModelStatusText(for: .batch), action: nil, keyEquivalent: "")
+        batchInfo.isEnabled = false
+        modelSubmenu.addItem(batchInfo)
+        let setBatch = modelSubmenu.addItem(withTitle: "Set Batch Model ID or Path…", action: #selector(setBatchModelSpec), keyEquivalent: "")
+        setBatch.target = self
+        let chooseBatch = modelSubmenu.addItem(withTitle: "Choose Batch Model Folder…", action: #selector(chooseBatchModelFolder), keyEquivalent: "")
+        chooseBatch.target = self
+        let batchDownloads = NSMenuItem(title: "Download Batch Model", action: nil, keyEquivalent: "")
+        batchDownloads.submenu = makeDownloadSubmenu(role: .batch)
+        modelSubmenu.addItem(batchDownloads)
+    }
+
+    private func currentModelStatusText(for role: ModelRole) -> String {
+        let spec = currentModelSpec(for: role)
+        let name = ModelLocator.displayName(for: spec)
+        if role == .batch && !Config.shared.batchRetranscribeEnabled {
+            return "\(role.label): \(name) (disabled)"
+        }
+        let installed = ModelLocator.resolve(spec) != nil
+        return "\(role.label): \(name) \(installed ? "✓" : "⚠ missing")"
+    }
+
+    private func currentModelSpec(for role: ModelRole) -> String {
+        switch role {
+        case .streaming: Config.shared.streamingModel
+        case .batch: Config.shared.batchModel
+        }
+    }
+
+    private func makeDownloadSubmenu(role: ModelRole) -> NSMenu {
+        let menu = NSMenu()
+        for model in DownloadableASRModel.supported {
+            let item = NSMenuItem(
+                title: model.label,
+                action: role == .streaming ? #selector(downloadStreamingModel(_:)) : #selector(downloadBatchModel(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = model.repoId
+            item.state = currentModelSpec(for: role) == model.repoId ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
     }
 
     @objc private func changeModel(_ sender: NSMenuItem) {
         guard let idx = sender.representedObject as? Int,
               idx < ModelPreset.presets.count else { return }
         let preset = ModelPreset.presets[idx]
-
-        // Skip if already active
         if ModelPreset.current()?.label == preset.label { return }
 
-        // Stop any active dictation
+        applyModelConfig(
+            streamingModel: preset.streamingModel,
+            batchModel: preset.batchModel,
+            batchEnabled: preset.batchEnabled
+        )
+        yuwpLog("Model changed to: \(preset.label) (\(preset.summary))")
+    }
+
+    @objc private func toggleBatchRetranscribe(_ sender: NSMenuItem) {
+        let newValue = !Config.shared.batchRetranscribeEnabled
+        if newValue, ModelLocator.resolve(Config.shared.batchModel) == nil {
+            showAlert(
+                title: "Batch model missing",
+                message: "Pick or download a valid batch model before enabling retranscription."
+            )
+            return
+        }
+        applyModelConfig(batchEnabled: newValue)
+        yuwpLog("Batch retranscribe \(newValue ? "enabled" : "disabled")")
+    }
+
+    @objc private func setStreamingModelSpec() {
+        promptForModelSpec(role: .streaming)
+    }
+
+    @objc private func setBatchModelSpec() {
+        promptForModelSpec(role: .batch)
+    }
+
+    @objc private func chooseStreamingModelFolder() {
+        chooseModelFolder(role: .streaming)
+    }
+
+    @objc private func chooseBatchModelFolder() {
+        chooseModelFolder(role: .batch)
+    }
+
+    @objc private func downloadStreamingModel(_ sender: NSMenuItem) {
+        guard let repoId = sender.representedObject as? String else { return }
+        Task { await downloadModel(repoId: repoId, applyTo: .streaming) }
+    }
+
+    @objc private func downloadBatchModel(_ sender: NSMenuItem) {
+        guard let repoId = sender.representedObject as? String else { return }
+        Task { await downloadModel(repoId: repoId, applyTo: .batch) }
+    }
+
+    private func promptForModelSpec(role: ModelRole) {
+        let title = "Set \(role.label) Model"
+        let message = "Enter a Hugging Face repo id (for example `mlx-community/Qwen3-ASR-0.6B-4bit`) or a local model folder path."
+        guard let spec = promptForText(title: title, message: message, initialValue: currentModelSpec(for: role)) else {
+            return
+        }
+        applyModelSpec(spec, for: role)
+    }
+
+    private func chooseModelFolder(role: ModelRole) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory())
+        panel.message = "Choose a folder containing config.json, model.safetensors, vocab.json, and merges.txt."
+        if panel.runModal() == .OK, let url = panel.url {
+            applyModelSpec(url.path, for: role)
+        }
+    }
+
+    private func applyModelSpec(_ spec: String, for role: ModelRole) {
+        let trimmed = spec.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        if ModelLocator.resolve(trimmed) != nil {
+            switch role {
+            case .streaming:
+                applyModelConfig(streamingModel: trimmed)
+            case .batch:
+                applyModelConfig(batchModel: trimmed)
+            }
+            yuwpLog("\(role.label) model changed to: \(trimmed)")
+            return
+        }
+
+        if ModelLocator.isRepoId(trimmed) {
+            let alert = NSAlert()
+            alert.messageText = "Download model from Hugging Face?"
+            alert.informativeText = "Yuwp couldn't find `\(trimmed)` locally. Download it now into Application Support so the app can manage it directly?"
+            alert.addButton(withTitle: "Download")
+            alert.addButton(withTitle: "Save Anyway")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                Task { await downloadModel(repoId: trimmed, applyTo: role) }
+            case .alertSecondButtonReturn:
+                switch role {
+                case .streaming:
+                    applyModelConfig(streamingModel: trimmed)
+                case .batch:
+                    applyModelConfig(batchModel: trimmed)
+                }
+            default:
+                break
+            }
+            return
+        }
+
+        showAlert(
+            title: "Model folder not found",
+            message: "Yuwp couldn't find a valid model directory at `\(trimmed)`. Pick a folder with config.json, model.safetensors, vocab.json, and merges.txt."
+        )
+    }
+
+    private func applyModelConfig(
+        streamingModel: String? = nil,
+        batchModel: String? = nil,
+        batchEnabled: Bool? = nil
+    ) {
         if session?.isActive == true { stopDictation() }
 
-        // Persist
-        Config.shared.streamingModel = preset.streamingModel
-        Config.shared.batchModel = preset.batchModel
-        Config.shared.batchRetranscribeEnabled = preset.batchEnabled
+        if let streamingModel {
+            Config.shared.streamingModel = streamingModel
+            asrProvider.streamingModel = streamingModel
+        }
+        if let batchModel {
+            Config.shared.batchModel = batchModel
+            asrProvider.batchModel = batchModel
+        }
+        if let batchEnabled {
+            Config.shared.batchRetranscribeEnabled = batchEnabled
+            asrProvider.batchRetranscribeEnabled = batchEnabled
+        }
 
-        // Update server and restart — onStateChange handles menu updates
-        asrProvider.streamingModel = preset.streamingModel
-        asrProvider.batchModel = preset.batchModel
-        asrProvider.batchRetranscribeEnabled = preset.batchEnabled
         asrProvider.shutdown()
         asrProvider.start()
         rebuildModelSubmenu()
+        updateStatus()
+    }
 
-        yuwpLog("Model changed to: \(preset.label) (\(preset.summary))")
+    private func promptForText(title: String, message: String, initialValue: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+        field.stringValue = initialValue
+        alert.accessoryView = field
+
+        return alert.runModal() == .alertFirstButtonReturn
+            ? field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            : nil
+    }
+
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func downloadModel(repoId: String, applyTo role: ModelRole?) async {
+        modelDownloadStatus = "Preparing \(ModelLocator.shortRepoName(repoId))…"
+        updateStatus()
+
+        do {
+            let _ = try await ModelDownloadManager.shared.download(repoId: repoId) { [weak self] progress, status in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let pct = Int(progress * 100)
+                    self.modelDownloadStatus = "\(ModelLocator.shortRepoName(repoId)) \(pct)% — \(status)"
+                    self.updateStatus()
+                }
+            }
+
+            modelDownloadStatus = nil
+            switch role {
+            case .streaming:
+                applyModelConfig(streamingModel: repoId)
+            case .batch:
+                applyModelConfig(batchModel: repoId)
+            case nil:
+                rebuildModelSubmenu()
+                updateStatus()
+            }
+            yuwpLog("Downloaded model: \(repoId)")
+        } catch {
+            modelDownloadStatus = nil
+            rebuildModelSubmenu()
+            updateStatus()
+            showAlert(title: "Model download failed", message: error.localizedDescription)
+            yuwpLog("Model download failed: \(repoId) — \(error.localizedDescription)")
+        }
     }
 
     private func modesMatch(_ a: HotkeyMode, _ b: HotkeyMode) -> Bool {

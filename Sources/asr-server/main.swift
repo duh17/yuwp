@@ -8,7 +8,8 @@
 //   POST   /v1/audio/transcriptions/stream/:id     → feed audio (raw s16le PCM)
 //   DELETE /v1/audio/transcriptions/stream/:id     → stop session, get final text
 //
-// Usage: asr-server <model-dir> [--port 9748] [--host 127.0.0.1] [--warmup]
+// Usage: asr-server <streaming-model-dir> [--batch-model <dir>] [--disable-batch-retranscribe]
+//                   [--port 9748] [--host 127.0.0.1] [--warmup]
 
 #if canImport(Darwin)
 import Darwin
@@ -38,6 +39,8 @@ func handleShutdown(_: Int32) {
 
 final class SessionManager: @unchecked Sendable {
     private let transcriber: Qwen3ASRTranscriber
+    private let batchTranscriber: Qwen3ASRTranscriber?
+    private let batchRetranscribeEnabled: Bool
     private var sessions: [String: StreamingSession] = [:]
     private var pendingAudio: [String: [Float]] = [:]
     private var lastActivity: [String: Date] = [:]
@@ -46,8 +49,15 @@ final class SessionManager: @unchecked Sendable {
     private let chunkSamples: Int
     private let sessionTimeout: TimeInterval = 300
 
-    init(transcriber: Qwen3ASRTranscriber, chunkSec: Double = 2.0) {
+    init(
+        transcriber: Qwen3ASRTranscriber,
+        batchTranscriber: Qwen3ASRTranscriber? = nil,
+        batchRetranscribeEnabled: Bool = true,
+        chunkSec: Double = 2.0
+    ) {
         self.transcriber = transcriber
+        self.batchTranscriber = batchTranscriber
+        self.batchRetranscribeEnabled = batchRetranscribeEnabled
         self.chunkSamples = Int(chunkSec * Double(ASRAudio.sampleRate))
         // Cleanup timer
         DispatchQueue.global().async { [weak self] in
@@ -60,7 +70,11 @@ final class SessionManager: @unchecked Sendable {
 
     func create() -> String {
         let sid = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12).lowercased()
-        let session = StreamingSession(transcriber: transcriber)
+        let session = StreamingSession(
+            transcriber: transcriber,
+            batchTranscriber: batchTranscriber,
+            config: StreamConfig(batchRetranscribe: batchRetranscribeEnabled)
+        )
         stateLock.lock()
         sessions[String(sid)] = session
         pendingAudio[String(sid)] = []
@@ -118,7 +132,7 @@ final class SessionManager: @unchecked Sendable {
         // Flush remaining audio under inference lock
         inferenceLock.lock()
         if !pending.isEmpty { _ = session.processChunk(pending) }
-        let text = session.finalText()
+        let text = session.finalize()
         inferenceLock.unlock()
 
         log("Session stopped (\(sid)): \(text.count) chars")
@@ -243,18 +257,27 @@ func writeResponse(fd: Int32, status: Int, json: [String: Any]) {
 
 // MARK: - Router
 
-func route(_ req: HTTPRequest, mgr: SessionManager, modelName: String) -> (Int, [String: Any]) {
+func route(
+    _ req: HTTPRequest,
+    mgr: SessionManager,
+    streamingModelName: String,
+    batchModelName: String?,
+    batchRetranscribeEnabled: Bool
+) -> (Int, [String: Any]) {
     let path = req.path.split(separator: "?").first.map(String.init) ?? req.path
     let streamPrefix = "/v1/audio/transcriptions/stream"
 
     if path == "/v1/info" {
         guard req.method == "GET" else { return (405, ["error": "method not allowed"]) }
-        return (200, [
-            "streaming_model": modelName,
+        var info: [String: Any] = [
+            "streaming_model": streamingModelName,
             "sample_rate": ASRAudio.sampleRate,
             "chunk_sec": 2.0,
+            "batch_retranscribe": batchRetranscribeEnabled,
             "status": "ready",
-        ])
+        ]
+        if let batchModelName { info["batch_model"] = batchModelName }
+        return (200, info)
     }
 
     if path == streamPrefix {
@@ -287,7 +310,14 @@ func route(_ req: HTTPRequest, mgr: SessionManager, modelName: String) -> (Int, 
 
 // MARK: - Server
 
-func startServer(host: String, port: UInt16, mgr: SessionManager, modelName: String) {
+func startServer(
+    host: String,
+    port: UInt16,
+    mgr: SessionManager,
+    streamingModelName: String,
+    batchModelName: String?,
+    batchRetranscribeEnabled: Bool
+) {
     let serverFd = socket(AF_INET, SOCK_STREAM, 0)
     guard serverFd >= 0 else { fputs("socket() failed\n", stderr); exit(1) }
 
@@ -337,7 +367,13 @@ func startServer(host: String, port: UInt16, mgr: SessionManager, modelName: Str
                 inFlight.leave()
             }
             if let req = readHTTPRequest(fd: clientFd) {
-                let (status, json) = route(req, mgr: mgr, modelName: modelName)
+                let (status, json) = route(
+                    req,
+                    mgr: mgr,
+                    streamingModelName: streamingModelName,
+                    batchModelName: batchModelName,
+                    batchRetranscribeEnabled: batchRetranscribeEnabled
+                )
                 writeResponse(fd: clientFd, status: status, json: json)
             }
         }
@@ -367,7 +403,7 @@ func log(_ msg: String) {
 do {
     var args = Array(CommandLine.arguments.dropFirst())
     guard !args.isEmpty else {
-        fputs("Usage: asr-server <model-dir> [--port 9748] [--host 127.0.0.1] [--warmup]\n", stderr)
+        fputs("Usage: asr-server <streaming-model-dir> [--batch-model <dir>] [--disable-batch-retranscribe] [--port 9748] [--host 127.0.0.1] [--warmup]\n", stderr)
         exit(1)
     }
 
@@ -375,6 +411,8 @@ do {
     var port: UInt16 = 9748
     var host = "127.0.0.1"
     var doWarmup = false
+    var batchModelPath: String?
+    var batchRetranscribeEnabled = true
 
     while !args.isEmpty {
         switch args.removeFirst() {
@@ -387,6 +425,11 @@ do {
             guard !args.isEmpty else { fputs("--host requires a value\n", stderr); exit(1) }
             host = args.removeFirst()
         case "--warmup": doWarmup = true
+        case "--batch-model":
+            guard !args.isEmpty else { fputs("--batch-model requires a path\n", stderr); exit(1) }
+            batchModelPath = args.removeFirst()
+        case "--disable-batch-retranscribe":
+            batchRetranscribeEnabled = false
         case let flag: fputs("Unknown option: \(flag)\n", stderr); exit(1)
         }
     }
@@ -397,10 +440,39 @@ do {
     }
 
     let transcriber = try Qwen3ASRTranscriber.load(from: modelURL)
-    if doWarmup { try transcriber.warmup() }
+    let batchTranscriber: Qwen3ASRTranscriber?
+    if batchRetranscribeEnabled, let batchModelPath {
+        let batchURL = URL(fileURLWithPath: batchModelPath).standardizedFileURL
+        guard FileManager.default.fileExists(atPath: batchURL.path) else {
+            fputs("Batch model not found: \(batchModelPath)\n", stderr)
+            exit(1)
+        }
+        batchTranscriber = batchURL == modelURL.standardizedFileURL
+            ? transcriber
+            : try Qwen3ASRTranscriber.load(from: batchURL)
+    } else {
+        batchTranscriber = nil
+    }
+    if doWarmup {
+        try transcriber.warmup()
+        if let batchTranscriber, batchTranscriber !== transcriber {
+            try batchTranscriber.warmup()
+        }
+    }
 
-    let mgr = SessionManager(transcriber: transcriber)
-    startServer(host: host, port: port, mgr: mgr, modelName: modelURL.lastPathComponent)
+    let mgr = SessionManager(
+        transcriber: transcriber,
+        batchTranscriber: batchTranscriber,
+        batchRetranscribeEnabled: batchRetranscribeEnabled
+    )
+    startServer(
+        host: host,
+        port: port,
+        mgr: mgr,
+        streamingModelName: modelURL.lastPathComponent,
+        batchModelName: batchTranscriber?.modelDirectory.lastPathComponent,
+        batchRetranscribeEnabled: batchRetranscribeEnabled
+    )
 } catch {
     fputs("Error: \(error.localizedDescription)\n", stderr)
     exit(1)

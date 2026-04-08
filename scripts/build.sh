@@ -1,10 +1,13 @@
 #!/bin/bash
-# Build Yuwp and codesign with stable identifier.
-# Accessibility permission is tied to code signing hash — without a
-# stable identifier, every `swift build` revokes the permission.
+# Build Yuwp + native asr-server and compile mlx.metallib.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-swift build "$@"
-codesign --force --sign - --identifier "com.yuwp.app" .build/debug/yuwp
-echo "[yuwp] Signed as com.yuwp.app"
+
+CONFIGURATION="${1:-release}"
+
+swift build -c "$CONFIGURATION" --product Yuwp --product asr-server
+bash scripts/build_mlx_metallib.sh "$CONFIGURATION"
+
+echo "[yuwp] Built Yuwp + asr-server ($CONFIGURATION)"
+echo "[yuwp] Binaries: .build/arm64-apple-macosx/$CONFIGURATION/{Yuwp,asr-server,mlx.metallib}"

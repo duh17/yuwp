@@ -1,5 +1,26 @@
 import Foundation
 
+private final class LockedBox<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: T
+
+    init(_ value: T) {
+        storage = value
+    }
+
+    func set(_ value: T) {
+        lock.lock()
+        storage = value
+        lock.unlock()
+    }
+
+    func get() -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
 // MARK: - ASR Server State
 
 /// State of the ASR server process, observed by the menu bar.
@@ -27,11 +48,11 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
     private(set) var state: ASRServerState = .stopped
     var onStateChange: (@Sendable (ASRServerState) -> Void)?
 
-    /// HuggingFace model ID for streaming (resolved to local cache path).
+    /// Streaming model spec: Hugging Face repo id or local model directory.
     var streamingModel: String = "mlx-community/Qwen3-ASR-0.6B-4bit"
-    /// Batch model (stored for API compat — native server uses same model for both).
+    /// Batch retranscription model spec: Hugging Face repo id or local model directory.
     var batchModel: String = "mlx-community/Qwen3-ASR-1.7B-bf16"
-    /// Batch retranscription (handled internally by native StreamingSession).
+    /// Whether pause/final batch retranscription is enabled.
     var batchRetranscribeEnabled: Bool = true
 
     // Process management
@@ -58,10 +79,22 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         isIntentionalShutdown = false
         updateState(.starting)
 
-        guard let modelPath = Self.resolveModelPath(streamingModel) else {
-            yuwpLog("Model not found in HuggingFace cache: \(streamingModel)")
-            updateState(.error("Model not found"))
+        guard let streamingModelPath = Self.resolveModelPath(streamingModel) else {
+            yuwpLog("Streaming model not found: \(streamingModel)")
+            updateState(.error("Streaming model not found"))
             return
+        }
+
+        let batchModelPath: String?
+        if batchRetranscribeEnabled {
+            guard let resolved = Self.resolveModelPath(batchModel) else {
+                yuwpLog("Batch model not found: \(batchModel)")
+                updateState(.error("Batch model not found"))
+                return
+            }
+            batchModelPath = resolved
+        } else {
+            batchModelPath = nil
         }
 
         guard let serverBin = Self.findServerBinary() else {
@@ -74,7 +107,13 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         let stderrPipe = Pipe()
 
         proc.executableURL = URL(fileURLWithPath: serverBin)
-        proc.arguments = [modelPath, "--port", "\(port)", "--host", host]
+        var arguments = [streamingModelPath, "--port", "\(port)", "--host", host]
+        if let batchModelPath {
+            arguments += ["--batch-model", batchModelPath]
+        } else {
+            arguments += ["--disable-batch-retranscribe"]
+        }
+        proc.arguments = arguments
         proc.standardInput = FileHandle.nullDevice
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = stderrPipe
@@ -181,31 +220,24 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         guard let url = URL(string: "http://\(host):\(port)/v1/info") else { return false }
         var req = URLRequest(url: url)
         req.timeoutInterval = 2
-        var ready = false
+        let ready = LockedBox(false)
         let sema = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: req) { data, _, _ in
             defer { sema.signal() }
             guard let data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   json["status"] as? String == "ready" else { return }
-            ready = true
+            ready.set(true)
         }.resume()
         sema.wait()
-        return ready
+        return ready.get()
     }
 
     // MARK: - Model + Binary Resolution
 
-    /// Resolve a HuggingFace model ID (e.g. "mlx-community/Qwen3-ASR-0.6B-4bit")
-    /// to a local cache directory path.
-    static func resolveModelPath(_ modelId: String) -> String? {
-        let parts = modelId.split(separator: "/")
-        guard parts.count == 2 else { return nil }
-        let cacheDir = NSString("~/.cache/huggingface/hub").expandingTildeInPath
-        let snapshotsDir = "\(cacheDir)/models--\(parts[0])--\(parts[1])/snapshots"
-        guard let snapshots = try? FileManager.default.contentsOfDirectory(atPath: snapshotsDir),
-              let snapshot = snapshots.sorted().last else { return nil }
-        return "\(snapshotsDir)/\(snapshot)"
+    /// Resolve a model spec (Hugging Face repo id or local directory) to a local directory path.
+    static func resolveModelPath(_ spec: String) -> String? {
+        ModelLocator.resolve(spec)?.path
     }
 
     /// Find the asr-server binary in expected locations.
@@ -295,14 +327,14 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
         req.httpMethod = method
         req.timeoutInterval = 30
         req.httpBody = body
-        var result: Data?
+        let result = LockedBox<Data?>(nil)
         let sema = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: req) { data, response, _ in
             defer { sema.signal() }
             guard let data, let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
-            result = data
+            result.set(data)
         }.resume()
         sema.wait()
-        return result
+        return result.get()
     }
 }

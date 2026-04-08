@@ -1,21 +1,28 @@
 #!/bin/bash
-# Build and install Yuwp to /Applications, then launch.
-# Installing to /Applications with Developer ID signing gives stable
-# TCC permissions (Accessibility + Microphone) across rebuilds.
-set -e
+# Build a self-contained Yuwp.app, sign it, install to /Applications, then launch.
+# The app bundle embeds:
+#   - Yuwp
+#   - asr-server
+#   - mlx.metallib
+set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-echo "Building..."
-swift build 2>&1 | tail -3
-
-# Install to /Applications
+CONFIGURATION="release"
 APP="/Applications/Yuwp.app"
-mkdir -p "$APP/Contents/MacOS"
-mkdir -p "$APP/Contents/Resources"
-cp .build/debug/Yuwp "$APP/Contents/MacOS/"
+MACOS_DIR="$APP/Contents/MacOS"
+RES_DIR="$APP/Contents/Resources"
+BIN_DIR=".build/arm64-apple-macosx/$CONFIGURATION"
+LOGFILE="/tmp/yuwp.log"
+SIGN_IDENTITY="Developer ID Application: Da Chen (AZAQMY4SPZ)"
 
-# Info.plist with required permission descriptions
+bash scripts/build.sh "$CONFIGURATION"
+
+mkdir -p "$MACOS_DIR" "$RES_DIR"
+cp -f "$BIN_DIR/Yuwp" "$MACOS_DIR/Yuwp"
+cp -f "$BIN_DIR/asr-server" "$MACOS_DIR/asr-server"
+cp -f "$BIN_DIR/mlx.metallib" "$MACOS_DIR/mlx.metallib"
+
 cat > "$APP/Contents/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -43,16 +50,23 @@ cat > "$APP/Contents/Info.plist" << 'EOF'
 </plist>
 EOF
 
-# Sign with Developer ID for stable TCC permissions
-codesign --force --sign "Developer ID Application: Da Chen (AZAQMY4SPZ)" \
-    --identifier com.yuwp.app "$APP/Contents/MacOS/Yuwp" 2>/dev/null
-codesign --force --sign "Developer ID Application: Da Chen (AZAQMY4SPZ)" \
-    --identifier com.yuwp.app "$APP" 2>/dev/null
+# Kill old app binary if it is already running so we don't leave a stale copy alive.
+pkill -f "$APP/Contents/MacOS/Yuwp" >/dev/null 2>&1 || true
 
-LOGFILE="/tmp/yuwp.log"
+# Clear any stale ASR server still holding the port from an old dev run.
+OLD_SERVER_PIDS=$(lsof -tiTCP:9748 -sTCP:LISTEN || true)
+if [ -n "$OLD_SERVER_PIDS" ]; then
+    kill $OLD_SERVER_PIDS >/dev/null 2>&1 || true
+fi
+sleep 1
+
+codesign --force --sign "$SIGN_IDENTITY" --identifier com.yuwp.app.metallib "$MACOS_DIR/mlx.metallib"
+codesign --force --sign "$SIGN_IDENTITY" --identifier com.yuwp.app.server "$MACOS_DIR/asr-server"
+codesign --force --sign "$SIGN_IDENTITY" --identifier com.yuwp.app "$MACOS_DIR/Yuwp"
+codesign --force --sign "$SIGN_IDENTITY" --identifier com.yuwp.app "$APP"
+
 > "$LOGFILE"
-
 echo "Launching Yuwp.app (log: $LOGFILE)..."
 open --stdout "$LOGFILE" --stderr "$LOGFILE" "$APP"
-sleep 3
+sleep 4
 cat "$LOGFILE"

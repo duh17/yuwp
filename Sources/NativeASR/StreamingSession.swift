@@ -31,6 +31,7 @@ public struct ChunkResult: Sendable {
 
 public final class StreamingSession: @unchecked Sendable {
     private let transcriber: Qwen3ASRTranscriber
+    private let batchTranscriber: Qwen3ASRTranscriber?
     private let config: StreamConfig
     private var audioBuffer: [Float] = []
     private var encWindowCache: [MLXArray] = []
@@ -48,8 +49,13 @@ public final class StreamingSession: @unchecked Sendable {
     private static let pauseRMS: Float = 0.020
     private static let pauseChunks = 2
 
-    public init(transcriber: Qwen3ASRTranscriber, config: StreamConfig = StreamConfig()) {
+    public init(
+        transcriber: Qwen3ASRTranscriber,
+        batchTranscriber: Qwen3ASRTranscriber? = nil,
+        config: StreamConfig = StreamConfig()
+    ) {
         self.transcriber = transcriber
+        self.batchTranscriber = batchTranscriber
         self.config = config
         self.encWindowSamples = transcriber.model.config.audioConfig.nWindowInfer * ASRAudio.hopLength
         self.kvCache = transcriber.model.makeCache()
@@ -201,6 +207,18 @@ public final class StreamingSession: @unchecked Sendable {
     }
 
     public func finalText() -> String { lastText }
+
+    /// Finalize the session on stop. Runs a full batch retranscription when enabled
+    /// so the stop/final text is corrected even if streaming gating never emitted tokens.
+    public func finalize() -> String {
+        if config.batchRetranscribe,
+           audioBuffer.count >= ASRAudio.sampleRate,
+           let batchText = batchRetranscribe()
+        {
+            lastText = batchText
+        }
+        return lastText
+    }
 
     private func encodeSegment(_ audio: [Float]) -> MLXArray {
         let melSpec = logMelSpectrogram(audio: MLXArray(audio))
@@ -377,7 +395,8 @@ public final class StreamingSession: @unchecked Sendable {
         guard audioBuffer.count >= ASRAudio.sampleRate else { return nil }
 
         do {
-            let result = try transcriber.transcribe(audio: audioBuffer)
+            let batcher = batchTranscriber ?? transcriber
+            let result = try batcher.transcribe(audio: audioBuffer)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
                 rawTokens = transcriber.tokenizer.encode(text)
