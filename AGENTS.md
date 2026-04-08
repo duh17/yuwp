@@ -5,38 +5,38 @@ Instructions for AI coding agents working on this codebase.
 ## Architecture
 
 ```
-┌─────────────────────────────────────┐
-│           Yuwp.app (macOS)        │
-│  Hotkey → AudioCapture → ASRSidecar │
-│                         ↕ stdio     │
-│              TextInjector (AX API)  │
-└─────────────────────┬───────────────┘
-                      │
-         ┌────────────▼────────────┐
-         │  transcribe.py sidecar  │
-         │  ┌──────────────────┐   │
-         │  │ StreamSession    │   │
-         │  │ (encoder cache,  │   │
-         │  │  KV reuse,       │   │
-         │  │  prefix rollback)│   │
-         │  └────────┬─────────┘   │
-         │     ┌─────┴──────┐      │
-         │  stdio JSON   HTTP :9748│
-         │  (Yuwp)    (clients)  │
-         └─────────────────────────┘
+┌───────────────────────────────────────────┐
+│            Yuwp.app (macOS)               │
+│  Hotkey → AudioCapture → NativeASRProvider│
+│                            ↕ HTTP :9748   │
+│               TextInjector (AX API)       │
+└───────────────────────┬───────────────────┘
+                        │
+           ┌────────────▼────────────┐
+           │  asr-server (native)    │
+           │  ┌──────────────────┐   │
+           │  │ StreamingSession │   │
+           │  │ (encoder cache,  │   │
+           │  │  KV reuse,       │   │
+           │  │  prefix rollback)│   │
+           │  └──────────────────┘   │
+           │     HTTP :9748          │
+           │  (Yuwp + Oppi clients)  │
+           └─────────────────────────┘
 ```
 
-The Python sidecar loads the model once and runs in dual mode:
-- **stdio** — JSON lines for Yuwp.app's local dictation
-- **HTTP** — streaming session API on localhost:9748 for external clients
-
-No server dependency. The sidecar runs mlx-audio directly with optimized
-streaming: encoder window caching, decoder KV reuse, prefix rollback.
+The native `asr-server` loads the MLX model once and serves HTTP.
+Yuwp.app launches it as a child process, communicates via localhost HTTP.
+External clients (Oppi) use the same HTTP API.
 
 ## Build & Run
 
 ```bash
+# Build everything (app + server)
 swift build
+swift build -c release --product asr-server
+bash scripts/build_mlx_metallib.sh release  # compile Metal shaders
+
 swift run Yuwp
 ```
 
@@ -47,8 +47,7 @@ to build and launch as a proper .app bundle with TCC-compatible Info.plist.
 ### Standalone ASR server (no GUI)
 
 ```bash
-uv run --script Sources/sidecar/transcribe.py --serve-only
-# Listening on http://127.0.0.1:9748
+.build/arm64-apple-macosx/release/asr-server <model-dir> [--port 9748] [--host 127.0.0.1]
 ```
 
 ## Key Components
@@ -57,9 +56,9 @@ uv run --script Sources/sidecar/transcribe.py --serve-only
 |------|---------|
 | App.swift | NSApplication entry, menu bar, orchestration |
 | DictationSession.swift | Session state machine, protocol abstractions |
+| NativeASRProvider.swift | Manages asr-server process, HTTP STT sessions |
 | HotkeyManager.swift | Global hotkey via CGEvent tap |
 | AudioCapture.swift | AVAudioEngine → 16kHz mono PCM |
-| ASRSidecar.swift | Manages Python sidecar process (stdio + HTTP) |
 | AXTextInjector.swift | AX API text injection (preferred) |
 | CGEventInjector.swift | CGEvent keyboard injection for terminals |
 | ClipboardInjector.swift | Clipboard fallback for unsupported apps |
@@ -67,38 +66,21 @@ uv run --script Sources/sidecar/transcribe.py --serve-only
 | MicPanel.swift | Floating mic indicator (NSPanel) |
 | TypewriterAnimator.swift | Character-by-character text reveal |
 | Config.swift | UserDefaults-based preferences |
-| sidecar/transcribe.py | Streaming ASR engine (mlx-audio, dual-mode) |
+| asr-server/main.swift | Native HTTP streaming ASR server |
+| NativeASR/ | MLX model loading, inference, streaming session |
 
-## Sidecar Protocol
+## HTTP API
 
-### Stdio (Yuwp.app)
-
-JSON lines over stdin/stdout:
-- **Swift → Python**: `start`, `audio` (base64 PCM), `stop`, `quit`
-- **Python → Swift**: `ready`, `partial`, `final`, `error`
-
-### HTTP (external clients)
+All communication uses a single HTTP protocol on `127.0.0.1:9748`:
 
 | Method | Path | Description |
 |--------|------|-------------|
+| `GET` | `/v1/info` | Server status and model info |
 | `POST` | `/v1/audio/transcriptions/stream` | Create session |
-| `POST` | `/v1/audio/transcriptions/stream/:id` | Feed audio chunk (raw PCM) |
+| `POST` | `/v1/audio/transcriptions/stream/:id` | Feed audio chunk (raw s16le PCM) |
 | `DELETE` | `/v1/audio/transcriptions/stream/:id` | Stop session, get final text |
-| `GET` | `/v1/info` | Model info and server status |
 
-Default: `127.0.0.1:9748`. Override with `--host` / `--port`.
-
-## Protocol Discipline
-
-Yuwp has two protocol surfaces — stdio JSON (Swift ↔ Python) and HTTP REST
-(Python ↔ external clients). When changing message contracts:
-
-1. Update Python message handling in `Sources/sidecar/transcribe.py`
-2. Update Swift types in `Sources/ASRSidecar.swift`
-3. Update HTTP endpoints if the change affects external clients
-4. Update the protocol tables in this file
-
-No partial protocol updates — both sides must stay in sync.
+Override host/port with `--host` / `--port` flags.
 
 ## Code Quality
 
@@ -111,20 +93,15 @@ No partial protocol updates — both sides must stay in sync.
 - All async work on dedicated actors or `Task.detached`
 - `@MainActor` for all UI, `@unchecked Sendable` for audio thread types
 - CGEvent tap callback uses `nonisolated(unsafe)` static state
-
-### Python (sidecar)
-- Type hints on all public functions
-- `uv run --script` for execution — no manual venv
-- `ruff` for linting/formatting
+- MLX is NOT thread-safe — all inference MUST go through inferenceLock
 
 ## Complexity Guardrails
 
-Yuwp is small (~13 files). Resist splitting unless a file exceeds ~400 lines.
+Yuwp is small (~13 source files). Resist splitting unless a file exceeds ~400 lines.
 Check the component table above before adding new files.
 
 ```bash
 rg 'class |struct |enum |protocol ' Sources/*.swift
-rg '"type"' Sources/ASRSidecar.swift Sources/sidecar/transcribe.py
 ```
 
 ## Gotchas
@@ -140,6 +117,8 @@ rg '"type"' Sources/ASRSidecar.swift Sources/sidecar/transcribe.py
   directly. The check itself can return stale results.
 - **Double-tap hotkey timing** — track tap timestamps manually. CGEvent key-down
   events are the source of truth; don't rely on NSEvent for global hotkeys.
+- **asr-server must be built before running Yuwp** — the app locates the binary
+  in `.build/arm64-apple-macosx/release/asr-server`.
 
 ## Style
 
@@ -151,6 +130,6 @@ rg '"type"' Sources/ASRSidecar.swift Sources/sidecar/transcribe.py
 
 1. `swift build` succeeds with no warnings
 2. `swift test` passes
-3. Sidecar starts and responds to `ready` handshake
-4. Protocol changes mirrored in both Swift and Python
+3. asr-server starts and responds to `/v1/info` with `"status": "ready"`
+4. Integration tests pass: `swift test --filter "ASR Server"`
 5. Tested: hotkey → record → transcribe → inject text (manual, end-to-end)

@@ -3,7 +3,7 @@ import AVFoundation
 
 // Yuwp — system-wide voice dictation for macOS
 // Press hotkey → speak → text streams into any focused text field
-// Powered by Qwen3-ASR via local Python sidecar (mlx-audio)
+// Powered by Qwen3-ASR via native asr-server
 
 /// Log to stderr (unbuffered, visible even when stdout is piped)
 func yuwpLog(_ msg: String) {
@@ -25,12 +25,12 @@ struct YuwpApp {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     // Infrastructure — live for the app's lifetime
     private let hotkeyManager = HotkeyManager()
-    private let asrSidecar: ASRSidecar = {
-        let s = ASRSidecar()
-        s.streamingModel = Config.shared.streamingModel
-        s.batchModel = Config.shared.batchModel
-        s.batchRetranscribeEnabled = Config.shared.batchRetranscribeEnabled
-        return s
+    private let asrProvider: NativeASRProvider = {
+        let p = NativeASRProvider()
+        p.streamingModel = Config.shared.streamingModel
+        p.batchModel = Config.shared.batchModel
+        p.batchRetranscribeEnabled = Config.shared.batchRetranscribeEnabled
+        return p
     }()
     private let audioCapture = AudioCapture()
     private let micPanel = MicPanel()
@@ -99,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HotkeyManager.sessionActive = true
         let injector = TextInjectorFactory.capture()
         let s = DictationSession(
-            sttSession: asrSidecar.makeSession(),
+            sttSession: asrProvider.makeSession(),
             textInjector: injector,
             audioCapture: audioCapture
         )
@@ -127,7 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HotkeyManager.sessionActive = false
         let pcmData = s.stop()
 
-        // Hide panel and reset icon immediately — don't wait for sidecar's final
+        // Hide panel and reset icon immediately — don't wait for server's final
         micPanel.hide()
         statusItem.button?.image = NSImage(
             systemSymbolName: "waveform",
@@ -175,7 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - STT Provider
 
     private func startSttProvider() {
-        asrSidecar.onStateChange = { [weak self] state in
+        asrProvider.onStateChange = { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
                 self.providerReady = state == .ready
@@ -185,10 +185,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        asrSidecar.onError = { error in
+        asrProvider.onError = { error in
             Task { @MainActor in yuwpLog("STT error: \(error)") }
         }
-        asrSidecar.start()
+        asrProvider.start()
     }
 
     // MARK: - Microphone Permission
@@ -310,7 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        switch asrSidecar.state {
+        switch asrProvider.state {
         case .stopped:
             statusMenuItem.title = "Stopped"
         case .starting:
@@ -364,12 +364,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Config.shared.batchModel = preset.batchModel
         Config.shared.batchRetranscribeEnabled = preset.batchEnabled
 
-        // Update sidecar and restart — onStateChange handles menu updates
-        asrSidecar.streamingModel = preset.streamingModel
-        asrSidecar.batchModel = preset.batchModel
-        asrSidecar.batchRetranscribeEnabled = preset.batchEnabled
-        asrSidecar.shutdown()
-        asrSidecar.start()
+        // Update server and restart — onStateChange handles menu updates
+        asrProvider.streamingModel = preset.streamingModel
+        asrProvider.batchModel = preset.batchModel
+        asrProvider.batchRetranscribeEnabled = preset.batchEnabled
+        asrProvider.shutdown()
+        asrProvider.start()
         rebuildModelSubmenu()
 
         yuwpLog("Model changed to: \(preset.label) (\(preset.summary))")
