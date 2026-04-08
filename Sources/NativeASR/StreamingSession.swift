@@ -8,14 +8,16 @@ import MLX
 public struct StreamConfig: Sendable {
     public var chunkSec: Double, rollback: Int, unfixedChunks: Int
     public var maxNewTokens: Int, maxEncWindows: Int, maxPrefixTokens: Int
+    public var batchRetranscribe: Bool
 
     public init(
         chunkSec: Double = 2.0, rollback: Int = 5, unfixedChunks: Int = 2,
-        maxNewTokens: Int = 32, maxEncWindows: Int = 4, maxPrefixTokens: Int = 20
+        maxNewTokens: Int = 32, maxEncWindows: Int = 4, maxPrefixTokens: Int = 20,
+        batchRetranscribe: Bool = true
     ) {
         self.chunkSec = chunkSec; self.rollback = rollback; self.unfixedChunks = unfixedChunks
         self.maxNewTokens = maxNewTokens; self.maxEncWindows = maxEncWindows
-        self.maxPrefixTokens = maxPrefixTokens
+        self.maxPrefixTokens = maxPrefixTokens; self.batchRetranscribe = batchRetranscribe
     }
 }
 
@@ -62,7 +64,9 @@ public final class StreamingSession: @unchecked Sendable {
         else { consecutiveSilence = 0; batchDoneForPause = false }
 
         // Batch retranscribe on pause
-        if consecutiveSilence >= Self.pauseChunks && !batchDoneForPause && !rawTokens.isEmpty {
+        if config.batchRetranscribe
+            && consecutiveSilence >= Self.pauseChunks && !batchDoneForPause && !rawTokens.isEmpty
+        {
             batchDoneForPause = true
             if let batchText = batchRetranscribe() {
                 lastText = batchText
@@ -284,50 +288,52 @@ public final class StreamingSession: @unchecked Sendable {
         return first.item(Int.self)
     }
 
+    /// Decode with double-buffer asyncEval pattern:
+    /// Sample current token while next forward pass runs on GPU.
     private func decodeTokens(logits: MLXArray, maxTokens: Int) -> [Int] {
         let eos = Qwen3ASRTokenizer.eosTokens
-        let repWindow = 8
         let repPenalty = Float(1.3)
-
+        let repWindow = 8
         var tokens: [Int] = []
+
+        // Sample first token, queue next forward
+        var y = sampleWithPenalty(logits: logits, recent: [], penalty: repPenalty)
         var curLogits = logits
 
-        let y = MLX.argMax(curLogits[0, -1, 0...], axis: -1)
-        eval(y)
-        var token = y.item(Int.self)
-
         for _ in 0 ..< maxTokens {
-            if eos.contains(token) { break }
-            tokens.append(token)
-            if tokens.count >= 4 && Set(tokens.suffix(4)).count == 1 { break }
-
-            // Forward pass
-            let tokId = MLXArray(Int32(token)).expandedDimensions(axis: 0).expandedDimensions(axis: 0)
+            // Queue next forward while waiting for current sample
+            let tokId = y.asType(.int32).expandedDimensions(axis: 0).expandedDimensions(axis: 0)
             let tokEmbed = transcriber.model.model.embedTokens(tokId)
             (curLogits, _) = transcriber.model(
                 inputIds: tokId, inputEmbeddings: tokEmbed, cache: kvCache
             )
+            let nextY = sampleWithPenalty(
+                logits: curLogits, recent: Array(tokens.suffix(repWindow)), penalty: repPenalty
+            )
+            asyncEval(nextY)
 
-            // Sample with repetition penalty
-            let recent = Set(tokens.suffix(repWindow))
-            if !recent.isEmpty {
-                let raw = curLogits[0, -1, 0...]
-                let idxArr = MLXArray(Array(recent).map { Int32($0) })
-                let vals = raw[idxArr]
-                let penalized = MLX.where(
-                    vals .> 0,
-                    vals / MLXArray(repPenalty),
-                    vals * MLXArray(repPenalty)
-                )
-                raw[idxArr] = penalized
-                eval(raw)
-                token = MLX.argMax(raw, axis: -1).item(Int.self)
-            } else {
-                eval(curLogits)
-                token = MLX.argMax(curLogits[0, -1, 0...], axis: -1).item(Int.self)
-            }
+            // Now read current token (blocks until y is ready)
+            let token = y.item(Int.self)
+            if eos.contains(token) { break }
+            tokens.append(token)
+            if tokens.count >= 4 && Set(tokens.suffix(4)).count == 1 { break }
+
+            y = nextY
         }
         return tokens
+    }
+
+    private func sampleWithPenalty(logits: MLXArray, recent: [Int], penalty: Float) -> MLXArray {
+        let lastLogits = logits[0, -1, 0...]
+        let recentSet = Set(recent)
+        if recentSet.isEmpty || penalty <= 1.0 {
+            return MLX.argMax(lastLogits, axis: -1)
+        }
+        let idxArr = MLXArray(Array(recentSet).map { Int32($0) })
+        let vals = lastLogits[idxArr]
+        let penalized = MLX.where(vals .> 0, vals / MLXArray(penalty), vals * MLXArray(penalty))
+        lastLogits[idxArr] = penalized
+        return MLX.argMax(lastLogits, axis: -1)
     }
 
     private func extractText(_ tokens: [Int]) -> String {

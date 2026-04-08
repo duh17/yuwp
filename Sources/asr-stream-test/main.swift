@@ -5,6 +5,7 @@
 // Usage: asr-stream-test <wav-file> <model-dir> [--chunk-sec 2.0] [--warmup]
 
 import Foundation
+import MLX
 import NativeASR
 
 func printUsage() {
@@ -36,6 +37,7 @@ func runMain() throws {
     var chunkSec = 2.0
     var doWarmup = false
     var doBatch = true
+    var doBatchRetranscribe = true
 
     while !args.isEmpty {
         let flag = args.removeFirst()
@@ -49,6 +51,8 @@ func runMain() throws {
             doWarmup = true
         case "--no-batch":
             doBatch = false
+        case "--no-batch-retranscribe":
+            doBatchRetranscribe = false
         default:
             fputs("Unknown option: \(flag)\n", stderr)
             printUsage()
@@ -80,8 +84,9 @@ func runMain() throws {
     fputs("[stream-test] Audio: \(String(format: "%.2f", audioDuration))s, \(audio.count) samples\n", stderr)
 
     // --- Streaming pass ---
-    let config = StreamConfig(chunkSec: chunkSec)
+    let config = StreamConfig(chunkSec: chunkSec, batchRetranscribe: doBatchRetranscribe)
     let session = StreamingSession(transcriber: transcriber, config: config)
+    let memBefore = MLX.GPU.activeMemory
     let chunkSize = Int(chunkSec * Double(ASRAudio.sampleRate))
 
     fputs("\n[stream-test] === Streaming (chunk=\(String(format: "%.1f", chunkSec))s) ===\n", stderr)
@@ -117,8 +122,11 @@ func runMain() throws {
 
     let streamTime = Date().timeIntervalSince(streamT0)
     let streamText = session.finalText()
+    let memAfter = MLX.GPU.activeMemory
+    let memPeak = MLX.GPU.peakMemory
 
     fputs("\n[stream-test] Streaming done in \(String(format: "%.2f", streamTime))s\n", stderr)
+    fputs("[stream-test] Memory: active=\(memAfter / 1_048_576)MB peak=\(memPeak / 1_048_576)MB delta=\((memAfter - memBefore) / 1_048_576)MB\n", stderr)
     fputs("[stream-test] Final: \"\(streamText)\"\n", stderr)
 
     // --- Batch comparison ---
