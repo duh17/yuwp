@@ -151,6 +151,17 @@ struct ASRServerTests {
                 Comment(rawValue: "Silence produced too much text: '\(result.final)'"))
     }
 
+    @Test func chineseFixtureProducesText() async throws {
+        let result = try await streamFixture("asr_zh.wav")
+        #expect(!result.final.isEmpty,
+                Comment(rawValue: "Expected non-empty Chinese transcript"))
+        let hasHan = result.final.unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(scalar.value)
+        }
+        #expect(hasHan,
+                Comment(rawValue: "Expected Han characters in transcript, got: \(result.final)"))
+    }
+
     // MARK: - Concurrent Sessions
 
     @Test func concurrentSessionsAreIsolated() async throws {

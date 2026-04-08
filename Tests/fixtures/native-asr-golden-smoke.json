@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-04-08T15:31:58.622348Z",
+  "sample_set": "smoke",
+  "reference": {
+    "type": "python-batch",
+    "model": "mlx-community/Qwen3-ASR-0.6B-bf16",
+    "implementation": "mlx_audio.stt.generate_transcription"
+  },
+  "normalization": {
+    "lowercase": true,
+    "collapse_whitespace": true,
+    "strip_ascii_punctuation": true
+  },
+  "cases": [
+    {
+      "id": "jfk",
+      "audio": "/Users/chenda/workspace/yuwp/Tests/fixtures/jfk.wav",
+      "language": null,
+      "notes": "Public English speech sample.",
+      "duration_s": 11.0,
+      "processing_time_s": 0.247811374720186,
+      "text": "And so, my fellow Americans, ask not what your country can do for you; ask what you can do for your country.",
+      "normalized_text": "and so my fellow americans ask not what your country can do for you ask what you can do for your country"
+    },
+    {
+      "id": "official_en",
+      "audio": "/Users/chenda/workspace/yuwp/Tests/fixtures/asr_en.wav",
+      "language": null,
+      "notes": "Official Qwen3-ASR English sample.",
+      "duration_s": 15.051229,
+      "processing_time_s": 19.418255583383143,
+      "text": "Mhm. Oh yeah, yeah. He wasn't even that big when I started listening to him, but and his solo music didn't do overly well, but he did very well when he started writing for other people.",
+      "normalized_text": "mhm oh yeah yeah he wasnt even that big when i started listening to him but and his solo music didnt do overly well but he did very well when he started writing for other people"
+    },
+    {
+      "id": "official_zh",
+      "audio": "/Users/chenda/workspace/yuwp/Tests/fixtures/asr_zh.wav",
+      "language": null,
+      "notes": "Official Qwen3-ASR Chinese sample.",
+      "duration_s": 4.203938,
+      "processing_time_s": 0.09123654197901487,
+      "text": "甚至出现交易几乎停滞的情况。",
+      "normalized_text": "甚至出现交易几乎停滞的情况。"
+    }
+  ]
+}
