@@ -480,10 +480,13 @@ def process_chunk(session: StreamSession, audio_chunk: np.ndarray) -> dict:
         if len(prefix_tokens) > cfg.max_prefix_tokens:
             prefix_tokens = prefix_tokens[-cfg.max_prefix_tokens:]
 
-    # Build input embeddings
+    # Build input embeddings.
+    # Delay system prompt injection until we have enough audio (>=2 chunks).
+    # With sparse audio the model hallucinates the prompt text itself.
+    use_prompt = cfg.system_prompt if session.chunk_idx >= 2 else None
     input_embeds = _build_input_embeds(
         session.model, enc_output, prefix_tokens,
-        system_prompt=cfg.system_prompt,
+        system_prompt=use_prompt,
     )
     mx.eval(input_embeds)
 
