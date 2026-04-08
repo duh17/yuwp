@@ -11,7 +11,7 @@ let package = Package(
         .executableTarget(
             name: "Yuwp",
             path: "Sources",
-            exclude: ["sidecar", "NativeASR", "asr-test", "asr-bench", "asr-stream-test"]
+            exclude: ["sidecar", "NativeASR", "asr-test", "asr-bench", "asr-stream-test", "asr-server"]
         ),
         .target(
             name: "NativeASR",
@@ -38,6 +38,11 @@ let package = Package(
             name: "asr-stream-test",
             dependencies: ["NativeASR"],
             path: "Sources/asr-stream-test"
+        ),
+        .executableTarget(
+            name: "asr-server",
+            dependencies: ["NativeASR"],
+            path: "Sources/asr-server"
         ),
         .testTarget(
             name: "YuwpTests",
