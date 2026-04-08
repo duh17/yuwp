@@ -238,6 +238,8 @@ public final class Qwen3ASRTokenizer: @unchecked Sendable {
     }
 
     /// Split text GPT-2 style: space is prepended to words except the first.
+    /// The space is kept as a literal " " — `applyBPE` handles the byte-level
+    /// conversion to the GPT-2 Ġ character via `bytesEncoder`.
     private func splitGPT2Style(_ text: String) -> [String] {
         var words: [String] = []
         var current = ""
@@ -246,7 +248,7 @@ public final class Qwen3ASRTokenizer: @unchecked Sendable {
                 if !current.isEmpty {
                     words.append(current)
                 }
-                current = "\u{0120}" // Ġ (GPT-2 space prefix)
+                current = " " // Real space — applyBPE converts byte 0x20 → Ġ
             } else {
                 current.append(char)
             }
