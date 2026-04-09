@@ -6,10 +6,14 @@ let package = Package(
     platforms: [.macOS(.v14)],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift", branch: "main"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.8.0"),
     ],
     targets: [
         .executableTarget(
             name: "Yuwp",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
             path: "Sources",
             exclude: ["NativeASR", "asr-test", "asr-bench", "asr-stream-test", "asr-server"]
         ),

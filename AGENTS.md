@@ -21,13 +21,12 @@ Instructions for AI coding agents working on this codebase.
            │  │  prefix rollback)│   │
            │  └──────────────────┘   │
            │     HTTP :9748          │
-           │  (Yuwp + Oppi clients)  │
            └─────────────────────────┘
 ```
 
 The native `asr-server` loads the MLX model once and serves HTTP.
 Yuwp.app launches it as a child process, communicates via localhost HTTP.
-External clients (Oppi) use the same HTTP API.
+External clients can use the same HTTP API.
 
 ## Build & Run
 
@@ -44,6 +43,13 @@ Use `scripts/build.sh` to codesign with a stable identifier (preserves
 Accessibility/Microphone permissions across rebuilds). Use `scripts/run.sh`
 to build and launch as a proper .app bundle with TCC-compatible Info.plist.
 
+### Release (notarized DMG)
+
+```bash
+scripts/release.sh <version>
+# Requires: YUWP_SIGN_IDENTITY, YUWP_TEAM_ID, YUWP_APPLE_ID, YUWP_APP_PASSWORD
+```
+
 ### Standalone ASR server (no GUI)
 
 ```bash
@@ -57,6 +63,7 @@ to build and launch as a proper .app bundle with TCC-compatible Info.plist.
 | App.swift | NSApplication entry, menu bar, orchestration |
 | DictationSession.swift | Session state machine, protocol abstractions |
 | NativeASRProvider.swift | Manages asr-server process, HTTP STT sessions |
+| ModelManager.swift | HF model resolution from cache or local paths |
 | HotkeyManager.swift | Global hotkey via CGEvent tap |
 | AudioCapture.swift | AVAudioEngine → 16kHz mono PCM |
 | AXTextInjector.swift | AX API text injection (preferred) |
