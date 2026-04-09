@@ -4,11 +4,11 @@
 # dependencies = ["numpy", "requests", "psutil"]
 # ///
 """
-Benchmark and compare ASR models on the Yuwp sidecar.
+Benchmark and compare ASR models on the Yuwp asr-server.
 
-For each model: starts the sidecar, measures load time and memory, feeds
+For each model: starts asr-server, measures load time and memory, feeds
 test audio through the streaming HTTP API, collects per-chunk latency and
-final transcription text, then kills the sidecar and moves to the next model.
+final transcription text, then kills the server and moves to the next model.
 
 Metrics per model:
   - Load time (seconds to HTTP ready)
@@ -42,7 +42,7 @@ Usage:
   # Single model benchmark
   uv run scripts/bench-models.py 0.6B-8bit --last 10
 
-  # Use a pre-running sidecar (skip start/stop)
+  # Use a pre-running server (skip start/stop)
   uv run scripts/bench-models.py 1.7B-bf16 --external --port 9748
 
   # Output METRIC lines for autoresearch
@@ -75,8 +75,11 @@ SAMPLE_RATE = 16000
 CHUNK_SEC = 2.0
 CHUNK_SAMPLES = int(CHUNK_SEC * SAMPLE_RATE)
 DEFAULT_PORT = 9748
-SIDECAR_SCRIPT = Path(__file__).resolve().parent.parent / "Sources" / "sidecar" / "transcribe.py"
-READY_TIMEOUT = 180  # seconds — first run may download the model
+SERVER_BINARY_CANDIDATES = [
+    Path(__file__).resolve().parent.parent / ".build" / "arm64-apple-macosx" / "release" / "asr-server",
+    Path(__file__).resolve().parent.parent / ".build" / "release" / "asr-server",
+]
+READY_TIMEOUT = 180  # seconds — initial model load can take a while
 READY_POLL_INTERVAL = 1.0
 
 
@@ -136,13 +139,35 @@ def percentile(values: list[float], p: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Sidecar lifecycle
+# Server lifecycle (asr-server)
 # ---------------------------------------------------------------------------
 
-def start_sidecar(model: str, port: int) -> subprocess.Popen:
-    """Launch the sidecar process in serve-only mode. Returns the Popen handle."""
-    cmd = ["uv", "run", "--script", str(SIDECAR_SCRIPT), model, "--serve-only", "--port", str(port)]
-    print(f"  Starting sidecar: {' '.join(cmd)}")
+def find_server_binary() -> Path:
+    """Find the asr-server binary in expected locations."""
+    for candidate in SERVER_BINARY_CANDIDATES:
+        if candidate.exists():
+            return candidate.resolve()
+    raise FileNotFoundError("asr-server not found — run: swift build -c release --product asr-server")
+
+
+def start_server(model: str, port: int) -> subprocess.Popen:
+    """Launch the asr-server process. Returns the Popen handle."""
+    server_bin = find_server_binary()
+    # Resolve model name to HF cache path
+    full_name = resolve_model_name(model)
+    hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
+    model_slug = full_name.replace("/", "--")
+    model_cache = os.path.join(hf_cache, f"models--{model_slug}", "snapshots")
+    model_dir = None
+    if os.path.exists(model_cache):
+        snapshots = [d for d in os.listdir(model_cache)
+                     if os.path.isdir(os.path.join(model_cache, d))]
+        if snapshots:
+            model_dir = os.path.join(model_cache, snapshots[0])
+    if not model_dir:
+        raise FileNotFoundError(f"Model not found in HF cache: {full_name}")
+    cmd = [str(server_bin), model_dir, "--port", str(port)]
+    print(f"  Starting server: {' '.join(cmd)}")
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -152,7 +177,7 @@ def start_sidecar(model: str, port: int) -> subprocess.Popen:
 
 
 def wait_for_ready(port: int, timeout: float = READY_TIMEOUT) -> float:
-    """Poll the sidecar /v1/info endpoint until ready. Returns load time in seconds."""
+    """Poll the server /v1/info endpoint until ready. Returns load time in seconds."""
     url = f"http://127.0.0.1:{port}/v1/info"
     t0 = time.time()
     deadline = t0 + timeout
@@ -166,11 +191,11 @@ def wait_for_ready(port: int, timeout: float = READY_TIMEOUT) -> float:
             pass
         time.sleep(READY_POLL_INTERVAL)
 
-    raise TimeoutError(f"Sidecar not ready after {timeout}s on port {port}")
+    raise TimeoutError(f"Server not ready after {timeout}s on port {port}")
 
 
-def stop_sidecar(proc: subprocess.Popen) -> None:
-    """Gracefully stop the sidecar process."""
+def stop_server(proc: subprocess.Popen) -> None:
+    """Gracefully stop the server process."""
     if proc.poll() is not None:
         return
     proc.send_signal(signal.SIGTERM)
@@ -182,7 +207,7 @@ def stop_sidecar(proc: subprocess.Popen) -> None:
 
 
 def measure_memory(proc: subprocess.Popen) -> float:
-    """Measure total RSS of the sidecar process tree in MB."""
+    """Measure total RSS of the server process tree in MB."""
     try:
         parent = psutil.Process(proc.pid)
         total = parent.memory_info().rss
@@ -264,7 +289,7 @@ class ModelResult:
 
 
 def stream_file(path: str, port: int) -> FileResult:
-    """Stream one audio file through the sidecar and collect metrics."""
+    """Stream one audio file through the server and collect metrics."""
     pcm = load_audio_as_pcm(path)
     duration_s = len(pcm) / SAMPLE_RATE
     base_url = f"http://127.0.0.1:{port}"
@@ -341,20 +366,20 @@ def benchmark_model(model: str, files: list[str], port: int, external: bool) -> 
     memory_mb = 0.0
 
     if external:
-        # Assume sidecar is already running
-        print("  Using external sidecar")
+        # Assume server is already running
+        print("  Using external server")
         try:
             resp = requests.get(f"http://127.0.0.1:{port}/v1/info", timeout=5)
             if not resp.ok:
-                print(f"  ERROR: external sidecar not responding on port {port}")
+                print(f"  ERROR: external server not responding on port {port}")
                 return None
             info = resp.json()
             print(f"  Connected — model: {info.get('model', 'unknown')}")
         except requests.ConnectionError:
-            print(f"  ERROR: no sidecar on port {port}")
+            print(f"  ERROR: no server on port {port}")
             return None
     else:
-        proc = start_sidecar(model, port)
+        proc = start_server(model, port)
         try:
             load_time = wait_for_ready(port)
             print(f"  Ready in {load_time:.1f}s")
@@ -364,8 +389,8 @@ def benchmark_model(model: str, files: list[str], port: int, external: bool) -> 
             if proc.poll() is not None:
                 stderr = proc.stderr.read().decode() if proc.stderr else ""
                 if stderr:
-                    print(f"  Sidecar stderr:\n{stderr[:500]}")
-            stop_sidecar(proc)
+                    print(f"  Server stderr:\n{stderr[:500]}")
+            stop_server(proc)
             return None
 
         memory_mb = measure_memory(proc)
@@ -395,8 +420,8 @@ def benchmark_model(model: str, files: list[str], port: int, external: bool) -> 
 
     # Cleanup
     if proc is not None:
-        stop_sidecar(proc)
-        print("  Sidecar stopped")
+        stop_server(proc)
+        print("  Server stopped")
 
     return result
 
@@ -603,7 +628,7 @@ def save_json(results: list[ModelResult], path: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Benchmark ASR models on the Yuwp sidecar",
+        description="Benchmark ASR models on the Yuwp server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -617,8 +642,8 @@ Examples:
     parser.add_argument("--files", nargs="+", help="Specific audio files to test")
     parser.add_argument("--last", type=int, default=None, help="Test last N audio files (default: 5)")
     parser.add_argument("--date", type=str, default=None, help="Filter files by date (YYYY-MM-DD)")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Sidecar port (default: {DEFAULT_PORT})")
-    parser.add_argument("--external", action="store_true", help="Use pre-running sidecar (skip start/stop)")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"asr-server port (default: {DEFAULT_PORT})")
+    parser.add_argument("--external", action="store_true", help="Use pre-running asr-server (skip start/stop)")
     parser.add_argument("--metrics", action="store_true", help="Output METRIC lines for autoresearch")
     parser.add_argument("--json", type=str, default=None, metavar="PATH", help="Save full results as JSON")
     args = parser.parse_args()

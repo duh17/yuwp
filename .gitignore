@@ -7,3 +7,5 @@ DerivedData/
 .internal/
 transcript.txt
 results/
+benchmarks/
+release/

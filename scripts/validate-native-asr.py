@@ -26,7 +26,7 @@ Examples:
 
   # Compare a built native CLI against the saved goldens
   uv run scripts/validate-native-asr.py compare \
-    --candidate-cmd 'swift run --package-path ~/workspace/yuwp-metal-exp asr-test {audio} {model_dir} {language_arg}' \
+    --candidate-cmd 'swift run --package-path . asr-test {audio} {model_dir} {language_arg}' \
     --model-dir '~/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-0.6B/snapshots/5eb144179a02acc5e5ba31e748d22b0cf3e303b0'
 
 Notes:
@@ -64,7 +64,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TRACKED_FIXTURES_DIR = REPO_ROOT / "Tests" / "fixtures"
 DEFAULT_GOLDEN_PATH = TRACKED_FIXTURES_DIR / "native-asr-golden-smoke.json"
 DEFAULT_REFERENCE_MODEL = "mlx-community/Qwen3-ASR-0.6B-bf16"
-QWEN_ASR_ROOT = Path.home() / "workspace" / "qwen-asr"
+QWEN_ASR_ROOT = Path.home() / "workspace" / "qwen-asr"  # only needed for "extended" sample set
 
 
 @dataclass(frozen=True)
