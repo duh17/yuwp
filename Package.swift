@@ -46,7 +46,7 @@ let package = Package(
         ),
         .testTarget(
             name: "YuwpTests",
-            dependencies: ["Yuwp"],
+            dependencies: ["Yuwp", "NativeASR"],
             path: "Tests",
             exclude: ["fixtures"]
         ),

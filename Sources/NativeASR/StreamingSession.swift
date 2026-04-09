@@ -1,10 +1,9 @@
 // NativeASR — Streaming Session
-// Port of Sources/sidecar/transcribe.py streaming algorithm.
 
 import Foundation
 import MLX
 
-/// Streaming configuration — matches Python sidecar defaults.
+/// Streaming configuration.
 public struct StreamConfig: Sendable {
     public var chunkSec: Double, rollback: Int, unfixedChunks: Int
     public var maxNewTokens: Int, maxEncWindows: Int, maxPrefixTokens: Int
@@ -45,6 +44,9 @@ public final class StreamingSession: @unchecked Sendable {
     private var consecutiveSilence: Int = 0
     private var batchDoneForPause: Bool = false
     private var hasSpeech: Bool = false
+    /// Concatenated text from all previously committed segments. Frozen — never
+    /// rewritten by streaming or batch passes after a commit fires.
+    private var committedText: String = ""
     private static let silenceRMS: Float = 0.003
     private static let pauseRMS: Float = 0.020
     private static let pauseChunks = 2
@@ -69,16 +71,20 @@ public final class StreamingSession: @unchecked Sendable {
         if rms < Self.pauseRMS { consecutiveSilence += 1 }
         else { consecutiveSilence = 0; batchDoneForPause = false }
 
-        // Batch retranscribe on pause
+        // Segment commit on pause: batch retranscribe the active segment,
+        // append it to committedText, then reset streaming state so the next
+        // chunks build a fresh active segment. Committed text is never rewritten.
         if config.batchRetranscribe
             && consecutiveSilence >= Self.pauseChunks && !batchDoneForPause && !rawTokens.isEmpty
         {
             batchDoneForPause = true
-            if let batchText = batchRetranscribe() {
-                lastText = batchText
+            if let segmentText = batchRetranscribe() {
+                committedText = Self.appendSegment(committedText, segmentText)
+                resetActiveSegment()
+                lastText = committedText
                 chunkIdx += 1
                 return ChunkResult(
-                    text: batchText, isPartial: true, batchCorrected: true,
+                    text: committedText, isPartial: true, batchCorrected: true,
                     totalMs: Date().timeIntervalSince(t0) * 1000
                 )
             }
@@ -86,16 +92,17 @@ public final class StreamingSession: @unchecked Sendable {
 
         if rms < Self.silenceRMS {
             chunkIdx += 1
-            let text = rawTokens.isEmpty ? "" : extractText(rawTokens)
-            lastText = text
-            return ChunkResult(text: text, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000)
+            let activeText = rawTokens.isEmpty ? "" : extractText(rawTokens)
+            let combined = Self.appendSegment(committedText, activeText)
+            lastText = combined
+            return ChunkResult(text: combined, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000)
         }
 
         if rms >= Self.pauseRMS { hasSpeech = true }
         if !hasSpeech {
             audioBuffer.append(contentsOf: audioChunk)
             chunkIdx += 1
-            return ChunkResult(text: "", isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000)
+            return ChunkResult(text: committedText, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000)
         }
 
         audioBuffer.append(contentsOf: audioChunk)
@@ -108,7 +115,7 @@ public final class StreamingSession: @unchecked Sendable {
 
         if numEncTokens == 0 {
             chunkIdx += 1
-            return ChunkResult(text: "", isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000)
+            return ChunkResult(text: committedText, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000)
         }
 
         // 2. Prefix tokens (rollback)
@@ -179,20 +186,23 @@ public final class StreamingSession: @unchecked Sendable {
             rawTokens = uncappedPrefix + newTokens
         }
 
-        var text = extractText(rawTokens)
-        if let trimmed = trimRepetition() { text = trimmed }
+        var activeText = extractText(rawTokens)
+        if let trimmed = trimRepetition() { activeText = trimmed }
+        let combined = Self.appendSegment(committedText, activeText)
 
-        lastText = text
+        lastText = combined
         chunkIdx += 1
 
         return ChunkResult(
-            text: text, isPartial: true,
+            text: combined, isPartial: true,
             encodeMs: encodeMs, prefillMs: prefillMs, decodeMs: decodeMs,
             totalMs: Date().timeIntervalSince(t0) * 1000, reusePct: reusePct
         )
     }
 
-    public func reset() {
+    /// Reset everything tied to the active (provisional) segment, but keep
+    /// `committedText`. Called after a segment is committed at a pause boundary.
+    private func resetActiveSegment() {
         audioBuffer = []
         encWindowCache = []
         nextWindowStart = 0
@@ -200,24 +210,52 @@ public final class StreamingSession: @unchecked Sendable {
         prevPrefillEmbeds = nil
         rawTokens = []
         chunkIdx = 0
-        lastText = ""
         consecutiveSilence = 0
         batchDoneForPause = false
         hasSpeech = false
     }
 
+    public var processedChunkCount: Int { chunkIdx }
+
     public func finalText() -> String { lastText }
 
-    /// Finalize the session on stop. Runs a full batch retranscription when enabled
-    /// so the stop/final text is corrected even if streaming gating never emitted tokens.
+    /// Finalize the session on stop. Batch retranscribes the active segment
+    /// (if any), appends it to committed text, and returns the full transcript.
+    /// The committed prefix is never re-batched.
     public func finalize() -> String {
-        if config.batchRetranscribe,
-           audioBuffer.count >= ASRAudio.sampleRate,
-           let batchText = batchRetranscribe()
-        {
-            lastText = batchText
+        // For the *first* segment of a session (no commits yet), match the old
+        // behavior: batch any audio >= 1s, no speech check. This preserves
+        // transcription of quiet speech that never crosses pauseRMS.
+        //
+        // For *post-commit* trailing segments, require `hasSpeech == true`.
+        // Pure-silence trailing audio after a commit can hallucinate ("None",
+        // "I guess", etc) — confirmed by offline experiments. The committed
+        // prefix is always preserved either way.
+        let isPostCommit = !committedText.isEmpty
+        let canBatch = config.batchRetranscribe
+            && audioBuffer.count >= ASRAudio.sampleRate
+            && (!isPostCommit || hasSpeech)
+
+        var activeText = ""
+        if canBatch, let segmentText = batchRetranscribe() {
+            activeText = segmentText
+        } else if !rawTokens.isEmpty {
+            // Batch disabled, audio too short, or batch failed — fall back to
+            // streaming output if any tokens were decoded
+            activeText = extractText(rawTokens)
         }
-        return lastText
+        committedText = Self.appendSegment(committedText, activeText)
+        lastText = committedText
+        return committedText
+    }
+
+    /// Concatenate two segment texts with a single space, handling empty inputs
+    /// and avoiding double-spaces.
+    static func appendSegment(_ committed: String, _ segment: String) -> String {
+        let trimmedSegment = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedSegment.isEmpty { return committed }
+        if committed.isEmpty { return trimmedSegment }
+        return committed + " " + trimmedSegment
     }
 
     private func encodeSegment(_ audio: [Float]) -> MLXArray {
