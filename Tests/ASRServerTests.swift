@@ -20,6 +20,7 @@ struct ASRServerTests {
     let chunkBytes = 64_000  // 2s of 16kHz s16le mono (32000 samples × 2 bytes)
 
     var baseURL: String { "http://\(host):\(port)/v1/audio/transcriptions/stream" }
+    var batchURL: String { "http://\(host):\(port)/v1/audio/transcriptions" }
     var infoURL: String { "http://\(host):\(port)/v1/info" }
 
     init() {
@@ -29,23 +30,67 @@ struct ASRServerTests {
 
     // MARK: - Helpers
 
-    /// Load a WAV fixture and strip the 44-byte header to get raw s16le PCM.
-    private func loadFixturePCM(_ name: String) throws -> Data {
-        let fixtureDir = URL(fileURLWithPath: #filePath)
+    private func fixtureURL(_ name: String) -> URL {
+        URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .appendingPathComponent("fixtures")
-        let wav = try Data(contentsOf: fixtureDir.appendingPathComponent(name))
+            .appendingPathComponent(name)
+    }
+
+    /// Load a WAV fixture and strip the 44-byte header to get raw s16le PCM.
+    private func loadFixturePCM(_ name: String) throws -> Data {
+        let wav = try Data(contentsOf: fixtureURL(name))
         return Data(wav.dropFirst(44))
     }
 
-    private func http(_ method: String, _ url: String, body: Data? = nil) async throws -> (Data, Int) {
+    private func loadFixtureData(_ name: String) throws -> Data {
+        try Data(contentsOf: fixtureURL(name))
+    }
+
+    private func http(
+        _ method: String,
+        _ url: String,
+        body: Data? = nil,
+        headers: [String: String] = [:]
+    ) async throws -> (Data, Int) {
         var req = URLRequest(url: URL(string: url)!)
         req.httpMethod = method
         req.timeoutInterval = 30
         req.httpBody = body
+        for (key, value) in headers {
+            req.setValue(value, forHTTPHeaderField: key)
+        }
         let (data, response) = try await URLSession.shared.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         return (data, status)
+    }
+
+    private func multipartBody(fileName: String, fileData: Data, responseFormat: String? = nil) -> (Data, String) {
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var body = Data()
+
+        func append(_ string: String) {
+            body.append(Data(string.utf8))
+        }
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n")
+        append("Content-Type: audio/wav\r\n\r\n")
+        body.append(fileData)
+        append("\r\n")
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
+        append("gpt-4o-mini-transcribe\r\n")
+
+        if let responseFormat {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
+            append("\(responseFormat)\r\n")
+        }
+
+        append("--\(boundary)--\r\n")
+        return (body, "multipart/form-data; boundary=\(boundary)")
     }
 
     private func json(_ data: Data) -> [String: Any]? {
@@ -152,6 +197,28 @@ struct ASRServerTests {
                 Comment(rawValue: "Silence produced too much text: '\(result.final)'"))
     }
 
+    @Test func batchEndpointAcceptsMultipartUpload() async throws {
+        let wav = try loadFixtureData("jfk.wav")
+        let (body, contentType) = multipartBody(fileName: "jfk.wav", fileData: wav)
+        let (data, status) = try await http("POST", batchURL, body: body, headers: ["Content-Type": contentType])
+        #expect(status == 200)
+        let text = json(data)?["text"] as? String ?? ""
+        let lower = text.lowercased()
+        #expect(lower.contains("country") || lower.contains("fellow") || lower.contains("ask"),
+                Comment(rawValue: "Expected JFK content, got: \(text)"))
+    }
+
+    @Test func batchEndpointSupportsTextResponseFormat() async throws {
+        let wav = try loadFixtureData("jfk.wav")
+        let (body, contentType) = multipartBody(fileName: "jfk.wav", fileData: wav, responseFormat: "text")
+        let (data, status) = try await http("POST", batchURL, body: body, headers: ["Content-Type": contentType])
+        #expect(status == 200)
+        let text = String(data: data, encoding: .utf8) ?? ""
+        let lower = text.lowercased()
+        #expect(lower.contains("country") || lower.contains("fellow") || lower.contains("ask"),
+                Comment(rawValue: "Expected plain-text JFK content, got: \(text)"))
+    }
+
     @Test func chineseFixtureProducesText() async throws {
         let result = try await streamFixture("asr_zh.wav")
         #expect(!result.final.isEmpty,
@@ -215,6 +282,10 @@ struct ASRServerTests {
         // Wrong method on /v1/info → 405
         let (_, methodInfo) = try await http("POST", infoURL)
         #expect(methodInfo == 405)
+
+        // Wrong method on batch endpoint → 405
+        let (_, methodBatch) = try await http("GET", batchURL)
+        #expect(methodBatch == 405)
 
         // Wrong method on session → 405
         let (createData, _) = try await http("POST", baseURL)

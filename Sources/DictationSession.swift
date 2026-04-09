@@ -6,10 +6,8 @@ import Foundation
 /// One provider lives for the app's lifetime. Creates sessions for each dictation.
 ///
 /// Implementations:
-///   - `ASRSidecar` — local Python sidecar (Qwen3-ASR via mlx-audio)
-///   - Future: Apple Speech, remote Whisper API, etc.
+///   - `NativeASRProvider` — local asr-server (Qwen3-ASR via MLX)
 /// Not actor-isolated — implementations handle their own thread safety.
-/// ASRSidecar is `@unchecked Sendable`; future providers may be actors.
 protocol SttProvider: AnyObject, Sendable {
     var isReady: Bool { get }
     var onReady: (@Sendable () -> Void)? { get set }
@@ -26,6 +24,7 @@ protocol SttProvider: AnyObject, Sendable {
 /// `feedAudio` is not actor-isolated — called from the real-time audio thread.
 protocol SttSession: AnyObject, Sendable {
     var onPartial: ((String) -> Void)? { get set }
+    var onSegmentCommit: ((String) -> Void)? { get set }
     var onFinal: ((String) -> Void)? { get set }
     var onError: ((String) -> Void)? { get set }
     @MainActor func begin(language: String?)
@@ -77,7 +76,7 @@ enum DictationEvent: Equatable {
 /// Owns the dictation state machine but not the UI. Emits `DictationEvent`s
 /// that the caller (AppDelegate) maps to MicPanel and status icon updates.
 ///
-/// Testable: inject mock ASRSidecar, TextInjector, AudioCapture.
+/// Testable: inject mock SttProvider, TextInjector, AudioCapture.
 @MainActor
 final class DictationSession {
     let textInjector: any TextInjecting
@@ -119,6 +118,9 @@ final class DictationSession {
         sttSession.onPartial = { [weak self] text in
             Task { @MainActor in self?.handlePartial(text) }
         }
+        sttSession.onSegmentCommit = { [weak self] text in
+            Task { @MainActor in self?.handleSegmentCommit(text) }
+        }
         sttSession.onFinal = { [weak self] text in
             Task { @MainActor in self?.handleFinal(text) }
         }
@@ -143,8 +145,14 @@ final class DictationSession {
                 case .silentInput(let seconds):
                     yuwpLog("Dead mic detected (\(seconds)s silence) — stopping session")
                     self.onRequestStop?()
+                case .speechPause:
+                    break
                 }
             }
+        }
+
+        if let capture = audioCapture as? AudioCapture {
+            capture.speechPauseTimeout = nil
         }
 
         let started = audioCapture.start { [weak self] buffer in
@@ -212,6 +220,21 @@ final class DictationSession {
         } else {
             onEvent?(.partialTranscript(typewriter.displayText))
             driveTypewriterDisplay()
+        }
+    }
+
+    private func handleSegmentCommit(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.lowercased() != "none" else { return }
+
+        typewriter.update(fullText: text)
+        typewriter.commitCurrentAnimation()
+        textInjector.inject(typewriter.displayText)
+
+        if textInjector.isLiveInjecting {
+            onEvent?(.liveInjectionVerified(caretPosition: textInjector.targetPosition))
+        } else {
+            onEvent?(.partialTranscript(typewriter.displayText))
         }
     }
 

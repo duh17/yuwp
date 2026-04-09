@@ -9,6 +9,8 @@ enum AudioCaptureWarning: Sendable, Equatable {
     /// Consecutive silent buffers detected — mic may be dead.
     /// Fires once after `seconds` of silence, not repeatedly.
     case silentInput(seconds: Double)
+    /// Speech was detected, then silence for `seconds`. Used for auto-stop mode.
+    case speechPause(seconds: Double)
 }
 
 /// Captures microphone audio at 16kHz mono PCM and delivers raw buffers.
@@ -23,7 +25,7 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
     private var recordingBuffer = Data()
     private let bufferLock = NSLock()
 
-    // Silent buffer detection
+    // Silent buffer detection (dead mic)
     private var consecutiveSilentBuffers = 0
     private var silenceWarningFired = false
     /// RMS below this for a 100ms buffer means functionally silent (codec conflict, dead mic)
@@ -33,8 +35,22 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
     /// Buffers per second at ~100ms tap interval
     private static let buffersPerSecond: Int = 10
 
+    // Speech pause detection (auto-stop mode)
+    private var hasDetectedSpeech = false
+    private var consecutivePauseBuffers = 0
+    private var speechPauseFired = false
+    /// RMS below this after speech = "user stopped talking"
+    private static let speechPauseRmsThreshold: Float = 0.005
+    /// RMS above this = speech detected
+    private static let speechDetectRmsThreshold: Float = 0.01
+    /// Seconds of post-speech silence before firing .speechPause. nil = disabled.
+    var speechPauseTimeout: Double?
+
     // Route change observation
     private var routeChangeObserver: NSObjectProtocol?
+    private var startTime: CFAbsoluteTime = 0
+    /// Ignore route changes during the first second — engine startup can trigger spurious notifications.
+    private static let routeChangeGracePeriod: Double = 1.0
 
     /// Audio level callback — fires with normalized RMS (0.0–1.0) per tap (~100ms).
     /// Called on the audio thread; dispatch to main if needed.
@@ -56,6 +72,9 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
         // Reset silence tracking
         consecutiveSilentBuffers = 0
         silenceWarningFired = false
+        hasDetectedSpeech = false
+        consecutivePauseBuffers = 0
+        speechPauseFired = false
 
         // Check for a usable audio input device before touching the engine.
         // Accessing engine.inputNode with no input device can crash.
@@ -153,6 +172,7 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
 
             // Silent buffer detection — Bluetooth codec conflicts, dead mics
             self.trackSilence(rms: rms)
+            self.trackSpeechPause(rms: rms)
 
             // Accumulate for recording (bulk append, not per-sample)
             self.bufferLock.lock()
@@ -165,6 +185,7 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
         do {
             try engine.start()
             isRunning = true
+            startTime = CFAbsoluteTimeGetCurrent()
             yuwpLog("Audio capture started (\(Int(inputFormat.sampleRate))Hz -> 16kHz mono)")
             return true
         } catch {
@@ -214,6 +235,28 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
         }
     }
 
+    // MARK: - Speech Pause Detection
+
+    private func trackSpeechPause(rms: Float) {
+        guard let timeout = speechPauseTimeout, !speechPauseFired else { return }
+
+        if rms >= Self.speechDetectRmsThreshold {
+            hasDetectedSpeech = true
+            consecutivePauseBuffers = 0
+            return
+        }
+
+        guard hasDetectedSpeech, rms < Self.speechPauseRmsThreshold else { return }
+
+        consecutivePauseBuffers += 1
+        let threshold = Int(timeout) * Self.buffersPerSecond
+        if consecutivePauseBuffers >= threshold {
+            speechPauseFired = true
+            yuwpLog("Speech pause detected (\(timeout)s silence after speech)")
+            onWarning?(.speechPause(seconds: timeout))
+        }
+    }
+
     // MARK: - Audio Route Change
 
     private func startRouteChangeObserver() {
@@ -223,6 +266,11 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
             queue: nil
         ) { [weak self] _ in
             guard let self, self.isRunning else { return }
+            let elapsed = CFAbsoluteTimeGetCurrent() - self.startTime
+            if elapsed < Self.routeChangeGracePeriod {
+                yuwpLog("Audio route change ignored (startup, \(String(format: "%.1f", elapsed))s)")
+                return
+            }
             yuwpLog("Audio route changed mid-session")
             self.onWarning?(.routeChanged)
         }

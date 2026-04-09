@@ -1,6 +1,6 @@
 import Foundation
 
-/// Animates text appearing character-by-character when the sidecar sends
+/// Animates text appearing character-by-character when the ASR server sends
 /// full-replacement transcript updates every ~2s.
 ///
 /// Computes the delta (new chars appended) and reveals them gradually

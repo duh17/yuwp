@@ -1,9 +1,10 @@
 // asr-server — Native streaming ASR HTTP server.
-// Drop-in replacement for Sources/sidecar/transcribe.py.
-// Serves both Yuwp (spawned as child) and Oppi server (HTTP client).
+// Serves Yuwp (spawned as child) and any external HTTP client.
 //
-// Endpoints (identical to Python sidecar):
+// Endpoints:
 //   GET    /v1/info                                → server status
+//   POST   /v1/audio/transcriptions                → OpenAI-style batch transcription
+//   POST   /audio/transcriptions                   → OpenAI-style batch transcription alias
 //   POST   /v1/audio/transcriptions/stream         → create session
 //   POST   /v1/audio/transcriptions/stream/:id     → feed audio (raw s16le PCM)
 //   DELETE /v1/audio/transcriptions/stream/:id     → stop session, get final text
@@ -23,6 +24,12 @@ import NativeASR
 
 nonisolated(unsafe) var serverSocket: Int32 = -1
 nonisolated(unsafe) var shuttingDown = false
+
+#if YUWP_INTERNAL_DIAGNOSTICS
+let internalDiagnosticsEnabled = true
+#else
+let internalDiagnosticsEnabled = false
+#endif
 
 func handleShutdown(_: Int32) {
     guard !shuttingDown else { return }
@@ -107,6 +114,19 @@ final class SessionManager: @unchecked Sendable {
             pending = Array(pending.dropFirst(chunkSamples))
             let result = session.processChunk(chunk)
             if result.batchCorrected { batchCorrected = true }
+#if YUWP_INTERNAL_DIAGNOSTICS
+            log(
+                "PERF sid=\(sid) chunk=\(session.processedChunkCount) "
+                    + "samples=\(chunk.count) "
+                    + "encode_ms=\(Int(result.encodeMs.rounded())) "
+                    + "prefill_ms=\(Int(result.prefillMs.rounded())) "
+                    + "decode_ms=\(Int(result.decodeMs.rounded())) "
+                    + "total_ms=\(Int(result.totalMs.rounded())) "
+                    + "reuse_pct=\(Int(result.reusePct.rounded())) "
+                    + "text_len=\(result.text.count) "
+                    + "batch_corrected=\(result.batchCorrected ? 1 : 0)"
+            )
+#endif
         }
         inferenceLock.unlock()
 
@@ -139,6 +159,34 @@ final class SessionManager: @unchecked Sendable {
         return text
     }
 
+    func transcribeFile(
+        data: Data,
+        filename: String,
+        language: String? = nil,
+        temperature: Float = 0.0
+    ) throws -> TranscriptionResult {
+        let transcriber = batchTranscriber ?? self.transcriber
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent(sanitizedFilename(filename))
+        try FileManager.default.createDirectory(at: tempURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: tempURL, options: [.atomic])
+        defer {
+            try? FileManager.default.removeItem(at: tempURL.deletingLastPathComponent())
+        }
+
+        inferenceLock.lock()
+        defer { inferenceLock.unlock() }
+        let audio = try loadAudioFile(tempURL)
+        return try transcriber.transcribe(audio: audio, language: language, temperature: temperature)
+    }
+
+    private func sanitizedFilename(_ filename: String) -> String {
+        let trimmed = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "upload.wav" }
+        return URL(fileURLWithPath: trimmed).lastPathComponent
+    }
+
     private func cleanupExpired() {
         let now = Date()
         stateLock.lock()
@@ -155,13 +203,30 @@ final class SessionManager: @unchecked Sendable {
 
 // MARK: - HTTP Parser (minimal, no deps)
 
-private let maxBodySize = 10 * 1024 * 1024  // 10MB
+private let maxBodySize = 100 * 1024 * 1024  // 100MB
 
 struct HTTPRequest {
     let method: String
     let path: String
     let headers: [String: String]
     let body: Data
+}
+
+struct HTTPResponse {
+    let status: Int
+    let contentType: String
+    let body: Data
+}
+
+struct MultipartPart {
+    let name: String
+    let filename: String?
+    let contentType: String?
+    let body: Data
+
+    var textValue: String? {
+        String(data: body, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 func readHTTPRequest(fd: Int32) -> HTTPRequest? {
@@ -202,7 +267,7 @@ func readHTTPRequest(fd: Int32) -> HTTPRequest? {
         headers[key] = val
     }
 
-    // Read body (capped at 10MB)
+    // Read body (capped at maxBodySize)
     let contentLength = Int(headers["content-length"] ?? "0") ?? 0
     guard contentLength >= 0, contentLength <= maxBodySize else {
         log("Rejected: body too large (\(contentLength) bytes)")
@@ -227,6 +292,78 @@ func readHTTPRequest(fd: Int32) -> HTTPRequest? {
     )
 }
 
+func parseMultipartFormData(body: Data, contentTypeHeader: String) -> [MultipartPart]? {
+    let boundaryPrefix = "boundary="
+    guard let rawBoundary = contentTypeHeader
+        .split(separator: ";")
+        .map({ $0.trimmingCharacters(in: .whitespaces) })
+        .first(where: { $0.hasPrefix(boundaryPrefix) })?
+        .dropFirst(boundaryPrefix.count)
+    else { return nil }
+
+    let boundary = rawBoundary.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+    let opening = Data("--\(boundary)\r\n".utf8)
+    let nextBoundary = Data("\r\n--\(boundary)".utf8)
+    let headerSeparator = Data("\r\n\r\n".utf8)
+    guard body.starts(with: opening) else { return nil }
+
+    var cursor = opening.endIndex
+    var parts: [MultipartPart] = []
+
+    while cursor <= body.endIndex {
+        guard let headerRange = body.range(of: headerSeparator, in: cursor..<body.endIndex) else { return nil }
+        let headerData = body[cursor..<headerRange.lowerBound]
+        guard let headerText = String(data: headerData, encoding: .utf8) else { return nil }
+        cursor = headerRange.upperBound
+
+        guard let nextRange = body.range(of: nextBoundary, in: cursor..<body.endIndex) else { return nil }
+        let partBody = Data(body[cursor..<nextRange.lowerBound])
+        cursor = nextRange.upperBound
+
+        var headers: [String: String] = [:]
+        for line in headerText.split(separator: "\r\n", omittingEmptySubsequences: true) {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            headers[key] = value
+        }
+
+        guard let disposition = headers["content-disposition"] else { return nil }
+        let dispositionParams = parseHeaderParameters(disposition)
+        guard disposition.lowercased().hasPrefix("form-data"), let name = dispositionParams["name"] else { return nil }
+        parts.append(MultipartPart(name: name, filename: dispositionParams["filename"], contentType: headers["content-type"], body: partBody))
+
+        if body[cursor...].starts(with: Data("--".utf8)) {
+            return parts
+        }
+        guard body[cursor...].starts(with: Data("\r\n".utf8)) else { return nil }
+        cursor += 2
+    }
+
+    return nil
+}
+
+func parseHeaderParameters(_ header: String) -> [String: String] {
+    var out: [String: String] = [:]
+    for segment in header.split(separator: ";").dropFirst() {
+        let trimmed = segment.trimmingCharacters(in: .whitespaces)
+        guard let eq = trimmed.firstIndex(of: "=") else { continue }
+        let key = trimmed[..<eq].lowercased()
+        let value = trimmed[trimmed.index(after: eq)...].trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        out[String(key)] = value
+    }
+    return out
+}
+
+func writeJSONResponse(status: Int, _ json: [String: Any]) -> HTTPResponse {
+    let body = (try? JSONSerialization.data(withJSONObject: json)) ?? Data("{}".utf8)
+    return HTTPResponse(status: status, contentType: "application/json", body: body)
+}
+
+func writeTextResponse(status: Int, _ text: String, contentType: String = "text/plain; charset=utf-8") -> HTTPResponse {
+    HTTPResponse(status: status, contentType: contentType, body: Data(text.utf8))
+}
+
 func sendAll(fd: Int32, _ data: Data) {
     data.withUnsafeBytes { buf in
         guard let base = buf.baseAddress else { return }
@@ -239,19 +376,20 @@ func sendAll(fd: Int32, _ data: Data) {
     }
 }
 
-func writeResponse(fd: Int32, status: Int, json: [String: Any]) {
-    let body = (try? JSONSerialization.data(withJSONObject: json)) ?? Data("{}".utf8)
-    let statusText: String = switch status {
+func writeResponse(fd: Int32, response: HTTPResponse) {
+    let statusText: String = switch response.status {
     case 200: "OK"
     case 400: "Bad Request"
     case 404: "Not Found"
     case 405: "Method Not Allowed"
     case 413: "Payload Too Large"
+    case 415: "Unsupported Media Type"
+    case 422: "Unprocessable Content"
     default: "Error"
     }
-    let header = "HTTP/1.1 \(status) \(statusText)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+    let header = "HTTP/1.1 \(response.status) \(statusText)\r\nContent-Type: \(response.contentType)\r\nContent-Length: \(response.body.count)\r\nConnection: close\r\n\r\n"
     var resp = Data(header.utf8)
-    resp.append(body)
+    resp.append(response.body)
     sendAll(fd: fd, resp)
 }
 
@@ -263,52 +401,117 @@ func route(
     streamingModelName: String,
     batchModelName: String?,
     batchRetranscribeEnabled: Bool
-) -> (Int, [String: Any]) {
+) -> HTTPResponse {
     let path = req.path.split(separator: "?").first.map(String.init) ?? req.path
     let streamPrefix = "/v1/audio/transcriptions/stream"
+    let batchPaths = Set(["/v1/audio/transcriptions", "/audio/transcriptions"])
 
     if path == "/v1/info" {
-        guard req.method == "GET" else { return (405, ["error": "method not allowed"]) }
+        guard req.method == "GET" else { return writeJSONResponse(status: 405, ["error": "method not allowed"]) }
         var info: [String: Any] = [
             "streaming_model": streamingModelName,
             "sample_rate": ASRAudio.sampleRate,
             "chunk_sec": 2.0,
             "batch_retranscribe": batchRetranscribeEnabled,
+            "internal_diagnostics": internalDiagnosticsEnabled,
             "status": "ready",
         ]
         if let batchModelName { info["batch_model"] = batchModelName }
-        return (200, info)
+        return writeJSONResponse(status: 200, info)
+    }
+
+    if batchPaths.contains(path) {
+        guard req.method == "POST" else { return writeJSONResponse(status: 405, ["error": "method not allowed"]) }
+        guard let contentType = req.headers["content-type"],
+              contentType.lowercased().contains("multipart/form-data"),
+              let parts = parseMultipartFormData(body: req.body, contentTypeHeader: contentType)
+        else {
+            return writeJSONResponse(status: 415, ["error": "expected multipart/form-data upload"])
+        }
+
+        var fields: [String: String] = [:]
+        for part in parts where part.filename == nil {
+            if let value = part.textValue {
+                fields[part.name] = value
+            }
+        }
+        guard let filePart = parts.first(where: { $0.name == "file" }) else {
+            return writeJSONResponse(status: 400, ["error": "missing file field"])
+        }
+
+        let requestedFormat = (fields["response_format"] ?? "json").lowercased()
+        if (fields["stream"] ?? "false").lowercased() == "true" {
+            return writeJSONResponse(status: 400, ["error": "stream=true is not supported on this endpoint"])
+        }
+        guard ["json", "text", "verbose_json"].contains(requestedFormat) else {
+            return writeJSONResponse(status: 400, ["error": "unsupported response_format: \(requestedFormat)"])
+        }
+
+        let language = fields["language"].flatMap { $0.isEmpty ? nil : $0 }
+        let temperature = Float(fields["temperature"] ?? "0") ?? 0
+        let filename = filePart.filename ?? inferredFilename(contentType: filePart.contentType)
+
+        do {
+            let result = try mgr.transcribeFile(data: filePart.body, filename: filename, language: language, temperature: temperature)
+            switch requestedFormat {
+            case "text":
+                return writeTextResponse(status: 200, result.text)
+            case "verbose_json":
+                var payload: [String: Any] = [
+                    "text": result.text,
+                    "duration": result.audioDuration,
+                ]
+                if let language = result.language {
+                    payload["language"] = language
+                }
+                return writeJSONResponse(status: 200, payload)
+            default:
+                return writeJSONResponse(status: 200, ["text": result.text])
+            }
+        } catch {
+            return writeJSONResponse(status: 422, ["error": error.localizedDescription])
+        }
     }
 
     if path == streamPrefix {
-        guard req.method == "POST" else { return (405, ["error": "method not allowed"]) }
-        return (200, ["session_id": mgr.create()])
+        guard req.method == "POST" else { return writeJSONResponse(status: 405, ["error": "method not allowed"]) }
+        return writeJSONResponse(status: 200, ["session_id": mgr.create()])
     }
 
     if path.hasPrefix(streamPrefix + "/") {
         let sid = String(path.dropFirst(streamPrefix.count + 1))
-        guard !sid.isEmpty else { return (400, ["error": "missing session_id"]) }
+        guard !sid.isEmpty else { return writeJSONResponse(status: 400, ["error": "missing session_id"]) }
 
         switch req.method {
         case "POST":
             guard let result = mgr.feed(sid, pcmData: req.body) else {
-                return (404, ["error": "session not found"])
+                return writeJSONResponse(status: 404, ["error": "session not found"])
             }
-            return (200, result)
+            return writeJSONResponse(status: 200, result)
         case "DELETE":
             guard let text = mgr.stop(sid) else {
-                return (404, ["error": "session not found"])
+                return writeJSONResponse(status: 404, ["error": "session not found"])
             }
-            return (200, ["text": text])
+            return writeJSONResponse(status: 200, ["text": text])
         default:
-            return (405, ["error": "method not allowed"])
+            return writeJSONResponse(status: 405, ["error": "method not allowed"])
         }
     }
 
-    return (404, ["error": "unknown endpoint: \(req.method) \(path)"])
+    return writeJSONResponse(status: 404, ["error": "unknown endpoint: \(req.method) \(path)"])
 }
 
 // MARK: - Server
+
+func inferredFilename(contentType: String?) -> String {
+    switch contentType?.lowercased() {
+    case "audio/flac", "application/flac": return "upload.flac"
+    case "audio/x-wav", "audio/wav", "audio/wave": return "upload.wav"
+    case "audio/mpeg", "audio/mp3": return "upload.mp3"
+    case "audio/mp4", "audio/m4a", "video/mp4": return "upload.m4a"
+    default: return "upload.wav"
+    }
+}
 
 func startServer(
     host: String,
@@ -367,14 +570,14 @@ func startServer(
                 inFlight.leave()
             }
             if let req = readHTTPRequest(fd: clientFd) {
-                let (status, json) = route(
+                let response = route(
                     req,
                     mgr: mgr,
                     streamingModelName: streamingModelName,
                     batchModelName: batchModelName,
                     batchRetranscribeEnabled: batchRetranscribeEnabled
                 )
-                writeResponse(fd: clientFd, status: status, json: json)
+                writeResponse(fd: clientFd, response: response)
             }
         }
     }

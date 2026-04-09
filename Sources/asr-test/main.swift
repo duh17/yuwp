@@ -15,7 +15,7 @@ func printUsage() {
       --max-tokens <n>  Maximum tokens to generate (default: 4096)
 
     Example:
-      asr-test recording.wav ~/workspace/qwen-asr/qwen3-asr-0.6b --warmup
+      asr-test recording.wav /path/to/model-dir --warmup
 
     """, stderr)
 }

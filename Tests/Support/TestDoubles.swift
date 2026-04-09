@@ -6,6 +6,7 @@ import Testing
 
 final class MockSttSession: SttSession, @unchecked Sendable {
     var onPartial: ((String) -> Void)?
+    var onSegmentCommit: ((String) -> Void)?
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
 
@@ -33,6 +34,10 @@ final class MockSttSession: SttSession, @unchecked Sendable {
 
     func simulatePartial(_ text: String) {
         onPartial?(text)
+    }
+
+    func simulateSegmentCommit(_ text: String) {
+        onSegmentCommit?(text)
     }
 
     func simulateFinal(_ text: String) {

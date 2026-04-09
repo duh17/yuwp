@@ -137,6 +137,41 @@ struct DictationSessionTests {
 
     // MARK: - Final Result
 
+    @Test func segmentCommitSnapsAnimationAndInjectsCommittedText() async {
+        let (session, stt, _, injector, events) = makeSession()
+        injector.isLiveInjecting = false
+        session.start()
+
+        stt.simulatePartial("hello im testing this")
+        await Task.yield()
+        stt.simulateSegmentCommit("Hello, I'm testing this.")
+        await Task.yield()
+
+        #expect(injector.lastInjected == "Hello, I'm testing this.")
+        let transcriptEvents = events.events.compactMap { event -> String? in
+            if case .partialTranscript(let text) = event { return text }
+            return nil
+        }
+        #expect(transcriptEvents.last == "Hello, I'm testing this.")
+    }
+
+    @Test func segmentCommitEmitsLiveInjectionEventWhenInjectingLive() async {
+        let (session, stt, _, injector, events) = makeSession()
+        injector.isLiveInjecting = true
+        injector.targetPosition = NSPoint(x: 100, y: 200)
+        session.start()
+
+        stt.simulateSegmentCommit("Hello world")
+        await Task.yield()
+
+        #expect(injector.lastInjected == "Hello world")
+        let liveEvents = events.events.filter {
+            if case .liveInjectionVerified = $0 { return true }
+            return false
+        }
+        #expect(!liveEvents.isEmpty)
+    }
+
     @Test func finalResultCommitsTextAndFinishes() async {
         let (session, stt, _, injector, events) = makeSession()
         session.start()

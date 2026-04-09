@@ -5,8 +5,17 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIGURATION="${1:-release}"
+ENABLE_INTERNAL_DIAGNOSTICS="${YUWP_INTERNAL_DIAGNOSTICS:-0}"
 
-swift build -c "$CONFIGURATION" --product Yuwp --product asr-server
+SWIFT_FLAGS=()
+if [ "$ENABLE_INTERNAL_DIAGNOSTICS" = "1" ]; then
+    SWIFT_FLAGS+=("-Xswiftc" "-DYUWP_INTERNAL_DIAGNOSTICS")
+    echo "[yuwp] Internal diagnostics: ON"
+else
+    echo "[yuwp] Internal diagnostics: OFF"
+fi
+
+swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product Yuwp --product asr-server
 bash scripts/build_mlx_metallib.sh "$CONFIGURATION"
 
 echo "[yuwp] Built Yuwp + asr-server ($CONFIGURATION)"

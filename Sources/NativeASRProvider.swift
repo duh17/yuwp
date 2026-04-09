@@ -25,6 +25,7 @@ private final class LockedBox<T>: @unchecked Sendable {
 
 /// State of the ASR server process, observed by the menu bar.
 enum ASRServerState: Sendable, Equatable {
+    case disabled       // server mode is off
     case stopped
     case starting       // process launched, model loading
     case ready          // accepting dictation
@@ -34,7 +35,7 @@ enum ASRServerState: Sendable, Equatable {
 // MARK: - Native ASR Provider
 
 /// Manages the native ASR server process (asr-server).
-/// Communicates via HTTP on localhost — replaces the Python sidecar.
+/// Communicates via HTTP on localhost.
 ///
 /// Launches `asr-server` as a child process, monitors its health,
 /// and provides STT sessions via the HTTP streaming API.
@@ -65,18 +66,27 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
     private var restartAttempts = 0
     private static let maxRestartAttempts = 5
 
-    let port: UInt16
-    let host: String
+    var port: UInt16
+    var serverMode: ServerMode = .localhost
 
-    init(port: UInt16 = 9748, host: String = "127.0.0.1") {
+    private var bindHost: String? { serverMode.bindHost }
+    private var clientHost: String { serverMode.clientHost }
+
+    init(port: UInt16 = 9748) {
         self.port = port
-        self.host = host
     }
 
     // MARK: - Lifecycle
 
     func start() {
         isIntentionalShutdown = false
+
+        guard let bindHost else {
+            updateState(.disabled)
+            yuwpLog("asr-server disabled")
+            return
+        }
+
         updateState(.starting)
 
         guard let streamingModelPath = Self.resolveModelPath(streamingModel) else {
@@ -107,7 +117,7 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         let stderrPipe = Pipe()
 
         proc.executableURL = URL(fileURLWithPath: serverBin)
-        var arguments = [streamingModelPath, "--port", "\(port)", "--host", host]
+        var arguments = [streamingModelPath, "--port", "\(port)", "--host", bindHost]
         if let batchModelPath {
             arguments += ["--batch-model", batchModelPath]
         } else {
@@ -176,14 +186,14 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         }
 
         process = nil
-        updateState(.stopped)
-        yuwpLog("asr-server stopped")
+        updateState(serverMode == .off ? .disabled : .stopped)
+        yuwpLog(serverMode == .off ? "asr-server disabled" : "asr-server stopped")
     }
 
     // MARK: - SttProvider
 
     func makeSession() -> any SttSession {
-        NativeASRSession(host: host, port: port)
+        NativeASRSession(host: clientHost, port: port)
     }
 
     // MARK: - State
@@ -217,7 +227,7 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
     // MARK: - Health Check
 
     private func checkReady() -> Bool {
-        guard let url = URL(string: "http://\(host):\(port)/v1/info") else { return false }
+        guard let url = URL(string: "http://\(clientHost):\(port)/v1/info") else { return false }
         var req = URLRequest(url: url)
         req.timeoutInterval = 2
         let ready = LockedBox(false)
@@ -254,9 +264,6 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
                 .appendingPathComponent(".build/arm64-apple-macosx/debug/asr-server").path,
-            // Fallback: workspace path
-            NSString("~/workspace/yuwp/.build/arm64-apple-macosx/release/asr-server")
-                .expandingTildeInPath,
         ]
         return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
@@ -268,6 +275,7 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
 /// Audio feeds are serialized on a background queue to avoid blocking the audio thread.
 final class NativeASRSession: SttSession, @unchecked Sendable {
     var onPartial: ((String) -> Void)?
+    var onSegmentCommit: ((String) -> Void)?
     var onFinal: ((String) -> Void)?
     var onError: ((String) -> Void)?
 
@@ -298,7 +306,11 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
             guard let data = self.syncHTTP("POST", path: "\(self.baseURL)/\(sid)", body: pcmData),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let text = json["text"] as? String, !text.isEmpty else { return }
-            self.onPartial?(text)
+            if json["batch_corrected"] as? Bool == true {
+                self.onSegmentCommit?(text)
+            } else {
+                self.onPartial?(text)
+            }
         }
     }
 
