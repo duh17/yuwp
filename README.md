@@ -32,6 +32,8 @@ scripts/run.sh
 
 This builds the app and asr-server, creates a proper .app bundle with stable code signing, and launches it. Stable signing means Accessibility and Microphone permissions persist across rebuilds.
 
+`scripts/run.sh` embeds Sparkle when available, but automatic updates stay disabled until you provide a real `SUPublicEDKey` in the generated Info.plist.
+
 Grant **Accessibility** and **Microphone** permissions when prompted.
 
 On a fresh Mac, Yuwp will launch without a model and wait for you to choose one. Use **Model → Download Streaming Model** from the menu bar app to download the default small model. No downloads start until you explicitly choose that action.
@@ -99,6 +101,8 @@ The ASR server can run independently:
 swift build -c release --product asr-server
 .build/arm64-apple-macosx/release/asr-server <model-dir> [--port 9748] [--host 127.0.0.1]
 ```
+
+Use `--host 0.0.0.0` only when you explicitly want LAN clients to connect.
 
 ### HTTP API
 

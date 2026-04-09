@@ -50,6 +50,9 @@ scripts/release.sh <version>
 # Requires: YUWP_SIGN_IDENTITY, YUWP_TEAM_ID, YUWP_APPLE_ID, YUWP_APP_PASSWORD
 ```
 
+Sparkle remains disabled until you set a real `SUPublicEDKey` in the generated
+Info.plist content used by the run/release scripts.
+
 ### Standalone ASR server (no GUI)
 
 ```bash
@@ -64,7 +67,7 @@ scripts/release.sh <version>
 | DictationSession.swift | Session state machine, protocol abstractions |
 | NativeASRProvider.swift | Manages asr-server process, HTTP STT sessions |
 | ModelManager.swift | HF model resolution from cache or local paths |
-| HotkeyManager.swift | Global hotkey via CGEvent tap |
+| HotkeyManager.swift | Carbon global hotkey + Enter interception tap |
 | AudioCapture.swift | AVAudioEngine → 16kHz mono PCM |
 | AXTextInjector.swift | AX API text injection (preferred) |
 | CGEventInjector.swift | CGEvent keyboard injection for terminals |
@@ -83,6 +86,7 @@ All communication uses a single HTTP protocol on `127.0.0.1:9748`:
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/v1/info` | Server status and model info |
+| `POST` | `/v1/audio/transcriptions` | OpenAI-compatible batch transcription |
 | `POST` | `/v1/audio/transcriptions/stream` | Create session |
 | `POST` | `/v1/audio/transcriptions/stream/:id` | Feed audio chunk (raw s16le PCM) |
 | `DELETE` | `/v1/audio/transcriptions/stream/:id` | Stop session, get final text |
@@ -104,7 +108,7 @@ Override host/port with `--host` / `--port` flags.
 
 ## Complexity Guardrails
 
-Yuwp is small (~13 source files). Resist splitting unless a file exceeds ~400 lines.
+Yuwp is still intentionally small, even after the native ASR split. Resist adding new top-level app files unless a file exceeds ~400 lines or the boundary is clearly reusable.
 Check the component table above before adding new files.
 
 ```bash
@@ -122,8 +126,8 @@ rg 'class |struct |enum |protocol ' Sources/*.swift
   when there's a codec conflict. Detect silent buffers and warn.
 - **Bypass `AXIsProcessTrusted()` check** — attempt to create the CGEventTap
   directly. The check itself can return stale results.
-- **Double-tap hotkey timing** — track tap timestamps manually. CGEvent key-down
-  events are the source of truth; don't rely on NSEvent for global hotkeys.
+- **Global dictation shortcut** uses Carbon hotkeys now. The CGEvent tap is only
+  for swallowing Return during active dictation.
 - **asr-server must be built before running Yuwp** — the app locates the binary
   in `.build/arm64-apple-macosx/release/asr-server`.
 
