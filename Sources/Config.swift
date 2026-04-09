@@ -1,29 +1,65 @@
 import Foundation
 
-/// How the global hotkey triggers dictation.
-enum HotkeyMode: Sendable {
-    /// Modifier + key combination (e.g., Ctrl + `)
-    case combo(keyCode: UInt16, modifiers: UInt64)
-    /// Tap a modifier key twice quickly (e.g., double-tap Right Option)
-    case doubleTap(keyCode: UInt16, interval: TimeInterval)
+/// How the dictation shortcut behaves.
+enum DictationInteractionMode: String, Sendable, CaseIterable {
+    case toggle
+    case pushToTalk
 
     var description: String {
         switch self {
-        case .combo(let keyCode, let modifiers):
-            var parts: [String] = []
-            if modifiers & 0x40000 != 0 { parts.append("Ctrl") }
-            if modifiers & 0x80000 != 0 { parts.append("⌥") }
-            if modifiers & 0x100000 != 0 { parts.append("⌘") }
-            if modifiers & 0x20000 != 0 { parts.append("⇧") }
-            parts.append(Self.keyName(for: keyCode))
-            return parts.joined(separator: "+")
-        case .doubleTap(let keyCode, _):
-            return "Double-tap \(Self.keyName(for: keyCode))"
+        case .toggle: "Toggle"
+        case .pushToTalk: "Push to Talk"
         }
+    }
+}
+
+/// Whether the bundled ASR server is disabled, local-only, or LAN-visible.
+enum ServerMode: String, Sendable, CaseIterable {
+    case off
+    case localhost
+    case allInterfaces
+
+    var description: String {
+        switch self {
+        case .off: "Off"
+        case .localhost: "Localhost"
+        case .allInterfaces: "0.0.0.0"
+        }
+    }
+
+    var bindHost: String? {
+        switch self {
+        case .off: nil
+        case .localhost: "127.0.0.1"
+        case .allInterfaces: "0.0.0.0"
+        }
+    }
+
+    /// The app itself should always talk to the local server through loopback,
+    /// even when the server is bound to all interfaces.
+    var clientHost: String { "127.0.0.1" }
+}
+
+/// Concrete global key combo binding.
+struct KeyBinding: Sendable, Codable, Equatable {
+    let keyCode: UInt16
+    let modifiers: UInt64
+
+    var description: String {
+        var parts: [String] = []
+        if modifiers & 0x40000 != 0 { parts.append("Ctrl") }
+        if modifiers & 0x80000 != 0 { parts.append("⌥") }
+        if modifiers & 0x100000 != 0 { parts.append("⌘") }
+        if modifiers & 0x20000 != 0 { parts.append("⇧") }
+        parts.append(Self.keyName(for: keyCode))
+        return parts.joined(separator: "+")
     }
 
     static func keyName(for keyCode: UInt16) -> String {
         switch keyCode {
+        case 2: return "D"
+        case 3: return "F"
+        case 49: return "Space"
         case 50: return "`"
         case 54: return "Right ⌘"
         case 55: return "Left ⌘"
@@ -39,18 +75,15 @@ enum HotkeyMode: Sendable {
     }
 }
 
-// Preset hotkey configurations
-extension HotkeyMode {
-    static let doubleTapRightControl = HotkeyMode.doubleTap(keyCode: 62, interval: 0.4)
-    static let doubleTapRightOption = HotkeyMode.doubleTap(keyCode: 61, interval: 0.4)
-    static let doubleTapFn = HotkeyMode.doubleTap(keyCode: 63, interval: 0.4)
-    static let ctrlBacktick = HotkeyMode.combo(keyCode: 50, modifiers: 0x40000)
+extension KeyBinding {
+    static let ctrlBacktick = KeyBinding(keyCode: 50, modifiers: 0x40000)
+    static let optionSpace = KeyBinding(keyCode: 49, modifiers: 0x80000)
+    static let commandShiftD = KeyBinding(keyCode: 2, modifiers: 0x100000 | 0x20000)
 
-    static let presets: [(label: String, mode: HotkeyMode)] = [
-        ("Double-tap Right Ctrl", .doubleTapRightControl),
-        ("Double-tap Right ⌥", .doubleTapRightOption),
-        ("Double-tap Fn", .doubleTapFn),
+    static let presets: [(label: String, binding: KeyBinding)] = [
         ("Ctrl + `", .ctrlBacktick),
+        ("⌥ + Space", .optionSpace),
+        ("⌘ + ⇧ + D", .commandShiftD),
     ]
 }
 
@@ -59,39 +92,57 @@ extension HotkeyMode {
 final class Config {
     static let shared = Config()
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
-    // MARK: - Hotkey
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
 
-    var hotkeyMode: HotkeyMode {
+    // MARK: - Dictation
+
+    var dictationInteractionMode: DictationInteractionMode {
         get {
-            let mode = defaults.string(forKey: "hotkeyMode") ?? "doubleTap"
-            switch mode {
-            case "combo":
-                let keyCode = UInt16(defaults.integer(forKey: "hotkeyComboKeyCode")).nonZero ?? 50
-                let mods = defaults.object(forKey: "hotkeyComboModifiers") != nil
-                    ? UInt64(defaults.integer(forKey: "hotkeyComboModifiers"))
-                    : 0x40000
-                return .combo(keyCode: keyCode, modifiers: mods)
-            default:
-                let keyCode = UInt16(defaults.integer(forKey: "hotkeyDoubleTapKeyCode")).nonZero ?? 62
-                let interval = defaults.object(forKey: "hotkeyDoubleTapInterval") != nil
-                    ? defaults.double(forKey: "hotkeyDoubleTapInterval")
-                    : 0.4
-                return .doubleTap(keyCode: keyCode, interval: interval)
-            }
+            let raw = defaults.string(forKey: "dictationInteractionMode") ?? DictationInteractionMode.toggle.rawValue
+            return DictationInteractionMode(rawValue: raw) ?? .toggle
         }
         set {
-            switch newValue {
-            case .combo(let keyCode, let modifiers):
-                defaults.set("combo", forKey: "hotkeyMode")
-                defaults.set(Int(keyCode), forKey: "hotkeyComboKeyCode")
-                defaults.set(Int(modifiers), forKey: "hotkeyComboModifiers")
-            case .doubleTap(let keyCode, let interval):
-                defaults.set("doubleTap", forKey: "hotkeyMode")
-                defaults.set(Int(keyCode), forKey: "hotkeyDoubleTapKeyCode")
-                defaults.set(interval, forKey: "hotkeyDoubleTapInterval")
-            }
+            defaults.set(newValue.rawValue, forKey: "dictationInteractionMode")
+        }
+    }
+
+    var dictationBinding: KeyBinding {
+        get {
+            let keyCode = UInt16(defaults.integer(forKey: "dictationBindingKeyCode")).nonZero ?? KeyBinding.ctrlBacktick.keyCode
+            let modifiers = defaults.object(forKey: "dictationBindingModifiers") != nil
+                ? UInt64(defaults.integer(forKey: "dictationBindingModifiers"))
+                : KeyBinding.ctrlBacktick.modifiers
+            return KeyBinding(keyCode: keyCode, modifiers: modifiers)
+        }
+        set {
+            defaults.set(Int(newValue.keyCode), forKey: "dictationBindingKeyCode")
+            defaults.set(Int(newValue.modifiers), forKey: "dictationBindingModifiers")
+        }
+    }
+
+    var serverMode: ServerMode {
+        get {
+            let raw = defaults.string(forKey: "serverMode") ?? ServerMode.localhost.rawValue
+            return ServerMode(rawValue: raw) ?? .localhost
+        }
+        set {
+            defaults.set(newValue.rawValue, forKey: "serverMode")
+        }
+    }
+
+    var serverPort: UInt16 {
+        get {
+            let value = defaults.object(forKey: "serverPort") != nil
+                ? defaults.integer(forKey: "serverPort")
+                : 9748
+            return UInt16(clamping: max(1, min(value, 65_535)))
+        }
+        set {
+            defaults.set(Int(newValue), forKey: "serverPort")
         }
     }
 
@@ -103,13 +154,13 @@ final class Config {
         set { defaults.set(newValue, forKey: "streamingModel") }
     }
 
-    /// ASR model for batch retranscription (high-quality correction on pause/stop)
+    /// ASR model for batch retranscription (final pass on pause/stop)
     var batchModel: String {
-        get { defaults.string(forKey: "batchModel") ?? "mlx-community/Qwen3-ASR-1.7B-bf16" }
+        get { defaults.string(forKey: "batchModel") ?? "mlx-community/Qwen3-ASR-0.6B-4bit" }
         set { defaults.set(newValue, forKey: "batchModel") }
     }
 
-    /// Whether to run batch retranscription with a second model for quality correction
+    /// Whether to run batch retranscription for a final pass on pause/stop
     var batchRetranscribeEnabled: Bool {
         get {
             defaults.object(forKey: "batchRetranscribeEnabled") != nil
@@ -142,11 +193,15 @@ struct ModelPreset {
     let batchModel: String
     let batchEnabled: Bool
 
-    /// Short description for status display (e.g. "0.6B + 1.7B batch")
+    /// Short description for status display in the menu.
     var summary: String {
         let streaming = Self.shortName(streamingModel)
         if batchEnabled {
-            return "\(streaming) + \(Self.shortName(batchModel)) batch"
+            let batch = Self.shortName(batchModel)
+            if batch == streaming {
+                return "\(streaming) stream+final"
+            }
+            return "\(streaming) + \(batch) final"
         }
         return "\(streaming) only"
     }
@@ -164,22 +219,16 @@ struct ModelPreset {
 
     static let presets: [ModelPreset] = [
         ModelPreset(
-            label: "Fast + Accurate",
+            label: "Small",
             streamingModel: "mlx-community/Qwen3-ASR-0.6B-4bit",
-            batchModel: "mlx-community/Qwen3-ASR-1.7B-bf16",
+            batchModel: "mlx-community/Qwen3-ASR-0.6B-4bit",
             batchEnabled: true
         ),
         ModelPreset(
-            label: "Accurate",
+            label: "Large",
             streamingModel: "mlx-community/Qwen3-ASR-1.7B-bf16",
-            batchModel: "",
-            batchEnabled: false
-        ),
-        ModelPreset(
-            label: "Fast",
-            streamingModel: "mlx-community/Qwen3-ASR-0.6B-4bit",
-            batchModel: "",
-            batchEnabled: false
+            batchModel: "mlx-community/Qwen3-ASR-1.7B-bf16",
+            batchEnabled: true
         ),
     ]
 

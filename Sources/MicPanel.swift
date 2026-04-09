@@ -122,12 +122,13 @@ final class MicPanel {
     private func startEscapeMonitor() {
         guard escapeMonitor == nil else { return }
         // Use global monitor — local monitor can't see key events because
-        // the panel is .nonactivatingPanel (events go to the focused app)
-        escapeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) {
-            [weak self] event in
-            if event.keyCode == 53 {
-                self?.onDismiss?()
-            }
+        // the panel is .nonactivatingPanel (events go to the focused app).
+        // Capture the dismiss closure directly instead of touching the
+        // @MainActor-isolated MicPanel instance from the monitor callback.
+        let dismiss = onDismiss
+        escapeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 53 else { return }
+            dismiss?()
         }
     }
 

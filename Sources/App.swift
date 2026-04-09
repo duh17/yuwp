@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Sparkle
 
 // Yuwp — system-wide voice dictation for macOS
 // Press hotkey → speak → text streams into any focused text field
@@ -24,9 +25,11 @@ struct YuwpApp {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     // Infrastructure — live for the app's lifetime
+    private let updaterController = AppDelegate.makeUpdaterController()
     private let hotkeyManager = HotkeyManager()
     private let asrProvider: NativeASRProvider = {
-        let p = NativeASRProvider()
+        let p = NativeASRProvider(port: Config.shared.serverPort)
+        p.serverMode = Config.shared.serverMode
         p.streamingModel = Config.shared.streamingModel
         p.batchModel = Config.shared.batchModel
         p.batchRetranscribeEnabled = Config.shared.batchRetranscribeEnabled
@@ -37,14 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Per-dictation session (created on start, torn down on stop)
     private var session: DictationSession?
+    private var dictationHotkeyBehavior = DictationHotkeyBehavior()
     /// Set when Enter was intercepted mid-session; triggers Enter replay after final commit.
     private var pendingEnter = false
 
     // Menu bar state
     private var statusItem: NSStatusItem!
     private var statusMenuItem: NSMenuItem!
-    private var hotkeyMenuItem: NSMenuItem!
-    private var hotkeySubmenu: NSMenu!
+    private var settingsWindowController: SettingsWindowController?
     private var modelMenuItem: NSMenuItem!
     private var modelSubmenu: NSMenu!
     private var providerReady = false
@@ -60,6 +63,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startSttProvider()
         requestMicPermission()
         checkPermission()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        asrProvider.shutdown()
+    }
+
+    private static func makeUpdaterController() -> SPUStandardUpdaterController? {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let feedURL = (info["SUFeedURL"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let publicKey = (info["SUPublicEDKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !feedURL.isEmpty, !publicKey.isEmpty else {
+            yuwpLog("Sparkle disabled — missing SUFeedURL or SUPublicEDKey")
+            return nil
+        }
+        return SPUStandardUpdaterController(
+            startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil
+        )
     }
 
     // MARK: - Hotkey Toggle
@@ -83,17 +103,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func toggleListening() {
-        if session?.isActive == true {
-            stopDictation()
-        } else {
+    private func handleShortcutEvent(_ event: ShortcutEvent) {
+        guard event.command == .dictation else { return }
+
+        let action = dictationHotkeyBehavior.handle(
+            phase: event.phase,
+            mode: Config.shared.dictationInteractionMode,
+            isSessionActive: session?.isActive == true
+        )
+
+        switch action {
+        case .start:
             startDictation()
+        case .stop:
+            stopDictation()
+        case .none:
+            break
         }
     }
 
     private func startDictation() {
-        guard session == nil, providerReady else {
-            if !providerReady { yuwpLog("Model still loading, please wait...") }
+        guard session == nil else { return }
+        guard Config.shared.serverMode != .off else {
+            yuwpLog("Server mode is off — enable Localhost or 0.0.0.0 to dictate")
+            return
+        }
+        guard providerReady else {
+            let missingModels = missingConfiguredModelLabels()
+            if missingModels.isEmpty {
+                yuwpLog("Model still loading, please wait...")
+            } else {
+                yuwpLog("\(missingModels.joined(separator: " + ")) model missing — open Model menu to download")
+            }
             return
         }
 
@@ -126,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func stopDictation() {
         guard let s = session else { return }
         HotkeyManager.sessionActive = false
+        dictationHotkeyBehavior.sessionDidEnd()
         let pcmData = s.stop()
 
         // Hide panel and reset icon immediately — don't wait for server's final
@@ -161,6 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .finished:
             micPanel.hide()
             HotkeyManager.sessionActive = false
+            dictationHotkeyBehavior.sessionDidEnd()
             statusItem.button?.image = NSImage(
                 systemSymbolName: "waveform",
                 accessibilityDescription: "Yuwp"
@@ -205,8 +248,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Accessibility Permission
 
     private func checkPermission() {
-        hotkeyManager.onToggle = { [weak self] in
-            Task { @MainActor in self?.toggleListening() }
+        hotkeyManager.onShortcutEvent = { [weak self] event in
+            Task { @MainActor in self?.handleShortcutEvent(event) }
         }
 
         if hotkeyManager.start() {
@@ -235,7 +278,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func onPermissionGranted() {
         hasPermission = true
         updateStatus()
-        yuwpLog("Ready. \(Config.shared.hotkeyMode.description) to dictate.")
+        yuwpLog("Ready. \(Config.shared.dictationBinding.description) to dictate.")
     }
 
     @objc private func openAccessibilitySettings() {
@@ -257,11 +300,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(statusMenuItem)
         menu.addItem(.separator())
 
-        hotkeyMenuItem = NSMenuItem(title: "Hotkey: \(Config.shared.hotkeyMode.description)", action: nil, keyEquivalent: "")
-        hotkeySubmenu = NSMenu()
-        rebuildHotkeySubmenu()
-        hotkeyMenuItem.submenu = hotkeySubmenu
-        menu.addItem(hotkeyMenuItem)
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
 
         modelMenuItem = NSMenuItem(title: modelMenuTitle(), action: nil, keyEquivalent: "")
         modelSubmenu = NSMenu()
@@ -269,38 +310,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         modelMenuItem.submenu = modelSubmenu
         menu.addItem(modelMenuItem)
 
+        if let updaterController {
+            let updateItem = NSMenuItem(
+                title: "Check for Updates...",
+                action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+                keyEquivalent: ""
+            )
+            updateItem.target = updaterController
+            menu.addItem(updateItem)
+        }
+
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Yuwp", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         statusItem.menu = menu
     }
 
-    private func rebuildHotkeySubmenu() {
-        hotkeySubmenu.removeAllItems()
-        let currentMode = Config.shared.hotkeyMode
-        for preset in HotkeyMode.presets {
-            let item = NSMenuItem(title: preset.label, action: #selector(changeHotkey(_:)),
-                                  keyEquivalent: "")
-            item.target = self
-            item.representedObject = HotkeyMode.presets.firstIndex(where: { $0.label == preset.label })
-            item.state = modesMatch(currentMode, preset.mode) ? .on : .off
-            hotkeySubmenu.addItem(item)
+    @objc private func openSettings() {
+        let controller = settingsWindowController ?? SettingsWindowController()
+        if settingsWindowController == nil {
+            controller.onDictationModeChange = { [weak self] mode in
+                self?.applyDictationMode(mode)
+            }
+            controller.onDictationBindingChange = { [weak self] binding in
+                self?.applyDictationBinding(binding)
+            }
+            controller.onServerModeChange = { [weak self] mode in
+                self?.applyServerMode(mode)
+            }
+            controller.onServerPortChange = { [weak self] port in
+                self?.applyServerPort(port)
+            }
+            settingsWindowController = controller
+        }
+
+        controller.sync(
+            dictationMode: Config.shared.dictationInteractionMode,
+            dictationBinding: Config.shared.dictationBinding,
+            serverMode: Config.shared.serverMode,
+            serverPort: Config.shared.serverPort
+        )
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func applyDictationMode(_ mode: DictationInteractionMode) {
+        guard Config.shared.dictationInteractionMode != mode else { return }
+        Config.shared.dictationInteractionMode = mode
+        yuwpLog("Dictation mode changed to: \(mode.description)")
+    }
+
+    private func applyDictationBinding(_ binding: KeyBinding) {
+        guard Config.shared.dictationBinding != binding else { return }
+        Config.shared.dictationBinding = binding
+
+        if hasPermission, hotkeyManager.restart() {
+            yuwpLog("Dictation shortcut changed to: \(binding.description)")
         }
     }
 
-    @objc private func changeHotkey(_ sender: NSMenuItem) {
-        guard let idx = sender.representedObject as? Int,
-              idx < HotkeyMode.presets.count else { return }
-        let mode = HotkeyMode.presets[idx].mode
-        Config.shared.hotkeyMode = mode
-        if hasPermission {
-            if hotkeyManager.restart() {
-                hotkeyMenuItem.title = "Hotkey: \(mode.description)"
-                rebuildHotkeySubmenu()
-                yuwpLog("Hotkey changed to: \(mode.description)")
-            }
-        }
+    private func applyServerMode(_ mode: ServerMode) {
+        guard mode != Config.shared.serverMode else { return }
+        Config.shared.serverMode = mode
+        asrProvider.serverMode = mode
+        restartProviderForSettingsChange()
+        yuwpLog("Server mode changed to: \(mode.description)")
     }
+
+    private func applyServerPort(_ port: UInt16) {
+        guard port != Config.shared.serverPort else { return }
+        Config.shared.serverPort = port
+        asrProvider.port = port
+        restartProviderForSettingsChange()
+        yuwpLog("Server port changed to: \(port)")
+    }
+
+    private func restartProviderForSettingsChange() {
+        if session?.isActive == true { stopDictation() }
+        asrProvider.shutdown()
+        asrProvider.start()
+        updateStatus()
+        settingsWindowController?.sync(
+            dictationMode: Config.shared.dictationInteractionMode,
+            dictationBinding: Config.shared.dictationBinding,
+            serverMode: Config.shared.serverMode,
+            serverPort: Config.shared.serverPort
+        )
+    }
+
+    // MARK: - Status
 
     private func updateStatus() {
         if !hasPermission {
@@ -308,6 +407,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusMenuItem.action = #selector(openAccessibilitySettings)
             statusMenuItem.target = self
             statusMenuItem.isEnabled = true
+            return
+        }
+
+        if Config.shared.serverMode == .off {
+            statusMenuItem.title = "Server mode is off"
+            statusMenuItem.action = nil
+            statusMenuItem.isEnabled = false
+            modelMenuItem?.title = modelMenuTitle()
             return
         }
 
@@ -319,19 +426,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let missingModels = missingConfiguredModelLabels()
+        if !missingModels.isEmpty {
+            statusMenuItem.title = "⚠ \(missingModels.joined(separator: " + ")) model missing"
+            statusMenuItem.action = nil
+            statusMenuItem.isEnabled = false
+            modelMenuItem?.title = modelMenuTitle()
+            return
+        }
+
         switch asrProvider.state {
+        case .disabled:
+            statusMenuItem.title = "Server mode is off"
         case .stopped:
             statusMenuItem.title = "Stopped"
         case .starting:
             statusMenuItem.title = "Loading model..."
         case .ready:
-            statusMenuItem.title = "✓ Ready"
+            let endpoint = Config.shared.serverMode == .allInterfaces
+                ? "0.0.0.0:\(asrProvider.port)"
+                : "127.0.0.1:\(asrProvider.port)"
+            statusMenuItem.title = "✓ Ready (\(endpoint))"
         case .error(let msg):
             statusMenuItem.title = "⚠ \(msg)"
         }
         statusMenuItem.action = nil
         statusMenuItem.isEnabled = false
         modelMenuItem?.title = modelMenuTitle()
+    }
+
+    private func missingConfiguredModelLabels() -> [String] {
+        var missing: [String] = []
+        if ModelLocator.resolve(Config.shared.streamingModel) == nil {
+            missing.append("Streaming")
+        }
+        if Config.shared.batchRetranscribeEnabled,
+           ModelLocator.resolve(Config.shared.batchModel) == nil {
+            missing.append("Batch")
+        }
+        return missing
     }
 
     // MARK: - Model Menu
@@ -639,16 +772,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updateStatus()
             showAlert(title: "Model download failed", message: error.localizedDescription)
             yuwpLog("Model download failed: \(repoId) — \(error.localizedDescription)")
-        }
-    }
-
-    private func modesMatch(_ a: HotkeyMode, _ b: HotkeyMode) -> Bool {
-        switch (a, b) {
-        case (.combo(let ak, let am), .combo(let bk, let bm)):
-            return ak == bk && am == bm
-        case (.doubleTap(let ak, _), .doubleTap(let bk, _)):
-            return ak == bk
-        default: return false
         }
     }
 

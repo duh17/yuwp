@@ -1,18 +1,15 @@
 import AppKit
+import Carbon.HIToolbox
 import CoreGraphics
 
-/// Detects global hotkeys via CGEvent tap.
+/// Detects the configured dictation key combo globally and emits press/release events.
 ///
-/// Two modes:
-///   - **combo**: modifier + key (e.g., Ctrl + `)
-///   - **doubleTap**: tap a modifier key twice quickly (e.g., double-tap Right Option)
-///
-/// Double-tap detection tracks clean taps only — if any other key is pressed
-/// while the modifier is held (e.g., using Option as an actual modifier),
-/// that tap is ignored.
+/// Combo shortcuts use Carbon global hotkeys. Enter interception during active
+/// dictation still uses an event tap because it needs to swallow Return in the
+/// focused app until final commit completes.
 @MainActor
 final class HotkeyManager {
-    var onToggle: (@Sendable () -> Void)?
+    var onShortcutEvent: (@Sendable (ShortcutEvent) -> Void)?
 
     /// Called when Enter/Return is pressed during an active dictation session.
     /// Set by AppDelegate. The event is swallowed; caller is responsible for
@@ -21,57 +18,40 @@ final class HotkeyManager {
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var carbonHotKey: EventHotKeyRef?
+    private var carbonHandler: EventHandlerRef?
 
-    // Static state for the C callback (no captures allowed)
+    // Static state for the C callbacks (no captures allowed)
     nonisolated(unsafe) private static var instance: HotkeyManager?
-    nonisolated(unsafe) private static var activeMode: HotkeyMode = .doubleTapRightOption
+    nonisolated(unsafe) private static var activeBinding = KeyBinding.ctrlBacktick
     /// When true, Enter/Return keys are intercepted during dictation.
     nonisolated(unsafe) static var sessionActive = false
 
-    // Double-tap state machine
-    nonisolated(unsafe) private static var lastCleanTapTime: CFAbsoluteTime = 0
-    nonisolated(unsafe) private static var modifierIsDown = false
-    nonisolated(unsafe) private static var tapIsDirty = false
+    private static let hotKeySignature: OSType = 0x59555750 // 'YUWP'
+    private static let hotKeyID: UInt32 = 1
 
-    /// Start the event tap. Returns false if Accessibility permission is missing.
+    /// Start global hotkey registration and the Enter interception tap.
+    /// Returns false if Accessibility permission is missing.
     func start() -> Bool {
         stop()
 
-        let mode = Config.shared.hotkeyMode
+        let binding = Config.shared.dictationBinding
         HotkeyManager.instance = self
-        HotkeyManager.activeMode = mode
-        HotkeyManager.lastCleanTapTime = 0
-        HotkeyManager.modifierIsDown = false
-        HotkeyManager.tapIsDirty = false
+        HotkeyManager.activeBinding = binding
 
-        let eventMask: CGEventMask
-        switch mode {
-        case .combo:
-            eventMask = (1 << CGEventType.keyDown.rawValue)
-        case .doubleTap:
-            // flagsChanged for modifier press/release + keyDown to detect dirty taps
-            eventMask = (1 << CGEventType.flagsChanged.rawValue)
-                      | (1 << CGEventType.keyDown.rawValue)
-        }
-
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: eventMask,
-            callback: Self._eventCallback,
-            userInfo: nil
-        ) else {
-            yuwpLog("Failed to create event tap — Accessibility permission required")
+        guard installCarbonHotkey(for: binding) else {
+            yuwpLog("Failed to register Carbon hotkey: \(binding.description)")
+            stop()
             return false
         }
 
-        eventTap = tap
-        runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
+        guard installEnterInterceptionTap() else {
+            yuwpLog("Failed to create event tap — Accessibility permission required")
+            stop()
+            return false
+        }
 
-        yuwpLog("Hotkey registered: \(mode.description)")
+        yuwpLog("Hotkey registered: \(binding.description)")
         return true
     }
 
@@ -84,144 +64,151 @@ final class HotkeyManager {
         }
         eventTap = nil
         runLoopSource = nil
+
+        if let hotKey = carbonHotKey {
+            UnregisterEventHotKey(hotKey)
+        }
+        if let handler = carbonHandler {
+            RemoveEventHandler(handler)
+        }
+        carbonHotKey = nil
+        carbonHandler = nil
         HotkeyManager.instance = nil
     }
 
-    /// Restart with new configuration.
     func restart() -> Bool {
         stop()
         return start()
     }
 
-    // MARK: - Event Callback
+    // MARK: - Carbon Hotkey
 
-    private static let _eventCallback: CGEventTapCallBack = {
-        _, type, event, _ -> Unmanaged<CGEvent>? in
+    private func installCarbonHotkey(for binding: KeyBinding) -> Bool {
+        var eventTypes = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
 
-        // Re-enable if system disabled the tap
+        let installStatus = InstallEventHandler(
+            GetApplicationEventTarget(),
+            Self.carbonEventHandler,
+            2,
+            &eventTypes,
+            nil,
+            &carbonHandler
+        )
+        guard installStatus == noErr else { return false }
+
+        let hotKeyID = EventHotKeyID(signature: Self.hotKeySignature, id: Self.hotKeyID)
+        let registerStatus = RegisterEventHotKey(
+            UInt32(binding.keyCode),
+            binding.carbonModifiers,
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &carbonHotKey
+        )
+        return registerStatus == noErr
+    }
+
+    private static let carbonEventHandler: EventHandlerUPP = { _, eventRef, _ in
+        guard let eventRef else { return noErr }
+
+        var eventHotKeyID = EventHotKeyID()
+        let status = GetEventParameter(
+            eventRef,
+            EventParamName(kEventParamDirectObject),
+            EventParamType(typeEventHotKeyID),
+            nil,
+            MemoryLayout<EventHotKeyID>.size,
+            nil,
+            &eventHotKeyID
+        )
+        guard status == noErr,
+              eventHotKeyID.signature == hotKeySignature,
+              eventHotKeyID.id == HotkeyManager.hotKeyID else {
+            return noErr
+        }
+
+        let phase: ShortcutPhase
+        switch GetEventKind(eventRef) {
+        case UInt32(kEventHotKeyPressed):
+            phase = .pressed
+        case UInt32(kEventHotKeyReleased):
+            phase = .released
+        default:
+            return noErr
+        }
+
+        Task { @MainActor in
+            HotkeyManager.instance?.onShortcutEvent?(
+                ShortcutEvent(command: .dictation, phase: phase)
+            )
+        }
+        return noErr
+    }
+
+    // MARK: - Enter Interception Tap
+
+    private func installEnterInterceptionTap() -> Bool {
+        let eventMask: CGEventMask = 1 << CGEventType.keyDown.rawValue
+
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: eventMask,
+            callback: Self.eventTapCallback,
+            userInfo: nil
+        ) else {
+            return false
+        }
+
+        eventTap = tap
+        runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        return true
+    }
+
+    private static let eventTapCallback: CGEventTapCallBack = { _, type, event, _ in
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            yuwpLog("Event tap re-enabled")
             Task { @MainActor in HotkeyManager.instance?.reenable() }
             return Unmanaged.passRetained(event)
         }
 
-        // Intercept Enter/Return during active dictation session
-        if sessionActive && type == .keyDown {
+        guard type == .keyDown else {
+            return Unmanaged.passRetained(event)
+        }
+
+        if sessionActive {
             let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
             if keyCode == 36 || keyCode == 76 { // Return or numpad Enter
                 Task { @MainActor in HotkeyManager.instance?.onEnterDuringSession?() }
-                return nil // swallow
+                return nil
             }
         }
 
-        switch activeMode {
-        case .combo(let targetKey, let targetMods):
-            return handleCombo(type: type, event: event,
-                               targetKey: targetKey, targetMods: targetMods)
-
-        case .doubleTap(let targetKey, let interval):
-            return handleDoubleTap(type: type, event: event,
-                                   targetKey: targetKey, interval: interval)
-        }
-    }
-
-    // MARK: - Combo Mode
-
-    private static func handleCombo(
-        type: CGEventType, event: CGEvent,
-        targetKey: UInt16, targetMods: UInt64
-    ) -> Unmanaged<CGEvent>? {
-        guard type == .keyDown else { return Unmanaged.passRetained(event) }
-
-        // Ignore auto-repeat — only fire on initial press
-        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat)
-        guard isRepeat == 0 else { return Unmanaged.passRetained(event) }
-
-        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-        guard keyCode == Int64(targetKey) else { return Unmanaged.passRetained(event) }
-
-        // Check modifiers (mask to device-independent bits)
-        let eventMods = event.flags.rawValue & 0x1F0000
-        guard (eventMods & targetMods) == targetMods else { return Unmanaged.passRetained(event) }
-
-        Task { @MainActor in HotkeyManager.instance?.onToggle?() }
-        return nil // Swallow the event
-    }
-
-    // MARK: - Double-Tap Mode
-
-    private static func handleDoubleTap(
-        type: CGEventType, event: CGEvent,
-        targetKey: UInt16, interval: TimeInterval
-    ) -> Unmanaged<CGEvent>? {
-        let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-
-        // Any non-modifier keyDown while our modifier is held → dirty tap
-        if type == .keyDown && keyCode != targetKey {
-            if modifierIsDown { tapIsDirty = true }
-            return Unmanaged.passRetained(event)
-        }
-
-        // Only handle flagsChanged for our target modifier key
-        guard type == .flagsChanged && keyCode == targetKey else {
-            return Unmanaged.passRetained(event)
-        }
-
-        // Determine press/release using device-specific flag bits
-        let mask = deviceMask(for: targetKey)
-        let keyIsDown = (event.flags.rawValue & mask) != 0
-
-        if keyIsDown && !modifierIsDown {
-            // Modifier pressed
-            modifierIsDown = true
-            tapIsDirty = false
-
-        } else if !keyIsDown && modifierIsDown {
-            // Modifier released
-            modifierIsDown = false
-
-            if !tapIsDirty {
-                // Clean tap completed — check for double-tap
-                let now = CFAbsoluteTimeGetCurrent()
-                let elapsed = now - lastCleanTapTime
-
-                if elapsed < interval && lastCleanTapTime > 0 {
-                    // Double-tap detected!
-                    lastCleanTapTime = 0
-                    Task { @MainActor in HotkeyManager.instance?.onToggle?() }
-                } else {
-                    lastCleanTapTime = now
-                }
-            }
-        }
-
-        // Never swallow modifier events — let them pass through normally
         return Unmanaged.passRetained(event)
     }
 
     // MARK: - Helpers
-
-    /// Device-specific modifier masks to distinguish left/right keys.
-    /// Based on IOLLEvent.h NX_DEVICE*KEYMASK constants.
-    private static func deviceMask(for keyCode: UInt16) -> UInt64 {
-        switch keyCode {
-        case 58: return 0x20       // Left Option   (NX_DEVICELALTKEYMASK)
-        case 61: return 0x40       // Right Option  (NX_DEVICERALTKEYMASK)
-        case 59: return 0x01       // Left Control  (NX_DEVICELCTLKEYMASK)
-        case 62: return 0x2000     // Right Control (NX_DEVICERCTLKEYMASK)
-        case 55: return 0x08       // Left Command  (NX_DEVICELCMDKEYMASK)
-        case 54: return 0x10       // Right Command (NX_DEVICERCMDKEYMASK)
-        case 56: return 0x02       // Left Shift    (NX_DEVICELSHIFTKEYMASK)
-        case 60: return 0x04       // Right Shift   (NX_DEVICERSHIFTKEYMASK)
-        case 63: return CGEventFlags.maskSecondaryFn.rawValue  // Fn/Globe
-        default: return 0
-        }
-    }
 
     private func reenable() {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: true)
             yuwpLog("Event tap re-enabled")
         }
+    }
+}
+
+private extension KeyBinding {
+    var carbonModifiers: UInt32 {
+        var result: UInt32 = 0
+        if modifiers & 0x100000 != 0 { result |= UInt32(cmdKey) }
+        if modifiers & 0x80000 != 0 { result |= UInt32(optionKey) }
+        if modifiers & 0x40000 != 0 { result |= UInt32(controlKey) }
+        if modifiers & 0x20000 != 0 { result |= UInt32(shiftKey) }
+        return result
     }
 }
