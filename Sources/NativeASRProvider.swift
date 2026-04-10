@@ -49,12 +49,10 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
     private(set) var state: ASRServerState = .stopped
     var onStateChange: (@Sendable (ASRServerState) -> Void)?
 
-    /// Streaming model spec: Hugging Face repo id or local model directory.
-    var streamingModel: String = "mlx-community/Qwen3-ASR-0.6B-4bit"
-    /// Batch retranscription model spec: Hugging Face repo id or local model directory.
-    var batchModel: String = "mlx-community/Qwen3-ASR-1.7B-bf16"
-    /// Whether pause/final batch retranscription is enabled.
-    var batchRetranscribeEnabled: Bool = true
+    /// Transcription model spec: Hugging Face repo id or local model directory.
+    var transcriptionModel: String = "mlx-community/Qwen3-ASR-0.6B-4bit"
+    /// Whether pause/final batch commit is enabled.
+    var batchCommitEnabled: Bool = true
 
     /// Hidden default aligner model used to power `/v1/audio/subtitles` when available locally.
     private static let defaultAlignerModel = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
@@ -92,22 +90,10 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
 
         updateState(.starting)
 
-        guard let streamingModelPath = Self.resolveModelPath(streamingModel) else {
-            yuwpLog("Streaming model not found: \(streamingModel)")
-            updateState(.error("Streaming model not found"))
+        guard let transcriptionModelPath = Self.resolveModelPath(transcriptionModel) else {
+            yuwpLog("Transcription model not found: \(transcriptionModel)")
+            updateState(.error("Transcription model not found"))
             return
-        }
-
-        let batchModelPath: String?
-        if batchRetranscribeEnabled {
-            guard let resolved = Self.resolveModelPath(batchModel) else {
-                yuwpLog("Batch model not found: \(batchModel)")
-                updateState(.error("Batch model not found"))
-                return
-            }
-            batchModelPath = resolved
-        } else {
-            batchModelPath = nil
         }
 
         guard let serverBin = Self.findServerBinary() else {
@@ -121,9 +107,9 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         let alignerModelPath = Self.resolveModelPath(Self.defaultAlignerModel)
 
         proc.executableURL = URL(fileURLWithPath: serverBin)
-        var arguments = [streamingModelPath, "--port", "\(port)", "--host", bindHost]
-        if let batchModelPath {
-            arguments += ["--batch-model", batchModelPath]
+        var arguments = [transcriptionModelPath, "--port", "\(port)", "--host", bindHost]
+        if batchCommitEnabled {
+            arguments += ["--batch-model", transcriptionModelPath]
         } else {
             arguments += ["--disable-batch-retranscribe"]
         }

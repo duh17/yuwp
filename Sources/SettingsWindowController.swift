@@ -11,46 +11,49 @@ final class SettingsWindowController: NSWindowController {
     var onResetRecordingsDirectory: (() -> Void)?
     var onRevealRecordingsDirectory: (() -> Void)?
     var onModelPresetChange: ((Int) -> Void)?
-    var onBatchRetranscribeChange: ((Bool) -> Void)?
-    var onApplyStreamingModelSpec: ((String) -> Void)?
-    var onApplyBatchModelSpec: ((String) -> Void)?
-    var onDownloadStreamingModel: ((String) -> Void)?
-    var onDownloadBatchModel: ((String) -> Void)?
+    var onBatchCommitChange: ((Bool) -> Void)?
+    var onApplyModelSpec: ((String) -> Void)?
+    var onDownloadModel: ((String) -> Void)?
+
+    private let customPresetTitle = "Custom configuration"
+    private let rowLabelWidth: CGFloat = 170
 
     private let dictationModeControl = NSSegmentedControl(labels: ["Toggle", "Push to Talk"], trackingMode: .selectOne, target: nil, action: nil)
     private let shortcutRecorder = ShortcutRecorderView(defaultBinding: .ctrlBacktick)
 
     private let modelPresetPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let batchRetranscribeCheckbox = NSButton(checkboxWithTitle: "Use a final pass after stop for better accuracy", target: nil, action: nil)
-    private let streamingModelField = NSTextField(frame: .zero)
-    private let applyStreamingModelButton = NSButton(title: "Apply", target: nil, action: nil)
-    private let downloadStreamingPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let streamingStatusLabel = NSTextField(labelWithString: "")
-    private let batchModelField = NSTextField(frame: .zero)
-    private let applyBatchModelButton = NSButton(title: "Apply", target: nil, action: nil)
-    private let downloadBatchPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let batchStatusLabel = NSTextField(labelWithString: "")
+    private let presetDescriptionLabel = NSTextField(wrappingLabelWithString: "")
+    private let batchCommitCheckbox = NSButton(checkboxWithTitle: "Use a batch pass when committing segments", target: nil, action: nil)
+    private let modelField = NSTextField(frame: .zero)
+    private let applyModelButton = NSButton(title: "Use", target: nil, action: nil)
+    private let downloadModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let modelStatusLabel = NSTextField(labelWithString: "")
+    private let advancedModelsHintLabel = NSTextField(wrappingLabelWithString: "Use custom model settings only if you want to override the selected profile. This same model is used for live decoding and batch segment commits.")
+    private let modelEditor = NSStackView()
 
-    private let saveRecordingsCheckbox = NSButton(checkboxWithTitle: "Keep audio files after each dictation", target: nil, action: nil)
+    private let saveRecordingsCheckbox = NSButton(checkboxWithTitle: "Save audio recordings", target: nil, action: nil)
     private let recordingsLocationLabel = NSTextField(wrappingLabelWithString: "")
     private let chooseRecordingsButton = NSButton(title: "Choose…", target: nil, action: nil)
     private let resetRecordingsButton = NSButton(title: "Reset Default", target: nil, action: nil)
     private let revealRecordingsButton = NSButton(title: "Reveal in Finder", target: nil, action: nil)
+    private let recordingsLocationView = NSStackView()
 
     private let serverModePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let serverModeDescriptionLabel = NSTextField(wrappingLabelWithString: "")
     private let serverPortField = NSTextField(frame: .zero)
     private let applyPortButton = NSButton(title: "Apply", target: nil, action: nil)
+    private let portControlRow = NSStackView()
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 640),
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 760),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         window.title = "Yuwp Settings"
         window.center()
-        window.minSize = NSSize(width: 680, height: 520)
+        window.minSize = NSSize(width: 720, height: 560)
         super.init(window: window)
         buildUI()
     }
@@ -65,9 +68,8 @@ final class SettingsWindowController: NSWindowController {
         dictationBinding: KeyBinding,
         serverMode: ServerMode,
         serverPort: UInt16,
-        streamingModel: String,
-        batchModel: String,
-        batchRetranscribeEnabled: Bool,
+        transcriptionModel: String,
+        batchCommitEnabled: Bool,
         saveRecordings: Bool,
         recordingsDir: URL,
         usingDefaultRecordingsDir: Bool
@@ -75,29 +77,36 @@ final class SettingsWindowController: NSWindowController {
         dictationModeControl.selectedSegment = dictationMode == .toggle ? 0 : 1
         shortcutRecorder.binding = dictationBinding
 
-        if let preset = ModelPreset.current() {
+        let currentPreset = ModelPreset.current()
+        if let preset = currentPreset {
             modelPresetPopup.selectItem(at: ModelPreset.presets.firstIndex { $0.label == preset.label } ?? 0)
         } else {
-            modelPresetPopup.selectItem(withTitle: "Custom")
+            modelPresetPopup.selectItem(withTitle: customPresetTitle)
         }
+        presetDescriptionLabel.stringValue = presetDescriptionText(currentPreset)
 
-        batchRetranscribeCheckbox.state = batchRetranscribeEnabled ? .on : .off
-        streamingModelField.stringValue = streamingModel
-        batchModelField.stringValue = batchModel
-        streamingStatusLabel.stringValue = modelStatusText(label: "Streaming", spec: streamingModel, enabled: true)
-        batchStatusLabel.stringValue = modelStatusText(label: "Final", spec: batchModel, enabled: batchRetranscribeEnabled)
-        batchStatusLabel.textColor = batchRetranscribeEnabled ? .secondaryLabelColor : .tertiaryLabelColor
+        batchCommitCheckbox.state = batchCommitEnabled ? .on : .off
+        modelField.stringValue = transcriptionModel
+        modelStatusLabel.stringValue = modelStatusText(
+            spec: transcriptionModel,
+            enabled: true,
+            disabledText: nil
+        )
 
         saveRecordingsCheckbox.state = saveRecordings ? .on : .off
         recordingsLocationLabel.stringValue = recordingsPathText(for: recordingsDir, usingDefault: usingDefaultRecordingsDir)
+        recordingsLocationLabel.textColor = saveRecordings ? .secondaryLabelColor : .tertiaryLabelColor
 
         if let index = ServerMode.allCases.firstIndex(of: serverMode) {
             serverModePopup.selectItem(at: index)
         }
+        serverModeDescriptionLabel.stringValue = serverModeDescription(for: serverMode)
         serverPortField.stringValue = "\(serverPort)"
 
-        downloadStreamingPopup.selectItem(at: 0)
-        downloadBatchPopup.selectItem(at: 0)
+        downloadModelPopup.selectItem(at: 0)
+
+        setControlsEnabled(saveRecordings, in: recordingsLocationView)
+        setControlsEnabled(serverMode != .off, in: portControlRow)
     }
 
     private func buildUI() {
@@ -110,85 +119,110 @@ final class SettingsWindowController: NSWindowController {
             self?.onDictationBindingChange?(binding)
         }
 
-        modelPresetPopup.addItems(withTitles: ModelPreset.presets.map(\.label) + ["Custom"])
+        modelPresetPopup.addItems(withTitles: ModelPreset.presets.map(\.label) + [customPresetTitle])
         modelPresetPopup.target = self
         modelPresetPopup.action = #selector(modelPresetChanged(_:))
 
-        batchRetranscribeCheckbox.target = self
-        batchRetranscribeCheckbox.action = #selector(batchRetranscribeChanged(_:))
+        presetDescriptionLabel.textColor = .secondaryLabelColor
+        presetDescriptionLabel.maximumNumberOfLines = 3
 
-        configureModelField(streamingModelField)
-        applyStreamingModelButton.target = self
-        applyStreamingModelButton.action = #selector(applyStreamingModel(_:))
-        configureDownloadPopup(downloadStreamingPopup, action: #selector(downloadStreamingSelectionChanged(_:)))
+        batchCommitCheckbox.target = self
+        batchCommitCheckbox.action = #selector(batchCommitChanged(_:))
 
-        configureModelField(batchModelField)
-        applyBatchModelButton.target = self
-        applyBatchModelButton.action = #selector(applyBatchModel(_:))
-        configureDownloadPopup(downloadBatchPopup, action: #selector(downloadBatchSelectionChanged(_:)))
+        configureModelField(modelField)
+        configureButton(applyModelButton)
+        applyModelButton.target = self
+        applyModelButton.action = #selector(applyModel(_:))
+        configureDownloadPopup(downloadModelPopup, action: #selector(downloadModelSelectionChanged(_:)))
+        configureModelEditor(
+            modelEditor,
+            field: modelField,
+            applyButton: applyModelButton,
+            downloadPopup: downloadModelPopup,
+            statusLabel: modelStatusLabel
+        )
 
-        streamingStatusLabel.textColor = .secondaryLabelColor
-        batchStatusLabel.textColor = .secondaryLabelColor
+        advancedModelsHintLabel.textColor = .secondaryLabelColor
+        advancedModelsHintLabel.maximumNumberOfLines = 3
 
         saveRecordingsCheckbox.target = self
         saveRecordingsCheckbox.action = #selector(saveRecordingsChanged(_:))
+        configureButton(chooseRecordingsButton)
         chooseRecordingsButton.target = self
         chooseRecordingsButton.action = #selector(chooseRecordingsDirectory(_:))
+        configureButton(resetRecordingsButton)
         resetRecordingsButton.target = self
         resetRecordingsButton.action = #selector(resetRecordingsDirectory(_:))
+        configureButton(revealRecordingsButton)
         revealRecordingsButton.target = self
         revealRecordingsButton.action = #selector(revealRecordingsDirectory(_:))
-        recordingsLocationLabel.textColor = .secondaryLabelColor
         recordingsLocationLabel.maximumNumberOfLines = 3
+        configureRecordingsLocationView()
 
         serverModePopup.addItems(withTitles: ServerMode.allCases.map(\.description))
         serverModePopup.target = self
         serverModePopup.action = #selector(serverModeChanged(_:))
+        serverModeDescriptionLabel.textColor = .secondaryLabelColor
+        serverModeDescriptionLabel.maximumNumberOfLines = 3
 
         serverPortField.placeholderString = "9748"
         serverPortField.alignment = .right
         serverPortField.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        configureButton(applyPortButton)
         applyPortButton.target = self
         applyPortButton.action = #selector(applyPort(_:))
-        applyPortButton.bezelStyle = .rounded
+        configurePortRow()
 
-        let stack = NSStackView(views: [
-            makeIntro(),
-            makeSection(title: "General", body: [
-                makeRow(label: "Dictation Mode", control: dictationModeControl),
+        let header = makeHeader()
+        let dictationSection = makeSection(
+            title: "Dictation",
+            subtitle: "Choose how Yuwp starts dictation and which shortcut triggers it.",
+            body: [
                 makeRow(label: "Shortcut", control: shortcutRecorder),
-            ]),
-            makeSection(title: "Models", body: [
-                helperLabel("Keep model configuration here. You can paste a Hugging Face repo id or a local model folder path, then click Apply."),
-                makeRow(label: "Preset", control: modelPresetPopup),
-                makeRow(label: "Final Pass", control: batchRetranscribeCheckbox),
-                makeRow(label: "Streaming Model", control: makeModelEditor(
-                    field: streamingModelField,
-                    applyButton: applyStreamingModelButton,
-                    downloadPopup: downloadStreamingPopup,
-                    statusLabel: streamingStatusLabel
-                )),
-                makeRow(label: "Final Model", control: makeModelEditor(
-                    field: batchModelField,
-                    applyButton: applyBatchModelButton,
-                    downloadPopup: downloadBatchPopup,
-                    statusLabel: batchStatusLabel
-                )),
-            ]),
-            makeSection(title: "Recordings", body: [
-                makeRow(label: "Save Recordings", control: saveRecordingsCheckbox),
-                makeRow(label: "Save Location", control: makeRecordingsLocationView()),
-            ]),
-            makeSection(title: "Server", body: [
-                helperLabel("Yuwp always talks to the server over localhost. Exposing 0.0.0.0 only matters if you want LAN clients to connect."),
-                makeRow(label: "Server Mode", control: serverModePopup),
-                makeRow(label: "Server Port", control: makePortRow()),
-            ]),
-        ])
+                makeRow(label: "Behavior", control: dictationModeControl),
+            ]
+        )
+        let transcriptionSection = makeSection(
+            title: "Transcription",
+            subtitle: "Choose a profile for speed or accuracy. Optionally run a slower batch pass whenever Yuwp commits a segment, including the trailing segment when you stop.",
+            body: [
+                makeRow(label: "Profile", control: makeControlWithCaption(modelPresetPopup, captionLabel: presetDescriptionLabel)),
+                makeRow(label: "Segment Commit", control: batchCommitCheckbox),
+                makeInsetSection(
+                    title: "Advanced model settings",
+                    subtitle: advancedModelsHintLabel,
+                    body: [
+                        makeRow(label: "Model", control: modelEditor),
+                    ]
+                ),
+            ]
+        )
+        let recordingsSection = makeSection(
+            title: "Recordings",
+            subtitle: "Keep source audio if you want a paper trail for debugging, QA, or re-transcription later.",
+            body: [
+                makeRow(label: "Audio Files", control: saveRecordingsCheckbox),
+                makeRow(label: "Recording Location", control: recordingsLocationView),
+            ]
+        )
+        let networkSection = makeSection(
+            title: "Network",
+            subtitle: "Choose whether Yuwp exposes its local transcription server only to this Mac or to other devices on your local network.",
+            body: [
+                makeRow(label: "Availability", control: makeControlWithCaption(serverModePopup, captionLabel: serverModeDescriptionLabel)),
+                makeRow(label: "Port", control: portControlRow),
+            ]
+        )
+
+        let stack = NSStackView(views: [header, dictationSection, transcriptionSection, recordingsSection, networkSection])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 18
+        stack.spacing = 20
         stack.translatesAutoresizingMaskIntoConstraints = false
+
+        for section in [dictationSection, transcriptionSection, recordingsSection, networkSection] {
+            section.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
 
         let documentView = NSView()
         documentView.translatesAutoresizingMaskIntoConstraints = false
@@ -214,99 +248,141 @@ final class SettingsWindowController: NSWindowController {
             documentView.bottomAnchor.constraint(equalTo: scrollView.contentView.bottomAnchor),
             documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
 
-            stack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 20),
-            stack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -20),
+            stack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -24),
+            stack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 24),
+            stack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -24),
         ])
     }
 
-    private func makeIntro() -> NSView {
-        let intro = helperLabel("Use the menu bar for quick actions. Use Settings for models, recordings, the dictation shortcut, and server behavior.")
-        intro.maximumNumberOfLines = 2
-        return intro
-    }
+    private func makeHeader() -> NSView {
+        let title = NSTextField(labelWithString: "Settings")
+        title.font = .systemFont(ofSize: 28, weight: .semibold)
 
-    private func makeSection(title: String, body: [NSView]) -> NSView {
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        let subtitle = helperLabel("Choose how Yuwp listens, transcribes, stores recordings, and shares its local server.")
+        subtitle.maximumNumberOfLines = 2
 
-        let section = NSStackView(views: [titleLabel] + body)
-        section.orientation = .vertical
-        section.alignment = .leading
-        section.spacing = 10
-        section.translatesAutoresizingMaskIntoConstraints = false
-        return section
-    }
-
-    private func makeRow(label title: String, control: NSView) -> NSView {
-        let row = NSGridView(views: [[label(title), control]])
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.rowSpacing = 8
-        row.columnSpacing = 16
-        row.xPlacement = .leading
-        row.column(at: 0).width = 120
-        return row
-    }
-
-    private func makeModelEditor(
-        field: NSTextField,
-        applyButton: NSButton,
-        downloadPopup: NSPopUpButton,
-        statusLabel: NSTextField
-    ) -> NSView {
-        let controls = NSStackView()
-        controls.orientation = .horizontal
-        controls.alignment = .centerY
-        controls.spacing = 8
-        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        applyButton.bezelStyle = .rounded
-        controls.addArrangedSubview(field)
-        controls.addArrangedSubview(applyButton)
-        controls.addArrangedSubview(downloadPopup)
-
-        let stack = NSStackView(views: [statusLabel, controls])
+        let stack = NSStackView(views: [title, subtitle])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
         return stack
     }
 
-    private func makeRecordingsLocationView() -> NSView {
-        let buttonRow = NSStackView()
-        buttonRow.orientation = .horizontal
-        buttonRow.alignment = .centerY
-        buttonRow.spacing = 8
-        buttonRow.addArrangedSubview(chooseRecordingsButton)
-        buttonRow.addArrangedSubview(resetRecordingsButton)
-        buttonRow.addArrangedSubview(revealRecordingsButton)
+    private func makeSection(title: String, subtitle: String, body: [NSView]) -> NSView {
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
 
-        let stack = NSStackView(views: [recordingsLocationLabel, buttonRow])
+        let subtitleLabel = helperLabel(subtitle)
+        subtitleLabel.maximumNumberOfLines = 3
+
+        let content = NSStackView(views: [titleLabel, subtitleLabel] + body)
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 12
+
+        return CardView(content: content, padding: NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18), cornerRadius: 14, fillColor: .controlBackgroundColor)
+    }
+
+    private func makeInsetSection(title: String, subtitle: NSTextField, body: [NSView]) -> NSView {
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        subtitle.maximumNumberOfLines = 4
+
+        let content = NSStackView(views: [titleLabel, subtitle] + body)
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 10
+
+        return CardView(content: content, padding: NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16), cornerRadius: 12, fillColor: .windowBackgroundColor)
+    }
+
+    private func makeRow(label title: String, control: NSView) -> NSView {
+        let grid = NSGridView(views: [[label(title), control]])
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.rowSpacing = 8
+        grid.columnSpacing = 18
+        grid.xPlacement = .leading
+        grid.row(at: 0).yPlacement = .top
+        grid.column(at: 0).width = rowLabelWidth
+        return grid
+    }
+
+    private func makeControlWithCaption(_ control: NSView, captionLabel: NSTextField) -> NSView {
+        let stack = NSStackView(views: [control, captionLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 8
+        stack.spacing = 6
         return stack
     }
 
-    private func makePortRow() -> NSView {
-        let stack = NSStackView()
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 8
+    private func configureModelEditor(
+        _ container: NSStackView,
+        field: NSTextField,
+        applyButton: NSButton,
+        downloadPopup: NSPopUpButton,
+        statusLabel: NSTextField
+    ) {
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.maximumNumberOfLines = 2
 
-        serverPortField.widthAnchor.constraint(equalToConstant: 90).isActive = true
-        stack.addArrangedSubview(serverPortField)
-        stack.addArrangedSubview(applyPortButton)
+        let controls = NSStackView()
+        controls.orientation = .horizontal
+        controls.alignment = .centerY
+        controls.spacing = 8
+        controls.translatesAutoresizingMaskIntoConstraints = false
 
-        let hint = helperLabel("1–65535")
-        stack.addArrangedSubview(hint)
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.widthAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
+        downloadPopup.setContentHuggingPriority(.required, for: .horizontal)
 
-        return stack
+        controls.addArrangedSubview(field)
+        controls.addArrangedSubview(applyButton)
+        controls.addArrangedSubview(downloadPopup)
+
+        container.orientation = .vertical
+        container.alignment = .leading
+        container.spacing = 6
+        container.addArrangedSubview(controls)
+        container.addArrangedSubview(statusLabel)
+    }
+
+    private func configureRecordingsLocationView() {
+        recordingsLocationView.orientation = .vertical
+        recordingsLocationView.alignment = .leading
+        recordingsLocationView.spacing = 8
+
+        let buttons = NSStackView()
+        buttons.orientation = .horizontal
+        buttons.alignment = .centerY
+        buttons.spacing = 8
+        buttons.addArrangedSubview(chooseRecordingsButton)
+        buttons.addArrangedSubview(resetRecordingsButton)
+        buttons.addArrangedSubview(revealRecordingsButton)
+
+        recordingsLocationView.addArrangedSubview(recordingsLocationLabel)
+        recordingsLocationView.addArrangedSubview(buttons)
+    }
+
+    private func configurePortRow() {
+        portControlRow.orientation = .horizontal
+        portControlRow.alignment = .centerY
+        portControlRow.spacing = 8
+
+        serverPortField.widthAnchor.constraint(equalToConstant: 96).isActive = true
+        portControlRow.addArrangedSubview(serverPortField)
+        portControlRow.addArrangedSubview(applyPortButton)
+        portControlRow.addArrangedSubview(helperLabel("1–65535"))
     }
 
     private func configureModelField(_ field: NSTextField) {
         field.placeholderString = "mlx-community/Qwen3-ASR-0.6B-4bit or /path/to/model"
         field.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+    }
+
+    private func configureButton(_ button: NSButton) {
+        button.bezelStyle = .rounded
     }
 
     private func configureDownloadPopup(_ popup: NSPopUpButton, action: Selector) {
@@ -325,13 +401,49 @@ final class SettingsWindowController: NSWindowController {
         let path = url.path.hasPrefix(home)
             ? "~" + String(url.path.dropFirst(home.count))
             : url.path
-        return usingDefault ? "Default: \(path)" : path
+        return usingDefault ? "Default location: \(path)" : path
     }
 
-    private func modelStatusText(label: String, spec: String, enabled: Bool) -> String {
+    private func presetDescriptionText(_ preset: ModelPreset?) -> String {
+        guard let preset else {
+            return "Using a custom model configuration. The advanced model settings below control transcription."
+        }
+        switch preset.label {
+        case "Fast":
+            return "Lower latency with the smaller model. Best default for quick local dictation."
+        case "Best Accuracy":
+            return "Uses the larger model for better recognition quality, at the cost of more compute."
+        default:
+            return preset.summary
+        }
+    }
+
+    private func serverModeDescription(for mode: ServerMode) -> String {
+        switch mode {
+        case .off:
+            return "Turns off Yuwp’s bundled transcription server. Dictation won’t work until you turn it back on."
+        case .localhost:
+            return "Only Yuwp and other apps on this Mac can connect to the server."
+        case .allInterfaces:
+            return "Makes the server available on your local network so other devices can connect to this Mac."
+        }
+    }
+
+    private func modelStatusText(spec: String, enabled: Bool, disabledText: String?) -> String {
         let name = ModelLocator.displayName(for: spec)
-        guard enabled else { return "\(label): \(name) (disabled)" }
-        return "\(label): \(name) \(ModelLocator.resolve(spec) != nil ? "✓ installed" : "⚠ missing")"
+        guard enabled else { return disabledText ?? "Disabled" }
+        let installed = ModelLocator.resolve(spec) != nil
+        return installed ? "Installed: \(name)" : "Missing: \(name)"
+    }
+
+    private func setControlsEnabled(_ enabled: Bool, in view: NSView) {
+        if let control = view as? NSControl {
+            control.isEnabled = enabled
+        }
+        view.alphaValue = enabled ? 1.0 : 0.55
+        for subview in view.subviews {
+            setControlsEnabled(enabled, in: subview)
+        }
     }
 
     private func label(_ string: String) -> NSTextField {
@@ -357,30 +469,19 @@ final class SettingsWindowController: NSWindowController {
         onModelPresetChange?(index)
     }
 
-    @objc private func batchRetranscribeChanged(_ sender: NSButton) {
-        onBatchRetranscribeChange?(sender.state == .on)
+    @objc private func batchCommitChanged(_ sender: NSButton) {
+        onBatchCommitChange?(sender.state == .on)
     }
 
-    @objc private func applyStreamingModel(_ sender: NSButton) {
-        onApplyStreamingModelSpec?(streamingModelField.stringValue)
+    @objc private func applyModel(_ sender: NSButton) {
+        onApplyModelSpec?(modelField.stringValue)
     }
 
-    @objc private func applyBatchModel(_ sender: NSButton) {
-        onApplyBatchModelSpec?(batchModelField.stringValue)
-    }
-
-    @objc private func downloadStreamingSelectionChanged(_ sender: NSPopUpButton) {
+    @objc private func downloadModelSelectionChanged(_ sender: NSPopUpButton) {
         guard sender.indexOfSelectedItem > 0,
               let repoId = sender.selectedItem?.representedObject as? String else { return }
         sender.selectItem(at: 0)
-        onDownloadStreamingModel?(repoId)
-    }
-
-    @objc private func downloadBatchSelectionChanged(_ sender: NSPopUpButton) {
-        guard sender.indexOfSelectedItem > 0,
-              let repoId = sender.selectedItem?.representedObject as? String else { return }
-        sender.selectItem(at: 0)
-        onDownloadBatchModel?(repoId)
+        onDownloadModel?(repoId)
     }
 
     @objc private func saveRecordingsChanged(_ sender: NSButton) {
@@ -413,6 +514,46 @@ final class SettingsWindowController: NSWindowController {
         }
         onServerPortChange?(port)
         serverPortField.stringValue = "\(port)"
+    }
+}
+
+private final class CardView: NSView {
+    private let fillColor: NSColor
+    private let cornerRadius: CGFloat
+
+    init(content: NSView, padding: NSEdgeInsets, cornerRadius: CGFloat, fillColor: NSColor) {
+        self.fillColor = fillColor
+        self.cornerRadius = cornerRadius
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        updateLayerStyle()
+
+        content.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: padding.left),
+            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -padding.right),
+            content.topAnchor.constraint(equalTo: topAnchor, constant: padding.top),
+            content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -padding.bottom),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateLayerStyle()
+    }
+
+    private func updateLayerStyle() {
+        layer?.cornerRadius = cornerRadius
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.separatorColor.cgColor
+        layer?.backgroundColor = fillColor.cgColor
     }
 }
 

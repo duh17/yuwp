@@ -30,9 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let asrProvider: NativeASRProvider = {
         let p = NativeASRProvider(port: Config.shared.serverPort)
         p.serverMode = Config.shared.serverMode
-        p.streamingModel = Config.shared.streamingModel
-        p.batchModel = Config.shared.batchModel
-        p.batchRetranscribeEnabled = Config.shared.batchRetranscribeEnabled
+        p.transcriptionModel = Config.shared.transcriptionModel
+        p.batchCommitEnabled = Config.shared.batchCommitEnabled
         return p
     }()
     private let audioCapture = AudioCapture()
@@ -57,15 +56,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        normalizeModelSelection()
         setupMenuBar()
         setupMicPanelDismiss()
         startSttProvider()
         requestMicPermission()
         checkPermission()
+
+        let env = ProcessInfo.processInfo.environment
+        let shouldOpenSettings = env["YUWP_OPEN_SETTINGS_ON_LAUNCH"] == "1" || env["YUWP_SETTINGS_SNAPSHOT_PATH"] != nil
+        if shouldOpenSettings {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.openSettings()
+                self?.captureSettingsSnapshotIfRequested()
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         asrProvider.shutdown()
+    }
+
+    private func captureSettingsSnapshotIfRequested() {
+        guard let path = ProcessInfo.processInfo.environment["YUWP_SETTINGS_SNAPSHOT_PATH"], !path.isEmpty else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.captureSettingsSnapshot(to: path)
+        }
+    }
+
+    private func captureSettingsSnapshot(to path: String) {
+        defer { NSApp.terminate(nil) }
+
+        guard let view = settingsWindowController?.window?.contentView else {
+            yuwpLog("Failed to capture settings snapshot — no settings content view")
+            return
+        }
+
+        view.layoutSubtreeIfNeeded()
+        let bounds = view.bounds
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: bounds) else {
+            yuwpLog("Failed to capture settings snapshot — bitmap rep unavailable")
+            return
+        }
+
+        view.cacheDisplay(in: bounds, to: rep)
+        guard let data = rep.representation(using: .png, properties: [:]) else {
+            yuwpLog("Failed to capture settings snapshot — PNG encoding failed")
+            return
+        }
+
+        do {
+            try data.write(to: URL(fileURLWithPath: path))
+            yuwpLog("Saved settings snapshot to: \(path)")
+        } catch {
+            yuwpLog("Failed to write settings snapshot: \(error.localizedDescription)")
+        }
     }
 
     private static func makeUpdaterController() -> SPUStandardUpdaterController? {
@@ -82,6 +127,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Hotkey Toggle
+
+    private func normalizeModelSelection() {
+        let shared = Config.shared
+        shared.transcriptionModel = shared.transcriptionModel
+        shared.batchCommitEnabled = shared.batchCommitEnabled
+        asrProvider.transcriptionModel = shared.transcriptionModel
+        asrProvider.batchCommitEnabled = shared.batchCommitEnabled
+    }
 
     private func setupMicPanelDismiss() {
         micPanel.onDismiss = { [weak self] in
@@ -124,7 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startDictation() {
         guard session == nil else { return }
         guard Config.shared.serverMode != .off else {
-            yuwpLog("Server mode is off — enable Localhost or 0.0.0.0 to dictate")
+            yuwpLog("Server mode is off — enable This Mac only or Local network to dictate")
             return
         }
         guard providerReady else {
@@ -132,7 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if missingModels.isEmpty {
                 yuwpLog("Model still loading, please wait...")
             } else {
-                yuwpLog("\(missingModels.joined(separator: " + ")) model missing — open Settings → Models to fix it")
+                yuwpLog("\(missingModels.joined(separator: " + ")) model missing — open Settings → Transcription to fix it")
             }
             return
         }
@@ -357,22 +410,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.onModelPresetChange = { [weak self] index in
                 self?.applyModelPreset(index: index)
             }
-            controller.onBatchRetranscribeChange = { [weak self] enabled in
-                self?.setBatchRetranscribeEnabled(enabled)
+            controller.onBatchCommitChange = { [weak self] enabled in
+                self?.setBatchCommitEnabled(enabled)
             }
-            controller.onApplyStreamingModelSpec = { [weak self] spec in
-                self?.applyModelSpec(spec, for: .streaming)
+            controller.onApplyModelSpec = { [weak self] spec in
+                self?.applyModelSpec(spec)
             }
-            controller.onApplyBatchModelSpec = { [weak self] spec in
-                self?.applyModelSpec(spec, for: .batch)
-            }
-            controller.onDownloadStreamingModel = { [weak self] repoId in
+            controller.onDownloadModel = { [weak self] repoId in
                 guard let self else { return }
-                Task { await self.downloadModel(repoId: repoId, applyTo: .streaming) }
-            }
-            controller.onDownloadBatchModel = { [weak self] repoId in
-                guard let self else { return }
-                Task { await self.downloadModel(repoId: repoId, applyTo: .batch) }
+                Task { await self.downloadModel(repoId: repoId) }
             }
             settingsWindowController = controller
         }
@@ -429,9 +475,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dictationBinding: Config.shared.dictationBinding,
             serverMode: Config.shared.serverMode,
             serverPort: Config.shared.serverPort,
-            streamingModel: Config.shared.streamingModel,
-            batchModel: Config.shared.batchModel,
-            batchRetranscribeEnabled: Config.shared.batchRetranscribeEnabled,
+            transcriptionModel: Config.shared.transcriptionModel,
+            batchCommitEnabled: Config.shared.batchCommitEnabled,
             saveRecordings: Config.shared.saveRecordings,
             recordingsDir: Config.shared.recordingsDir,
             usingDefaultRecordingsDir: Config.shared.usesDefaultRecordingsDir
@@ -492,30 +537,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func missingConfiguredModelLabels() -> [String] {
-        var missing: [String] = []
-        if ModelLocator.resolve(Config.shared.streamingModel) == nil {
-            missing.append("Streaming")
-        }
-        if Config.shared.batchRetranscribeEnabled,
-           ModelLocator.resolve(Config.shared.batchModel) == nil {
-            missing.append("Batch")
-        }
-        return missing
+        ModelLocator.resolve(Config.shared.transcriptionModel) == nil ? ["Transcription"] : []
     }
 
     // MARK: - Models
-
-    private enum ModelRole {
-        case streaming
-        case batch
-
-        var label: String {
-            switch self {
-            case .streaming: "Streaming"
-            case .batch: "Batch"
-            }
-        }
-    }
 
     private func applyModelPreset(index: Int) {
         guard index >= 0, index < ModelPreset.presets.count else { return }
@@ -523,28 +548,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if ModelPreset.current()?.label == preset.label { return }
 
         applyModelConfig(
-            streamingModel: preset.streamingModel,
-            batchModel: preset.batchModel,
-            batchEnabled: preset.batchEnabled
+            transcriptionModel: preset.transcriptionModel,
+            batchCommitEnabled: preset.batchCommitEnabled
         )
         yuwpLog("Model changed to: \(preset.label) (\(preset.summary))")
     }
 
-    private func setBatchRetranscribeEnabled(_ newValue: Bool) {
-        if newValue, ModelLocator.resolve(Config.shared.batchModel) == nil {
+    private func setBatchCommitEnabled(_ newValue: Bool) {
+        if newValue, ModelLocator.resolve(Config.shared.transcriptionModel) == nil {
             showAlert(
-                title: "Final model missing",
-                message: "Pick or download a valid final model before enabling the final accuracy pass."
+                title: "Model missing",
+                message: "Pick or download a valid transcription model before enabling the batch commit pass."
             )
             syncSettingsWindow()
             return
         }
-        guard Config.shared.batchRetranscribeEnabled != newValue else { return }
-        applyModelConfig(batchEnabled: newValue)
-        yuwpLog("Batch retranscribe \(newValue ? "enabled" : "disabled")")
+        guard Config.shared.batchCommitEnabled != newValue else { return }
+        applyModelConfig(batchCommitEnabled: newValue)
+        yuwpLog("Batch commit \(newValue ? "enabled" : "disabled")")
     }
 
-    private func applyModelSpec(_ spec: String, for role: ModelRole) {
+    private func applyModelSpec(_ spec: String) {
         let trimmed = spec.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             syncSettingsWindow()
@@ -552,33 +576,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if ModelLocator.resolve(trimmed) != nil {
-            switch role {
-            case .streaming:
-                applyModelConfig(streamingModel: trimmed)
-            case .batch:
-                applyModelConfig(batchModel: trimmed)
-            }
-            yuwpLog("\(role.label) model changed to: \(trimmed)")
+            applyModelConfig(transcriptionModel: trimmed)
+            yuwpLog("Transcription model changed to: \(trimmed)")
             return
         }
 
         if ModelLocator.isRepoId(trimmed) {
             let alert = NSAlert()
             alert.messageText = "Download model from Hugging Face?"
-            alert.informativeText = "Yuwp couldn't find `\(trimmed)` locally. Download it now into Application Support so the app can manage it directly?"
+            alert.informativeText = "Yuwp couldn't find `\(trimmed)` locally. Download it now into Application Support so the app can manage it directly? This same model is used for live decoding and batch segment commits."
             alert.addButton(withTitle: "Download")
             alert.addButton(withTitle: "Save Anyway")
             alert.addButton(withTitle: "Cancel")
             switch alert.runModal() {
             case .alertFirstButtonReturn:
-                Task { await downloadModel(repoId: trimmed, applyTo: role) }
+                Task { await downloadModel(repoId: trimmed) }
             case .alertSecondButtonReturn:
-                switch role {
-                case .streaming:
-                    applyModelConfig(streamingModel: trimmed)
-                case .batch:
-                    applyModelConfig(batchModel: trimmed)
-                }
+                applyModelConfig(transcriptionModel: trimmed)
             default:
                 syncSettingsWindow()
             }
@@ -593,23 +607,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyModelConfig(
-        streamingModel: String? = nil,
-        batchModel: String? = nil,
-        batchEnabled: Bool? = nil
+        transcriptionModel: String? = nil,
+        batchCommitEnabled: Bool? = nil
     ) {
         if session?.isActive == true { stopDictation() }
 
-        if let streamingModel {
-            Config.shared.streamingModel = streamingModel
-            asrProvider.streamingModel = streamingModel
+        if let transcriptionModel {
+            Config.shared.transcriptionModel = transcriptionModel
+            asrProvider.transcriptionModel = transcriptionModel
         }
-        if let batchModel {
-            Config.shared.batchModel = batchModel
-            asrProvider.batchModel = batchModel
-        }
-        if let batchEnabled {
-            Config.shared.batchRetranscribeEnabled = batchEnabled
-            asrProvider.batchRetranscribeEnabled = batchEnabled
+        if let batchCommitEnabled {
+            Config.shared.batchCommitEnabled = batchCommitEnabled
+            asrProvider.batchCommitEnabled = batchCommitEnabled
         }
 
         asrProvider.shutdown()
@@ -626,7 +635,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
-    private func downloadModel(repoId: String, applyTo role: ModelRole) async {
+    private func downloadModel(repoId: String) async {
         modelDownloadStatus = "Preparing \(ModelLocator.shortRepoName(repoId))…"
         updateStatus()
 
@@ -641,12 +650,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             modelDownloadStatus = nil
-            switch role {
-            case .streaming:
-                applyModelConfig(streamingModel: repoId)
-            case .batch:
-                applyModelConfig(batchModel: repoId)
-            }
+            applyModelConfig(transcriptionModel: repoId)
             yuwpLog("Downloaded model: \(repoId)")
         } catch {
             modelDownloadStatus = nil

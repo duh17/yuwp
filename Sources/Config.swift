@@ -22,8 +22,8 @@ enum ServerMode: String, Sendable, CaseIterable {
     var description: String {
         switch self {
         case .off: "Off"
-        case .localhost: "Localhost"
-        case .allInterfaces: "0.0.0.0"
+        case .localhost: "This Mac only"
+        case .allInterfaces: "Local network"
         }
     }
 
@@ -148,26 +148,29 @@ final class Config {
 
     // MARK: - Model
 
-    /// ASR model for streaming partials (low-latency, runs on every audio chunk)
-    var streamingModel: String {
-        get { defaults.string(forKey: "streamingModel") ?? "mlx-community/Qwen3-ASR-0.6B-4bit" }
-        set { defaults.set(newValue, forKey: "streamingModel") }
-    }
-
-    /// ASR model for batch retranscription (final pass on pause/stop)
-    var batchModel: String {
-        get { defaults.string(forKey: "batchModel") ?? "mlx-community/Qwen3-ASR-0.6B-4bit" }
-        set { defaults.set(newValue, forKey: "batchModel") }
-    }
-
-    /// Whether to run batch retranscription for a final pass on pause/stop
-    var batchRetranscribeEnabled: Bool {
+    /// ASR model used for both live decoding and batch segment commits.
+    var transcriptionModel: String {
         get {
-            defaults.object(forKey: "batchRetranscribeEnabled") != nil
-                ? defaults.bool(forKey: "batchRetranscribeEnabled")
-                : true
+            defaults.string(forKey: "transcriptionModel")
+                ?? defaults.string(forKey: "streamingModel")
+                ?? defaults.string(forKey: "batchModel")
+                ?? "mlx-community/Qwen3-ASR-0.6B-4bit"
         }
-        set { defaults.set(newValue, forKey: "batchRetranscribeEnabled") }
+        set { defaults.set(newValue, forKey: "transcriptionModel") }
+    }
+
+    /// Whether Yuwp runs a batch pass whenever it commits a segment.
+    var batchCommitEnabled: Bool {
+        get {
+            if defaults.object(forKey: "batchCommitEnabled") != nil {
+                return defaults.bool(forKey: "batchCommitEnabled")
+            }
+            if defaults.object(forKey: "batchRetranscribeEnabled") != nil {
+                return defaults.bool(forKey: "batchRetranscribeEnabled")
+            }
+            return true
+        }
+        set { defaults.set(newValue, forKey: "batchCommitEnabled") }
     }
 
     // MARK: - Recordings
@@ -217,21 +220,13 @@ final class Config {
 
 struct ModelPreset {
     let label: String
-    let streamingModel: String
-    let batchModel: String
-    let batchEnabled: Bool
+    let transcriptionModel: String
+    let batchCommitEnabled: Bool
 
     /// Short description for status display in the menu.
     var summary: String {
-        let streaming = Self.shortName(streamingModel)
-        if batchEnabled {
-            let batch = Self.shortName(batchModel)
-            if batch == streaming {
-                return "\(streaming) stream+final"
-            }
-            return "\(streaming) + \(batch) final"
-        }
-        return "\(streaming) only"
+        let model = Self.shortName(transcriptionModel)
+        return batchCommitEnabled ? "\(model) live+commit" : "\(model) live only"
     }
 
     /// Extract short label: "mlx-community/Qwen3-ASR-1.7B-bf16" -> "1.7B-bf16"
@@ -247,16 +242,14 @@ struct ModelPreset {
 
     static let presets: [ModelPreset] = [
         ModelPreset(
-            label: "Small",
-            streamingModel: "mlx-community/Qwen3-ASR-0.6B-4bit",
-            batchModel: "mlx-community/Qwen3-ASR-0.6B-4bit",
-            batchEnabled: true
+            label: "Fast",
+            transcriptionModel: "mlx-community/Qwen3-ASR-0.6B-4bit",
+            batchCommitEnabled: true
         ),
         ModelPreset(
-            label: "Large",
-            streamingModel: "mlx-community/Qwen3-ASR-1.7B-bf16",
-            batchModel: "mlx-community/Qwen3-ASR-1.7B-bf16",
-            batchEnabled: true
+            label: "Best Accuracy",
+            transcriptionModel: "mlx-community/Qwen3-ASR-1.7B-bf16",
+            batchCommitEnabled: true
         ),
     ]
 
@@ -265,9 +258,8 @@ struct ModelPreset {
     static func current() -> ModelPreset? {
         let cfg = Config.shared
         return presets.first { p in
-            p.streamingModel == cfg.streamingModel
-                && p.batchEnabled == cfg.batchRetranscribeEnabled
-                && (!p.batchEnabled || p.batchModel == cfg.batchModel)
+            p.transcriptionModel == cfg.transcriptionModel
+                && p.batchCommitEnabled == cfg.batchCommitEnabled
         }
     }
 }

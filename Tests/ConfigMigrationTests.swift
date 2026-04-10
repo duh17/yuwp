@@ -15,9 +15,8 @@ struct ConfigMigrationTests {
         #expect(config.dictationInteractionMode == .toggle)
         #expect(config.serverMode == .localhost)
         #expect(config.serverPort == 9748)
-        #expect(config.streamingModel == "mlx-community/Qwen3-ASR-0.6B-4bit")
-        #expect(config.batchModel == "mlx-community/Qwen3-ASR-0.6B-4bit")
-        #expect(config.batchRetranscribeEnabled)
+        #expect(config.transcriptionModel == "mlx-community/Qwen3-ASR-0.6B-4bit")
+        #expect(config.batchCommitEnabled)
         #expect(!config.saveRecordings)
         #expect(config.usesDefaultRecordingsDir)
         #expect(config.recordingsDir == config.defaultRecordingsDir)
@@ -32,9 +31,8 @@ struct ConfigMigrationTests {
         config.dictationInteractionMode = .pushToTalk
         config.serverMode = .allInterfaces
         config.serverPort = 8899
-        config.streamingModel = "mlx-community/Qwen3-ASR-1.7B-bf16"
-        config.batchModel = "/tmp/yuwp/models/final"
-        config.batchRetranscribeEnabled = false
+        config.transcriptionModel = "mlx-community/Qwen3-ASR-1.7B-bf16"
+        config.batchCommitEnabled = false
         config.saveRecordings = true
         config.setRecordingsDir(FileManager.default.temporaryDirectory.appendingPathComponent("yuwp-tests-recordings", isDirectory: true))
 
@@ -42,9 +40,8 @@ struct ConfigMigrationTests {
         #expect(config.dictationInteractionMode == .pushToTalk)
         #expect(config.serverMode == .allInterfaces)
         #expect(config.serverPort == 8899)
-        #expect(config.streamingModel == "mlx-community/Qwen3-ASR-1.7B-bf16")
-        #expect(config.batchModel == "/tmp/yuwp/models/final")
-        #expect(!config.batchRetranscribeEnabled)
+        #expect(config.transcriptionModel == "mlx-community/Qwen3-ASR-1.7B-bf16")
+        #expect(!config.batchCommitEnabled)
         #expect(config.saveRecordings)
         #expect(!config.usesDefaultRecordingsDir)
         #expect(config.recordingsDir == FileManager.default.temporaryDirectory.appendingPathComponent("yuwp-tests-recordings", isDirectory: true).standardizedFileURL)
@@ -52,6 +49,19 @@ struct ConfigMigrationTests {
         config.resetRecordingsDir()
         #expect(config.usesDefaultRecordingsDir)
         #expect(config.recordingsDir == config.defaultRecordingsDir)
+    }
+
+    @Test @MainActor func readsLegacyModelKeys() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+
+        defaults.set("legacy-streaming", forKey: "streamingModel")
+        defaults.set("legacy-batch", forKey: "batchModel")
+        defaults.set(false, forKey: "batchRetranscribeEnabled")
+
+        let config = Config(defaults: defaults)
+        #expect(config.transcriptionModel == "legacy-streaming")
+        #expect(!config.batchCommitEnabled)
     }
 
     @Test @MainActor func keyBindingDescriptionsAreReadable() {
