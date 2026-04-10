@@ -15,7 +15,7 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources",
-            exclude: ["NativeASR", "asr-test", "asr-bench", "asr-stream-test", "asr-server"]
+            exclude: ["NativeASR", "asr-test", "asr-bench", "asr-stream-test", "asr-server", "align-test"]
         ),
         .target(
             name: "NativeASR",
@@ -26,7 +26,10 @@ let package = Package(
                 .product(name: "MLXFFT", package: "mlx-swift"),
                 .product(name: "MLXRandom", package: "mlx-swift"),
             ],
-            path: "Sources/NativeASR"
+            path: "Sources/NativeASR",
+            resources: [
+                .copy("Resources")
+            ]
         ),
         .executableTarget(
             name: "asr-test",
@@ -47,6 +50,11 @@ let package = Package(
             name: "asr-server",
             dependencies: ["NativeASR"],
             path: "Sources/asr-server"
+        ),
+        .executableTarget(
+            name: "align-test",
+            dependencies: ["NativeASR"],
+            path: "Sources/align-test"
         ),
         .testTarget(
             name: "YuwpTests",

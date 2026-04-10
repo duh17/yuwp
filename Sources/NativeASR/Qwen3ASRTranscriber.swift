@@ -16,6 +16,13 @@ public struct TranscriptionResult: Sendable {
     public let audioDuration: Double
     public let processingTime: Double
 
+    public init(text: String, language: String?, audioDuration: Double, processingTime: Double) {
+        self.text = text
+        self.language = language
+        self.audioDuration = audioDuration
+        self.processingTime = processingTime
+    }
+
     public var rtf: Double { processingTime / max(audioDuration, 1e-6) }
     public var speedMultiplier: Double { audioDuration / max(processingTime, 1e-6) }
 }

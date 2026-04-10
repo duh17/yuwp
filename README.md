@@ -54,19 +54,23 @@ Note: without `scripts/run.sh`, macOS ties permissions to the binary hash — ev
 **Ctrl+`** toggles dictation by default. Talk normally — text appears in whatever field has focus. Press the shortcut again to stop.
 
 Open **Settings…** from the menu bar to configure:
-- **Dictation Mode**
-  - **Toggle** — press once to start, again to stop
-  - **Push to Talk** — hold to dictate, release to stop
-- **Shortcut**
-  - recorded directly in the settings window
+- **General**
+  - **Dictation Mode** — Toggle or Push to Talk
+  - **Shortcut** — recorded directly in the settings window
   - current presets: Ctrl+`, ⌥+Space, ⌘+⇧+D
-- **Server Mode**
+- **Models**
+  - pick a preset (**Small**, **Large**, or **Custom**)
+  - set separate streaming and final-pass model ids or local folder paths
+  - enable or disable the final accuracy pass after stop
+  - download supported models directly from the settings window
+- **Recordings**
+  - **Save Recordings** defaults to **off**
+  - choose a custom save location or reset to the default app support folder
+- **Server**
   - **Off** — don't run the bundled ASR server
   - **Localhost** — run the server on `127.0.0.1:<port>`
   - **0.0.0.0** — expose the server on all interfaces for LAN clients
-- **Server Port**
-  - configurable in Settings
-  - defaults to `9748`
+  - **Server Port** defaults to `9748`
 
 ### Text Injection Strategies
 
@@ -82,34 +86,44 @@ Live streaming (seeing words appear as you speak) works with AX API and CGEvent.
 
 ### Model Presets
 
-The menu bar offers model presets:
+Settings offers two built-in presets:
 
 | Preset | Model | Use Case |
 |--------|-------|----------|
 | **Small** | Qwen3-ASR-0.6B-4bit | Low latency, lower memory (~900MB) |
 | **Large** | Qwen3-ASR-1.7B-bf16 | Best accuracy, higher latency (~4GB) |
 
-Both presets use the same model for streaming and batch retranscription (final correction on pause/stop).
+Both presets use the same model for streaming and the final accuracy pass.
 
-Models are only downloaded after explicit user action from the menu. Yuwp never starts a model download on launch by itself.
+Models are only downloaded after explicit user action from Settings. Yuwp never starts a model download on launch by itself.
 
 ## Standalone ASR Server
 
-The ASR server can run independently:
+The ASR server can run independently for streaming dictation, OpenAI-style batch transcription, and subtitle generation:
 
 ```bash
 swift build -c release --product asr-server
-.build/arm64-apple-macosx/release/asr-server <model-dir> [--port 9748] [--host 127.0.0.1]
+.build/arm64-apple-macosx/release/asr-server <streaming-model-dir> \
+  [--batch-model <dir>] \
+  [--aligner-model <dir>] \
+  [--disable-batch-retranscribe] \
+  [--port 9748] \
+  [--host 127.0.0.1] \
+  [--warmup]
 ```
 
 Use `--host 0.0.0.0` only when you explicitly want LAN clients to connect.
+
+Pass `--aligner-model` to enable `/v1/audio/subtitles`. In the menu bar app, Yuwp will also auto-load the default aligner model from the local Hugging Face cache when it is already present.
 
 ### HTTP API
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/v1/info` | Model info and server status |
+| `GET` | `/v1/info` | Model info and server status (`aligner` / `vad` included) |
 | `POST` | `/v1/audio/transcriptions` | OpenAI-compatible batch transcription (multipart upload) |
+| `POST` | `/audio/transcriptions` | Alias for `/v1/audio/transcriptions` |
+| `POST` | `/v1/audio/subtitles` | Subtitle generation / forced alignment |
 | `POST` | `/v1/audio/transcriptions/stream` | Create a new streaming session |
 | `POST` | `/v1/audio/transcriptions/stream/:id` | Feed audio chunk (raw 16kHz mono s16le PCM) |
 | `DELETE` | `/v1/audio/transcriptions/stream/:id` | Stop session, returns final transcription |
@@ -127,24 +141,83 @@ curl -X POST --data-binary @audio.pcm http://localhost:9748/v1/audio/transcripti
 curl -s -X DELETE http://localhost:9748/v1/audio/transcriptions/stream/$ID
 ```
 
-#### Batch (OpenAI-compatible)
+#### Batch transcription
 
 ```bash
 curl http://localhost:9748/v1/audio/transcriptions \
-  -F file=@audio.wav \
+  -F file=@audio.m4a \
   -F model=qwen3-asr \
+  -F response_format=verbose_json
+```
+
+Supported `response_format` values:
+- `json`
+- `text`
+- `verbose_json`
+
+#### Subtitles / forced alignment
+
+```bash
+curl http://localhost:9748/v1/audio/subtitles \
+  -F file=@audio.m4a \
+  -F response_format=srt
+```
+
+If you already have a transcript, pass it as `text` and the server will align that text instead of retranscribing.
+
+```bash
+curl http://localhost:9748/v1/audio/subtitles \
+  -F file=@audio.m4a \
+  -F text="existing transcript goes here" \
   -F response_format=json
 ```
+
+Supported subtitle `response_format` values:
+- `srt`
+- `vtt`
+- `json`
+- `text` (transcript only)
+
+Tune subtitle grouping with:
+- `max_words_per_line` (default `8`)
+- `max_duration` (default `5.0` seconds)
+- `pause_threshold` (default `0.5` seconds)
+
+#### Long-audio behavior
+
+The server keeps the streaming path unchanged. Long-file logic only applies to batch endpoints.
+
+- `/v1/audio/transcriptions`
+  - short files: single pass
+  - audio over `10 min`: chunked on the server
+  - when built-in Silero VAD is available, long audio is split on silence
+  - if VAD is unavailable, the server falls back to fixed `120s` chunks
+- `/v1/audio/subtitles`
+  - requires `--aligner-model`
+  - short files: single pass align/transcribe + align
+  - audio over `4 min`: chunked with built-in Silero VAD when available
+  - if VAD is unavailable, the simple non-chunked subtitle path is limited to `10 min`
+
+Other batch limits and notes:
+- request body limit: `100 MB`
+- oversized uploads return JSON `413` instead of a dropped connection
+- use compressed uploads (`m4a`, `flac`, etc.) for long recordings instead of giant WAV files
+- `GET /v1/info` reports whether `aligner` and `vad` are active
 
 ## Benchmarking
 
 ```bash
-# Native server benchmark (requires asr-server to be built)
-scripts/bench-native-asr.py --help
+# Native server concurrency benchmark (requires asr-server to be built)
+uv run scripts/bench-native-asr.py --help
 
 # Model comparison benchmark
-scripts/bench-models.py --help
+uv run scripts/bench-models.py --help
+
+# Subtitle stress harness for a sample set
+uv run scripts/bench-subtitles.py --help
 ```
+
+`scripts/bench-subtitles.py` runs `/v1/audio/subtitles` across a manifest of local sample files, saves raw subtitle JSON per sample, and writes a summary JSON with timing, subtitle counts, gap/overlap checks, and approximate realtime factor. Start from `scripts/bench-subtitles.example.json` and swap in your own files.
 
 ## Silence Handling
 
@@ -172,19 +245,27 @@ Sources/
   TypewriterAnimator.swift  # Character-by-character text reveal
   Config.swift              # UserDefaults preferences
   NativeASR/                # MLX model loading, inference, streaming session
+    ForcedAligner.swift     # Subtitle alignment model wrapper
+    SileroVAD.swift         # CoreML VAD chunking for long batch jobs
+    Resources/              # Bundled Silero VAD CoreML model
   asr-server/
-    main.swift              # Native HTTP streaming ASR server
+    main.swift              # Native HTTP streaming + batch + subtitle server
+  align-test/
+    main.swift              # Local forced-alignment CLI
 Tests/
   DictationSessionTests.swift
   TypewriterAnimatorTests.swift
   CGEventInjectorTests.swift
   EnterInterceptionTests.swift
   ASRServerTests.swift
+  ForcedAlignerTests.swift
+  SileroVADTests.swift
 scripts/
   build.sh                  # Build + stable codesign
   run.sh                    # Build + launch as .app bundle
   bench-models.py           # ASR model benchmarking
   bench-native-asr.py       # Native server concurrency benchmarking
+  bench-subtitles.py        # Subtitle stress harness for local samples
   validate-native-asr.py    # Golden transcript validation
 ```
 

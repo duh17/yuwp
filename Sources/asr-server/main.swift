@@ -8,9 +8,10 @@
 //   POST   /v1/audio/transcriptions/stream         → create session
 //   POST   /v1/audio/transcriptions/stream/:id     → feed audio (raw s16le PCM)
 //   DELETE /v1/audio/transcriptions/stream/:id     → stop session, get final text
+//   POST   /v1/audio/subtitles                     → word-level alignment → SRT/VTT/JSON
 //
-// Usage: asr-server <streaming-model-dir> [--batch-model <dir>] [--disable-batch-retranscribe]
-//                   [--port 9748] [--host 127.0.0.1] [--warmup]
+// Usage: asr-server <streaming-model-dir> [--batch-model <dir>] [--aligner-model <dir>]
+//                   [--disable-batch-retranscribe] [--port 9748] [--host 127.0.0.1] [--warmup]
 
 #if canImport(Darwin)
 import Darwin
@@ -24,6 +25,7 @@ import NativeASR
 
 nonisolated(unsafe) var serverSocket: Int32 = -1
 nonisolated(unsafe) var shuttingDown = false
+private let vadLock = NSLock()
 
 #if YUWP_INTERNAL_DIAGNOSTICS
 let internalDiagnosticsEnabled = true
@@ -165,7 +167,6 @@ final class SessionManager: @unchecked Sendable {
         language: String? = nil,
         temperature: Float = 0.0
     ) throws -> TranscriptionResult {
-        let transcriber = batchTranscriber ?? self.transcriber
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathComponent(sanitizedFilename(filename))
@@ -175,16 +176,101 @@ final class SessionManager: @unchecked Sendable {
             try? FileManager.default.removeItem(at: tempURL.deletingLastPathComponent())
         }
 
-        inferenceLock.lock()
-        defer { inferenceLock.unlock() }
         let audio = try loadAudioFile(tempURL)
-        return try transcriber.transcribe(audio: audio, language: language, temperature: temperature)
+        return try transcribeAudio(audio: audio, language: language, temperature: temperature)
     }
 
-    private func sanitizedFilename(_ filename: String) -> String {
-        let trimmed = filename.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return "upload.wav" }
-        return URL(fileURLWithPath: trimmed).lastPathComponent
+    func transcribeAudio(
+        audio: [Float],
+        language: String? = nil,
+        temperature: Float = 0.0
+    ) throws -> TranscriptionResult {
+        let transcriber = batchTranscriber ?? self.transcriber
+        let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
+
+        inferenceLock.lock()
+        defer { inferenceLock.unlock() }
+
+        if audioDuration <= longAudioChunkThresholdSec {
+            return try transcriber.transcribe(audio: audio, language: language, temperature: temperature)
+        }
+
+        return try transcribeLongAudioLocked(
+            audio: audio,
+            language: language,
+            temperature: temperature,
+            transcriber: transcriber,
+            audioDuration: audioDuration
+        )
+    }
+
+    private func transcribeLongAudioLocked(
+        audio: [Float],
+        language: String?,
+        temperature: Float,
+        transcriber: Qwen3ASRTranscriber,
+        audioDuration: Double
+    ) throws -> TranscriptionResult {
+        let startedAt = Date()
+        let chunkSamples = Int(longAudioChunkSec * Double(ASRAudio.sampleRate))
+        let totalChunks = (audio.count + chunkSamples - 1) / chunkSamples
+        var texts: [String] = []
+        var detectedLanguage: String?
+        var offset = 0
+
+        log(
+            "Long batch transcription: \(String(format: "%.1f", audioDuration))s "
+                + "audio -> \(totalChunks) fixed chunks of \(Int(longAudioChunkSec))s"
+        )
+
+        while offset < audio.count {
+            let end = min(offset + chunkSamples, audio.count)
+            let chunk = Array(audio[offset..<end])
+            let result = try transcriber.transcribe(audio: chunk, language: language, temperature: temperature)
+            let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { texts.append(text) }
+            if detectedLanguage == nil { detectedLanguage = result.language }
+            offset = end
+        }
+
+        return TranscriptionResult(
+            text: AlignedTextRenderer.render(segments: texts),
+            language: language ?? detectedLanguage,
+            audioDuration: audioDuration,
+            processingTime: Date().timeIntervalSince(startedAt)
+        )
+    }
+
+    func subtitleItems(
+        audio: [Float],
+        transcript: String?,
+        language: String?,
+        temperature: Float = 0.0,
+        aligner: ForcedAligner
+    ) throws -> (transcript: String, language: String, items: [ForcedAlignItem]) {
+        let trimmedTranscript = transcript?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        inferenceLock.lock()
+        defer { inferenceLock.unlock() }
+
+        let resolvedTranscript: String
+        let resolvedLanguage: String
+        if let trimmedTranscript, !trimmedTranscript.isEmpty {
+            resolvedTranscript = trimmedTranscript
+            resolvedLanguage = language ?? "English"
+        } else {
+            let transcriber = batchTranscriber ?? self.transcriber
+            let result = try transcriber.transcribe(audio: audio, language: language, temperature: temperature)
+            resolvedTranscript = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            resolvedLanguage = language ?? result.language ?? "English"
+        }
+
+        guard !resolvedTranscript.isEmpty else {
+            return (resolvedTranscript, resolvedLanguage, [])
+        }
+
+        let items = aligner.align(audio: audio, text: resolvedTranscript, language: resolvedLanguage)
+        return (resolvedTranscript, resolvedLanguage, items)
     }
 
     private func cleanupExpired() {
@@ -204,6 +290,19 @@ final class SessionManager: @unchecked Sendable {
 // MARK: - HTTP Parser (minimal, no deps)
 
 private let maxBodySize = 100 * 1024 * 1024  // 100MB
+private let longAudioChunkThresholdSec = 10 * 60.0
+private let longAudioChunkSec = 120.0
+private let subtitleSimpleMaxAudioSec = 10 * 60.0
+private let subtitleVADThresholdSec = 4 * 60.0
+private let longAudioVADConfig = VADChunkingConfig(
+    threshold: 0.6,
+    minSpeechDuration: 0.25,
+    minSilenceDuration: 0.08,
+    speechPad: 0.02,
+    splitMinSilenceDuration: 0.5,
+    maxChunkDuration: 120.0,
+    minChunkDuration: 30.0
+)
 
 struct HTTPRequest {
     let method: String
@@ -269,8 +368,16 @@ func readHTTPRequest(fd: Int32) -> HTTPRequest? {
 
     // Read body (capped at maxBodySize)
     let contentLength = Int(headers["content-length"] ?? "0") ?? 0
-    guard contentLength >= 0, contentLength <= maxBodySize else {
+    guard contentLength >= 0 else { return nil }
+    if contentLength > maxBodySize {
         log("Rejected: body too large (\(contentLength) bytes)")
+        writeResponse(
+            fd: fd,
+            response: writeJSONResponse(
+                status: 413,
+                ["error": "request body too large: \(contentLength) bytes (max \(maxBodySize))"]
+            )
+        )
         return nil
     }
 
@@ -393,11 +500,237 @@ func writeResponse(fd: Int32, response: HTTPResponse) {
     sendAll(fd: fd, resp)
 }
 
+// MARK: - Subtitle Grouping & Formatting
+
+struct Subtitle {
+    let index: Int
+    let start: Double   // seconds
+    let end: Double     // seconds
+    let text: String
+}
+
+/// Group word-level alignment items into subtitle entries.
+func groupSubtitles(
+    _ items: [ForcedAlignItem],
+    maxWordsPerLine: Int = 8,
+    maxDuration: Double = 5.0,
+    pauseThreshold: Double = 0.5,
+    sentenceEndChars: Set<Character> = [".", "!", "?", "。", "！", "？"]
+) -> [Subtitle] {
+    guard !items.isEmpty else { return [] }
+
+    var subtitles: [Subtitle] = []
+    var currentWords: [ForcedAlignItem] = []
+    var subtitleIndex = 1
+
+    func flush() {
+        guard !currentWords.isEmpty else { return }
+        let text = AlignedTextRenderer.render(tokens: currentWords.map(\.text))
+        subtitles.append(Subtitle(
+            index: subtitleIndex,
+            start: currentWords.first!.startTime,
+            end: currentWords.last!.endTime,
+            text: text
+        ))
+        subtitleIndex += 1
+        currentWords.removeAll()
+    }
+
+    for (i, item) in items.enumerated() {
+        currentWords.append(item)
+
+        let duration = item.endTime - (currentWords.first?.startTime ?? item.startTime)
+        let atWordLimit = currentWords.count >= maxWordsPerLine
+        let atDurationLimit = duration >= maxDuration
+        let atSentenceEnd = item.text.last.map { sentenceEndChars.contains($0) } ?? false
+        let hasPause = i + 1 < items.count && (items[i + 1].startTime - item.endTime) >= pauseThreshold
+
+        if atWordLimit || atDurationLimit || atSentenceEnd || hasPause {
+            flush()
+        }
+    }
+    flush()
+    return subtitles
+}
+
+/// Format timestamp as HH:MM:SS,mmm (SRT) or HH:MM:SS.mmm (VTT).
+private func formatTime(_ seconds: Double, separator: String = ",") -> String {
+    let totalMs = Int(seconds * 1000)
+    let ms = totalMs % 1000
+    let s = (totalMs / 1000) % 60
+    let m = (totalMs / 60000) % 60
+    let h = totalMs / 3600000
+    return String(format: "%02d:%02d:%02d%@%03d", h, m, s, separator, ms)
+}
+
+func formatSRT(_ subtitles: [Subtitle]) -> String {
+    subtitles.map { sub in
+        "\(sub.index)\n\(formatTime(sub.start)) --> \(formatTime(sub.end))\n\(sub.text)"
+    }.joined(separator: "\n\n")
+}
+
+func formatVTT(_ subtitles: [Subtitle]) -> String {
+    "WEBVTT\n\n" + subtitles.map { sub in
+        "\(formatTime(sub.start, separator: ".")) --> \(formatTime(sub.end, separator: "."))\n\(sub.text)"
+    }.joined(separator: "\n\n")
+}
+
+func formatSubtitleJSON(_ subtitles: [Subtitle]) -> Data {
+    let arr: [[String: Any]] = subtitles.map { sub in
+        ["index": sub.index, "start": sub.start, "end": sub.end, "text": sub.text]
+    }
+    return (try? JSONSerialization.data(withJSONObject: arr)) ?? Data("[]".utf8)
+}
+
+private func splitTextProportionally(_ text: String, chunkDurations: [Double]) -> [String] {
+    guard !chunkDurations.isEmpty else { return [text] }
+    let totalDuration = chunkDurations.reduce(0, +)
+    guard totalDuration > 0 else { return [text] }
+
+    let characters = Array(text)
+    let totalCount = characters.count
+    var parts: [String] = []
+    var textPosition = 0
+
+    for (index, duration) in chunkDurations.enumerated() {
+        if index == chunkDurations.count - 1 {
+            parts.append(String(characters[textPosition...]).trimmingCharacters(in: .whitespacesAndNewlines))
+            break
+        }
+
+        let proportion = duration / totalDuration
+        let charsForChunk = Int(Double(totalCount) * proportion)
+        let endPosition = min(totalCount, textPosition + charsForChunk)
+        let searchRange = max(20, Int(Double(charsForChunk) * 0.1))
+        var bestPosition = endPosition
+        let separators = Set(" 。．！？、，.!?,\n")
+
+        outer: for offset in 0 ..< searchRange {
+            for checkPosition in [endPosition + offset, endPosition - offset] {
+                guard checkPosition >= 0, checkPosition < totalCount else { continue }
+                if separators.contains(characters[checkPosition]) {
+                    bestPosition = min(totalCount, checkPosition + 1)
+                    break outer
+                }
+            }
+        }
+
+        if bestPosition <= textPosition {
+            bestPosition = min(totalCount, endPosition)
+        }
+        parts.append(String(characters[textPosition ..< bestPosition]).trimmingCharacters(in: .whitespacesAndNewlines))
+        textPosition = bestPosition
+    }
+
+    return parts
+}
+
+private func offsetAlignmentItems(_ items: [ForcedAlignItem], by offset: Double) -> [ForcedAlignItem] {
+    items.map { item in
+        ForcedAlignItem(text: item.text, startTime: item.startTime + offset, endTime: item.endTime + offset)
+    }
+}
+
+private func formatVADChunkRanges(_ chunks: [VADAudioChunk]) -> String {
+    chunks.enumerated().map { index, chunk in
+        String(format: "%d:%.3f-%.3f", index + 1, chunk.startTime, chunk.endTime)
+    }.joined(separator: ",")
+}
+
+private func chunkLongAudioWithVAD(_ audio: [Float], vad: SileroVAD) throws -> [VADAudioChunk] {
+    vadLock.lock()
+    defer { vadLock.unlock() }
+    return try vad.chunk(audio: audio, config: longAudioVADConfig)
+}
+
+private func transcribeLongAudioWithVAD(
+    mgr: SessionManager,
+    audio: [Float],
+    language: String?,
+    temperature: Float,
+    vad: SileroVAD
+) throws -> TranscriptionResult {
+    let startedAt = Date()
+    let chunks = try chunkLongAudioWithVAD(audio, vad: vad)
+    let transcriptionDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
+    log("VAD chunking transcription: \(chunks.count) chunks from \(String(format: "%.1f", transcriptionDuration))s")
+    log("VAD chunk ranges transcription: \(formatVADChunkRanges(chunks))")
+
+    var texts: [String] = []
+    var resolvedLanguage = language
+    for chunk in chunks {
+        let chunkResult = try mgr.transcribeAudio(audio: chunk.audio, language: language, temperature: temperature)
+        let trimmed = chunkResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { texts.append(trimmed) }
+        if resolvedLanguage == nil { resolvedLanguage = chunkResult.language }
+    }
+
+    return TranscriptionResult(
+        text: AlignedTextRenderer.render(segments: texts),
+        language: resolvedLanguage,
+        audioDuration: Double(audio.count) / Double(ASRAudio.sampleRate),
+        processingTime: Date().timeIntervalSince(startedAt)
+    )
+}
+
+private func subtitleLongAudio(
+    mgr: SessionManager,
+    audio: [Float],
+    transcript: String?,
+    language: String?,
+    temperature: Float,
+    aligner: ForcedAligner,
+    vad: SileroVAD
+) throws -> (transcript: String, language: String, items: [ForcedAlignItem]) {
+    let chunks = try chunkLongAudioWithVAD(audio, vad: vad)
+    let subtitleDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
+    log("VAD chunking subtitles: \(chunks.count) chunks from \(String(format: "%.1f", subtitleDuration))s")
+    log("VAD chunk ranges subtitles: \(formatVADChunkRanges(chunks))")
+
+    var allItems: [ForcedAlignItem] = []
+    var transcriptParts: [String] = []
+    var resolvedLanguage = language ?? "English"
+
+    if let transcript, !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let textParts = splitTextProportionally(transcript, chunkDurations: chunks.map(\.duration))
+        for (chunk, textPart) in zip(chunks, textParts) {
+            let part = try mgr.subtitleItems(
+                audio: chunk.audio,
+                transcript: textPart,
+                language: language,
+                temperature: temperature,
+                aligner: aligner
+            )
+            transcriptParts.append(part.transcript)
+            resolvedLanguage = language ?? part.language
+            allItems.append(contentsOf: offsetAlignmentItems(part.items, by: chunk.startTime))
+        }
+    } else {
+        for chunk in chunks {
+            let part = try mgr.subtitleItems(
+                audio: chunk.audio,
+                transcript: nil,
+                language: language,
+                temperature: temperature,
+                aligner: aligner
+            )
+            let trimmed = part.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { transcriptParts.append(trimmed) }
+            resolvedLanguage = language ?? part.language
+            allItems.append(contentsOf: offsetAlignmentItems(part.items, by: chunk.startTime))
+        }
+    }
+
+    return (AlignedTextRenderer.render(segments: transcriptParts), resolvedLanguage, allItems)
+}
+
 // MARK: - Router
 
 func route(
     _ req: HTTPRequest,
     mgr: SessionManager,
+    aligner: ForcedAligner?,
+    vad: SileroVAD?,
     streamingModelName: String,
     batchModelName: String?,
     batchRetranscribeEnabled: Bool
@@ -417,6 +750,8 @@ func route(
             "status": "ready",
         ]
         if let batchModelName { info["batch_model"] = batchModelName }
+        info["aligner"] = aligner != nil
+        info["vad"] = vad != nil
         return writeJSONResponse(status: 200, info)
     }
 
@@ -450,9 +785,29 @@ func route(
         let language = fields["language"].flatMap { $0.isEmpty ? nil : $0 }
         let temperature = Float(fields["temperature"] ?? "0") ?? 0
         let filename = filePart.filename ?? inferredFilename(contentType: filePart.contentType)
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let tempURL = tempDir.appendingPathComponent(sanitizedFilename(filename))
 
         do {
-            let result = try mgr.transcribeFile(data: filePart.body, filename: filename, language: language, temperature: temperature)
+            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+            try filePart.body.write(to: tempURL, options: [.atomic])
+            defer { try? FileManager.default.removeItem(at: tempDir) }
+
+            let audio = try loadAudioFile(tempURL)
+            let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
+            let result: TranscriptionResult
+            if let vad, audioDuration > longAudioChunkThresholdSec {
+                result = try transcribeLongAudioWithVAD(
+                    mgr: mgr,
+                    audio: audio,
+                    language: language,
+                    temperature: temperature,
+                    vad: vad
+                )
+            } else {
+                result = try mgr.transcribeAudio(audio: audio, language: language, temperature: temperature)
+            }
+
             switch requestedFormat {
             case "text":
                 return writeTextResponse(status: 200, result.text)
@@ -467,6 +822,115 @@ func route(
                 return writeJSONResponse(status: 200, payload)
             default:
                 return writeJSONResponse(status: 200, ["text": result.text])
+            }
+        } catch {
+            return writeJSONResponse(status: 422, ["error": error.localizedDescription])
+        }
+    }
+
+    // MARK: Subtitle / Alignment endpoint
+
+    if path == "/v1/audio/subtitles" {
+        guard req.method == "POST" else { return writeJSONResponse(status: 405, ["error": "method not allowed"]) }
+        guard let aligner else {
+            return writeJSONResponse(status: 501, ["error": "aligner model not loaded (start server with --aligner-model)"])
+        }
+        guard let contentType = req.headers["content-type"],
+              contentType.lowercased().contains("multipart/form-data"),
+              let parts = parseMultipartFormData(body: req.body, contentTypeHeader: contentType)
+        else {
+            return writeJSONResponse(status: 415, ["error": "expected multipart/form-data upload"])
+        }
+
+        var fields: [String: String] = [:]
+        for part in parts where part.filename == nil {
+            if let value = part.textValue { fields[part.name] = value }
+        }
+        guard let filePart = parts.first(where: { $0.name == "file" }) else {
+            return writeJSONResponse(status: 400, ["error": "missing file field"])
+        }
+
+        let requestedLanguage = fields["language"].flatMap { $0.isEmpty ? nil : $0 }
+        let responseFormat = (fields["response_format"] ?? "srt").lowercased()
+        guard ["srt", "vtt", "json", "text"].contains(responseFormat) else {
+            return writeJSONResponse(status: 400, ["error": "unsupported response_format: \(responseFormat). Use srt, vtt, json, or text"])
+        }
+
+        let maxWordsPerLine = Int(fields["max_words_per_line"] ?? "8") ?? 8
+        let maxDuration = Double(fields["max_duration"] ?? "5.0") ?? 5.0
+        let pauseThreshold = Double(fields["pause_threshold"] ?? "0.5") ?? 0.5
+        let temperature = Float(fields["temperature"] ?? "0") ?? 0
+
+        // Decode audio to temp file, load as Float samples
+        let filename = filePart.filename ?? inferredFilename(contentType: filePart.contentType)
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let tempURL = tempDir.appendingPathComponent(sanitizedFilename(filename))
+
+        do {
+            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+            try filePart.body.write(to: tempURL, options: [.atomic])
+            defer { try? FileManager.default.removeItem(at: tempDir) }
+
+            let audio = try loadAudioFile(tempURL)
+            let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
+            let subtitleResult: (transcript: String, language: String, items: [ForcedAlignItem])
+
+            if let vad, audioDuration > subtitleVADThresholdSec {
+                let result = try subtitleLongAudio(
+                    mgr: mgr,
+                    audio: audio,
+                    transcript: fields["text"],
+                    language: requestedLanguage,
+                    temperature: temperature,
+                    aligner: aligner,
+                    vad: vad
+                )
+                subtitleResult = (result.transcript, result.language, result.items)
+            } else {
+                guard audioDuration <= subtitleSimpleMaxAudioSec else {
+                    return writeJSONResponse(
+                        status: 422,
+                        ["error": "long subtitle generation requires built-in VAD; keep subtitle audio under 10 minutes if VAD is unavailable"]
+                    )
+                }
+
+                subtitleResult = try mgr.subtitleItems(
+                    audio: audio,
+                    transcript: fields["text"],
+                    language: requestedLanguage,
+                    temperature: temperature,
+                    aligner: aligner
+                )
+            }
+
+            switch responseFormat {
+            case "text":
+                return writeTextResponse(status: 200, subtitleResult.transcript)
+            case "json":
+                let subtitles = groupSubtitles(
+                    subtitleResult.items,
+                    maxWordsPerLine: maxWordsPerLine,
+                    maxDuration: maxDuration,
+                    pauseThreshold: pauseThreshold
+                )
+                let body = formatSubtitleJSON(subtitles)
+                return HTTPResponse(status: 200, contentType: "application/json", body: body)
+            case "vtt":
+                let subtitles = groupSubtitles(
+                    subtitleResult.items,
+                    maxWordsPerLine: maxWordsPerLine,
+                    maxDuration: maxDuration,
+                    pauseThreshold: pauseThreshold
+                )
+                return writeTextResponse(status: 200, formatVTT(subtitles), contentType: "text/vtt; charset=utf-8")
+            default: // srt
+                let subtitles = groupSubtitles(
+                    subtitleResult.items,
+                    maxWordsPerLine: maxWordsPerLine,
+                    maxDuration: maxDuration,
+                    pauseThreshold: pauseThreshold
+                )
+                return writeTextResponse(status: 200, formatSRT(subtitles), contentType: "text/srt; charset=utf-8")
             }
         } catch {
             return writeJSONResponse(status: 422, ["error": error.localizedDescription])
@@ -503,6 +967,12 @@ func route(
 
 // MARK: - Server
 
+func sanitizedFilename(_ filename: String) -> String {
+    let trimmed = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty { return "upload.wav" }
+    return URL(fileURLWithPath: trimmed).lastPathComponent
+}
+
 func inferredFilename(contentType: String?) -> String {
     switch contentType?.lowercased() {
     case "audio/flac", "application/flac": return "upload.flac"
@@ -517,6 +987,8 @@ func startServer(
     host: String,
     port: UInt16,
     mgr: SessionManager,
+    aligner: ForcedAligner?,
+    vad: SileroVAD?,
     streamingModelName: String,
     batchModelName: String?,
     batchRetranscribeEnabled: Bool
@@ -573,6 +1045,8 @@ func startServer(
                 let response = route(
                     req,
                     mgr: mgr,
+                    aligner: aligner,
+                    vad: vad,
                     streamingModelName: streamingModelName,
                     batchModelName: batchModelName,
                     batchRetranscribeEnabled: batchRetranscribeEnabled
@@ -606,7 +1080,7 @@ func log(_ msg: String) {
 do {
     var args = Array(CommandLine.arguments.dropFirst())
     guard !args.isEmpty else {
-        fputs("Usage: asr-server <streaming-model-dir> [--batch-model <dir>] [--disable-batch-retranscribe] [--port 9748] [--host 127.0.0.1] [--warmup]\n", stderr)
+        fputs("Usage: asr-server <streaming-model-dir> [--batch-model <dir>] [--aligner-model <dir>] [--disable-batch-retranscribe] [--port 9748] [--host 127.0.0.1] [--warmup]\n", stderr)
         exit(1)
     }
 
@@ -615,6 +1089,7 @@ do {
     var host = "127.0.0.1"
     var doWarmup = false
     var batchModelPath: String?
+    var alignerModelPath: String?
     var batchRetranscribeEnabled = true
 
     while !args.isEmpty {
@@ -631,6 +1106,9 @@ do {
         case "--batch-model":
             guard !args.isEmpty else { fputs("--batch-model requires a path\n", stderr); exit(1) }
             batchModelPath = args.removeFirst()
+        case "--aligner-model":
+            guard !args.isEmpty else { fputs("--aligner-model requires a path\n", stderr); exit(1) }
+            alignerModelPath = args.removeFirst()
         case "--disable-batch-retranscribe":
             batchRetranscribeEnabled = false
         case let flag: fputs("Unknown option: \(flag)\n", stderr); exit(1)
@@ -656,6 +1134,30 @@ do {
     } else {
         batchTranscriber = nil
     }
+    // Load aligner model (optional)
+    let aligner: ForcedAligner?
+    if let alignerModelPath {
+        let alignerURL = URL(fileURLWithPath: alignerModelPath)
+        guard FileManager.default.fileExists(atPath: alignerURL.path) else {
+            fputs("Aligner model not found: \(alignerModelPath)\n", stderr)
+            exit(1)
+        }
+        log("Loading aligner model from \(alignerModelPath)...")
+        aligner = try ForcedAligner.load(from: alignerURL)
+        log("Aligner loaded (classify_num=\(aligner!.model.config.classifyNum))")
+    } else {
+        aligner = nil
+    }
+
+    let vad: SileroVAD?
+    do {
+        vad = try SileroVAD()
+        log("Silero VAD loaded")
+    } catch {
+        log("Silero VAD unavailable: \(error.localizedDescription)")
+        vad = nil
+    }
+
     if doWarmup {
         try transcriber.warmup()
         if let batchTranscriber, batchTranscriber !== transcriber {
@@ -672,6 +1174,8 @@ do {
         host: host,
         port: port,
         mgr: mgr,
+        aligner: aligner,
+        vad: vad,
         streamingModelName: modelURL.lastPathComponent,
         batchModelName: batchTranscriber?.modelDirectory.lastPathComponent,
         batchRetranscribeEnabled: batchRetranscribeEnabled

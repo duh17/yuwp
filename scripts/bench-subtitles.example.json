@@ -1,0 +1,19 @@
+{
+  "samples": [
+    {
+      "name": "openai-chief-scientist",
+      "file": "/tmp/yuwp-subtitle-bench/video-32k.m4a",
+      "source_url": "https://youtu.be/vK1qEF3a3WM",
+      "language": "en"
+    },
+    {
+      "name": "swap-in-your-next-long-video",
+      "file": "/absolute/path/to/another-sample.m4a",
+      "source_url": "https://example.com/video",
+      "language": "en",
+      "max_words_per_line": 8,
+      "max_duration": 5.0,
+      "pause_threshold": 0.5
+    }
+  ]
+}

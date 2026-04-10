@@ -56,6 +56,9 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
     /// Whether pause/final batch retranscription is enabled.
     var batchRetranscribeEnabled: Bool = true
 
+    /// Hidden default aligner model used to power `/v1/audio/subtitles` when available locally.
+    private static let defaultAlignerModel = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
+
     // Process management
     private var process: Process?
     private var readyPollTask: Task<Void, Never>?
@@ -115,6 +118,7 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
 
         let proc = Process()
         let stderrPipe = Pipe()
+        let alignerModelPath = Self.resolveModelPath(Self.defaultAlignerModel)
 
         proc.executableURL = URL(fileURLWithPath: serverBin)
         var arguments = [streamingModelPath, "--port", "\(port)", "--host", bindHost]
@@ -122,6 +126,11 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
             arguments += ["--batch-model", batchModelPath]
         } else {
             arguments += ["--disable-batch-retranscribe"]
+        }
+        if let alignerModelPath {
+            arguments += ["--aligner-model", alignerModelPath]
+        } else {
+            yuwpLog("Aligner model not found locally: \(Self.defaultAlignerModel) — subtitles disabled")
         }
         proc.arguments = arguments
         proc.standardInput = FileHandle.nullDevice
@@ -154,7 +163,11 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         }
 
         process = proc
-        yuwpLog("asr-server started (PID: \(proc.processIdentifier))")
+        if let alignerModelPath {
+            yuwpLog("asr-server started (PID: \(proc.processIdentifier), aligner: \(URL(fileURLWithPath: alignerModelPath).lastPathComponent))")
+        } else {
+            yuwpLog("asr-server started (PID: \(proc.processIdentifier))")
+        }
 
         // Poll for readiness
         readyPollTask = Task.detached { [weak self] in
