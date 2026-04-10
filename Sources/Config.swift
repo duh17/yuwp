@@ -173,15 +173,43 @@ final class Config {
     // MARK: - Recordings
 
     var saveRecordings: Bool {
-        get { defaults.bool(forKey: "saveRecordings") }
+        get {
+            defaults.object(forKey: "saveRecordings") != nil
+                ? defaults.bool(forKey: "saveRecordings")
+                : false
+        }
         set { defaults.set(newValue, forKey: "saveRecordings") }
     }
 
-    var recordingsDir: URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    var defaultRecordingsDir: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Yuwp/recordings", isDirectory: true)
+    }
+
+    var usesDefaultRecordingsDir: Bool {
+        let stored = defaults.string(forKey: "recordingsDirPath")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return stored?.isEmpty != false
+    }
+
+    var recordingsDir: URL {
+        let dir: URL
+        if usesDefaultRecordingsDir {
+            dir = defaultRecordingsDir
+        } else {
+            let path = defaults.string(forKey: "recordingsDirPath") ?? defaultRecordingsDir.path
+            let expanded = NSString(string: path).expandingTildeInPath
+            dir = URL(fileURLWithPath: expanded, isDirectory: true).standardizedFileURL
+        }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    func setRecordingsDir(_ url: URL) {
+        defaults.set(url.standardizedFileURL.path, forKey: "recordingsDirPath")
+    }
+
+    func resetRecordingsDir() {
+        defaults.removeObject(forKey: "recordingsDirPath")
     }
 }
 

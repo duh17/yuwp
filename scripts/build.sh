@@ -15,7 +15,8 @@ else
     echo "[yuwp] Internal diagnostics: OFF"
 fi
 
-swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product Yuwp --product asr-server
+swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product Yuwp
+swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product asr-server
 bash scripts/build_mlx_metallib.sh "$CONFIGURATION"
 
 echo "[yuwp] Built Yuwp + asr-server ($CONFIGURATION)"

@@ -135,7 +135,7 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
             ) else { return }
 
             var error: NSError?
-            var allConsumed = false
+            nonisolated(unsafe) var allConsumed = false
             converter.convert(to: outputBuffer, error: &error) { _, outStatus in
                 if allConsumed {
                     outStatus.pointee = .noDataNow

@@ -47,9 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Menu bar state
     private var statusItem: NSStatusItem!
     private var statusMenuItem: NSMenuItem!
+    private var saveRecordingsMenuItem: NSMenuItem!
     private var settingsWindowController: SettingsWindowController?
-    private var modelMenuItem: NSMenuItem!
-    private var modelSubmenu: NSMenu!
     private var providerReady = false
     private var hasPermission = false
     private var permissionTimer: Timer?
@@ -133,7 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if missingModels.isEmpty {
                 yuwpLog("Model still loading, please wait...")
             } else {
-                yuwpLog("\(missingModels.joined(separator: " + ")) model missing — open Model menu to download")
+                yuwpLog("\(missingModels.joined(separator: " + ")) model missing — open Settings → Models to fix it")
             }
             return
         }
@@ -177,7 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             accessibilityDescription: "Yuwp"
         )
 
-        if let pcmData, !pcmData.isEmpty {
+        if Config.shared.saveRecordings, let pcmData, !pcmData.isEmpty {
             saveRecording(pcmData)
         }
     }
@@ -304,13 +303,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
-        modelMenuItem = NSMenuItem(title: modelMenuTitle(), action: nil, keyEquivalent: "")
-        modelSubmenu = NSMenu()
-        rebuildModelSubmenu()
-        modelMenuItem.submenu = modelSubmenu
-        menu.addItem(modelMenuItem)
+        menu.addItem(.separator())
+
+        saveRecordingsMenuItem = NSMenuItem(title: "Save Recordings", action: #selector(toggleSaveRecordings(_:)), keyEquivalent: "")
+        saveRecordingsMenuItem.target = self
+        saveRecordingsMenuItem.state = Config.shared.saveRecordings ? .on : .off
+        menu.addItem(saveRecordingsMenuItem)
 
         if let updaterController {
+            menu.addItem(.separator())
             let updateItem = NSMenuItem(
                 title: "Check for Updates...",
                 action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
@@ -341,15 +342,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.onServerPortChange = { [weak self] port in
                 self?.applyServerPort(port)
             }
+            controller.onSaveRecordingsChange = { [weak self] enabled in
+                self?.applySaveRecordings(enabled)
+            }
+            controller.onChooseRecordingsDirectory = { [weak self] in
+                self?.chooseRecordingsDirectory()
+            }
+            controller.onResetRecordingsDirectory = { [weak self] in
+                self?.resetRecordingsDirectory()
+            }
+            controller.onRevealRecordingsDirectory = { [weak self] in
+                self?.revealRecordingsDirectory()
+            }
+            controller.onModelPresetChange = { [weak self] index in
+                self?.applyModelPreset(index: index)
+            }
+            controller.onBatchRetranscribeChange = { [weak self] enabled in
+                self?.setBatchRetranscribeEnabled(enabled)
+            }
+            controller.onApplyStreamingModelSpec = { [weak self] spec in
+                self?.applyModelSpec(spec, for: .streaming)
+            }
+            controller.onApplyBatchModelSpec = { [weak self] spec in
+                self?.applyModelSpec(spec, for: .batch)
+            }
+            controller.onDownloadStreamingModel = { [weak self] repoId in
+                guard let self else { return }
+                Task { await self.downloadModel(repoId: repoId, applyTo: .streaming) }
+            }
+            controller.onDownloadBatchModel = { [weak self] repoId in
+                guard let self else { return }
+                Task { await self.downloadModel(repoId: repoId, applyTo: .batch) }
+            }
             settingsWindowController = controller
         }
 
-        controller.sync(
-            dictationMode: Config.shared.dictationInteractionMode,
-            dictationBinding: Config.shared.dictationBinding,
-            serverMode: Config.shared.serverMode,
-            serverPort: Config.shared.serverPort
-        )
+        syncSettingsWindow(controller)
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -391,12 +419,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         asrProvider.shutdown()
         asrProvider.start()
         updateStatus()
-        settingsWindowController?.sync(
+        syncSettingsWindow()
+    }
+
+    private func syncSettingsWindow(_ controller: SettingsWindowController? = nil) {
+        let target = controller ?? settingsWindowController
+        target?.sync(
             dictationMode: Config.shared.dictationInteractionMode,
             dictationBinding: Config.shared.dictationBinding,
             serverMode: Config.shared.serverMode,
-            serverPort: Config.shared.serverPort
+            serverPort: Config.shared.serverPort,
+            streamingModel: Config.shared.streamingModel,
+            batchModel: Config.shared.batchModel,
+            batchRetranscribeEnabled: Config.shared.batchRetranscribeEnabled,
+            saveRecordings: Config.shared.saveRecordings,
+            recordingsDir: Config.shared.recordingsDir,
+            usingDefaultRecordingsDir: Config.shared.usesDefaultRecordingsDir
         )
+        saveRecordingsMenuItem?.state = Config.shared.saveRecordings ? .on : .off
     }
 
     // MARK: - Status
@@ -414,7 +454,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusMenuItem.title = "Server mode is off"
             statusMenuItem.action = nil
             statusMenuItem.isEnabled = false
-            modelMenuItem?.title = modelMenuTitle()
             return
         }
 
@@ -422,7 +461,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusMenuItem.title = "⬇︎ \(modelDownloadStatus)"
             statusMenuItem.action = nil
             statusMenuItem.isEnabled = false
-            modelMenuItem?.title = modelMenuTitle()
             return
         }
 
@@ -431,7 +469,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusMenuItem.title = "⚠ \(missingModels.joined(separator: " + ")) model missing"
             statusMenuItem.action = nil
             statusMenuItem.isEnabled = false
-            modelMenuItem?.title = modelMenuTitle()
             return
         }
 
@@ -452,7 +489,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusMenuItem.action = nil
         statusMenuItem.isEnabled = false
-        modelMenuItem?.title = modelMenuTitle()
     }
 
     private func missingConfiguredModelLabels() -> [String] {
@@ -467,7 +503,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return missing
     }
 
-    // MARK: - Model Menu
+    // MARK: - Models
 
     private enum ModelRole {
         case streaming
@@ -481,102 +517,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func modelMenuTitle() -> String {
-        let label = ModelPreset.current()?.label ?? "Custom"
-        return "Model: \(label)"
-    }
-
-    private func rebuildModelSubmenu() {
-        modelSubmenu.removeAllItems()
-        let currentPreset = ModelPreset.current()
-
-        for (idx, preset) in ModelPreset.presets.enumerated() {
-            let item = NSMenuItem(
-                title: "\(preset.label)  (\(preset.summary))",
-                action: #selector(changeModel(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.representedObject = idx
-            item.state = currentPreset?.label == preset.label ? .on : .off
-            modelSubmenu.addItem(item)
-        }
-
-        modelSubmenu.addItem(.separator())
-
-        let batchToggle = NSMenuItem(
-            title: "Enable batch retranscribe",
-            action: #selector(toggleBatchRetranscribe(_:)),
-            keyEquivalent: ""
-        )
-        batchToggle.target = self
-        batchToggle.state = Config.shared.batchRetranscribeEnabled ? .on : .off
-        modelSubmenu.addItem(batchToggle)
-
-        modelSubmenu.addItem(.separator())
-
-        let streamingInfo = NSMenuItem(title: currentModelStatusText(for: .streaming), action: nil, keyEquivalent: "")
-        streamingInfo.isEnabled = false
-        modelSubmenu.addItem(streamingInfo)
-        let setStreaming = modelSubmenu.addItem(withTitle: "Set Streaming Model ID or Path…", action: #selector(setStreamingModelSpec), keyEquivalent: "")
-        setStreaming.target = self
-        let chooseStreaming = modelSubmenu.addItem(withTitle: "Choose Streaming Model Folder…", action: #selector(chooseStreamingModelFolder), keyEquivalent: "")
-        chooseStreaming.target = self
-        let streamingDownloads = NSMenuItem(title: "Download Streaming Model", action: nil, keyEquivalent: "")
-        streamingDownloads.submenu = makeDownloadSubmenu(role: .streaming)
-        modelSubmenu.addItem(streamingDownloads)
-
-        modelSubmenu.addItem(.separator())
-
-        let batchInfo = NSMenuItem(title: currentModelStatusText(for: .batch), action: nil, keyEquivalent: "")
-        batchInfo.isEnabled = false
-        modelSubmenu.addItem(batchInfo)
-        let setBatch = modelSubmenu.addItem(withTitle: "Set Batch Model ID or Path…", action: #selector(setBatchModelSpec), keyEquivalent: "")
-        setBatch.target = self
-        let chooseBatch = modelSubmenu.addItem(withTitle: "Choose Batch Model Folder…", action: #selector(chooseBatchModelFolder), keyEquivalent: "")
-        chooseBatch.target = self
-        let batchDownloads = NSMenuItem(title: "Download Batch Model", action: nil, keyEquivalent: "")
-        batchDownloads.submenu = makeDownloadSubmenu(role: .batch)
-        modelSubmenu.addItem(batchDownloads)
-    }
-
-    private func currentModelStatusText(for role: ModelRole) -> String {
-        let spec = currentModelSpec(for: role)
-        let name = ModelLocator.displayName(for: spec)
-        if role == .batch && !Config.shared.batchRetranscribeEnabled {
-            return "\(role.label): \(name) (disabled)"
-        }
-        let installed = ModelLocator.resolve(spec) != nil
-        return "\(role.label): \(name) \(installed ? "✓" : "⚠ missing")"
-    }
-
-    private func currentModelSpec(for role: ModelRole) -> String {
-        switch role {
-        case .streaming: Config.shared.streamingModel
-        case .batch: Config.shared.batchModel
-        }
-    }
-
-    private func makeDownloadSubmenu(role: ModelRole) -> NSMenu {
-        let menu = NSMenu()
-        for model in DownloadableASRModel.supported {
-            let item = NSMenuItem(
-                title: model.label,
-                action: role == .streaming ? #selector(downloadStreamingModel(_:)) : #selector(downloadBatchModel(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.representedObject = model.repoId
-            item.state = currentModelSpec(for: role) == model.repoId ? .on : .off
-            menu.addItem(item)
-        }
-        return menu
-    }
-
-    @objc private func changeModel(_ sender: NSMenuItem) {
-        guard let idx = sender.representedObject as? Int,
-              idx < ModelPreset.presets.count else { return }
-        let preset = ModelPreset.presets[idx]
+    private func applyModelPreset(index: Int) {
+        guard index >= 0, index < ModelPreset.presets.count else { return }
+        let preset = ModelPreset.presets[index]
         if ModelPreset.current()?.label == preset.label { return }
 
         applyModelConfig(
@@ -587,69 +530,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         yuwpLog("Model changed to: \(preset.label) (\(preset.summary))")
     }
 
-    @objc private func toggleBatchRetranscribe(_ sender: NSMenuItem) {
-        let newValue = !Config.shared.batchRetranscribeEnabled
+    private func setBatchRetranscribeEnabled(_ newValue: Bool) {
         if newValue, ModelLocator.resolve(Config.shared.batchModel) == nil {
             showAlert(
-                title: "Batch model missing",
-                message: "Pick or download a valid batch model before enabling retranscription."
+                title: "Final model missing",
+                message: "Pick or download a valid final model before enabling the final accuracy pass."
             )
+            syncSettingsWindow()
             return
         }
+        guard Config.shared.batchRetranscribeEnabled != newValue else { return }
         applyModelConfig(batchEnabled: newValue)
         yuwpLog("Batch retranscribe \(newValue ? "enabled" : "disabled")")
     }
 
-    @objc private func setStreamingModelSpec() {
-        promptForModelSpec(role: .streaming)
-    }
-
-    @objc private func setBatchModelSpec() {
-        promptForModelSpec(role: .batch)
-    }
-
-    @objc private func chooseStreamingModelFolder() {
-        chooseModelFolder(role: .streaming)
-    }
-
-    @objc private func chooseBatchModelFolder() {
-        chooseModelFolder(role: .batch)
-    }
-
-    @objc private func downloadStreamingModel(_ sender: NSMenuItem) {
-        guard let repoId = sender.representedObject as? String else { return }
-        Task { await downloadModel(repoId: repoId, applyTo: .streaming) }
-    }
-
-    @objc private func downloadBatchModel(_ sender: NSMenuItem) {
-        guard let repoId = sender.representedObject as? String else { return }
-        Task { await downloadModel(repoId: repoId, applyTo: .batch) }
-    }
-
-    private func promptForModelSpec(role: ModelRole) {
-        let title = "Set \(role.label) Model"
-        let message = "Enter a Hugging Face repo id (for example `mlx-community/Qwen3-ASR-0.6B-4bit`) or a local model folder path."
-        guard let spec = promptForText(title: title, message: message, initialValue: currentModelSpec(for: role)) else {
-            return
-        }
-        applyModelSpec(spec, for: role)
-    }
-
-    private func chooseModelFolder(role: ModelRole) {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory())
-        panel.message = "Choose a folder containing config.json, model.safetensors, vocab.json, and merges.txt."
-        if panel.runModal() == .OK, let url = panel.url {
-            applyModelSpec(url.path, for: role)
-        }
-    }
-
     private func applyModelSpec(_ spec: String, for role: ModelRole) {
         let trimmed = spec.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else {
+            syncSettingsWindow()
+            return
+        }
 
         if ModelLocator.resolve(trimmed) != nil {
             switch role {
@@ -680,7 +580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     applyModelConfig(batchModel: trimmed)
                 }
             default:
-                break
+                syncSettingsWindow()
             }
             return
         }
@@ -689,6 +589,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             title: "Model folder not found",
             message: "Yuwp couldn't find a valid model directory at `\(trimmed)`. Pick a folder with config.json, model.safetensors, vocab.json, and merges.txt."
         )
+        syncSettingsWindow()
     }
 
     private func applyModelConfig(
@@ -713,24 +614,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         asrProvider.shutdown()
         asrProvider.start()
-        rebuildModelSubmenu()
         updateStatus()
-    }
-
-    private func promptForText(title: String, message: String, initialValue: String) -> String? {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
-        field.stringValue = initialValue
-        alert.accessoryView = field
-
-        return alert.runModal() == .alertFirstButtonReturn
-            ? field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            : nil
+        syncSettingsWindow()
     }
 
     private func showAlert(title: String, message: String) {
@@ -741,7 +626,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
-    private func downloadModel(repoId: String, applyTo role: ModelRole?) async {
+    private func downloadModel(repoId: String, applyTo role: ModelRole) async {
         modelDownloadStatus = "Preparing \(ModelLocator.shortRepoName(repoId))…"
         updateStatus()
 
@@ -761,18 +646,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 applyModelConfig(streamingModel: repoId)
             case .batch:
                 applyModelConfig(batchModel: repoId)
-            case nil:
-                rebuildModelSubmenu()
-                updateStatus()
             }
             yuwpLog("Downloaded model: \(repoId)")
         } catch {
             modelDownloadStatus = nil
-            rebuildModelSubmenu()
             updateStatus()
+            syncSettingsWindow()
             showAlert(title: "Model download failed", message: error.localizedDescription)
             yuwpLog("Model download failed: \(repoId) — \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Recording Settings
+
+    @objc private func toggleSaveRecordings(_ sender: NSMenuItem) {
+        applySaveRecordings(sender.state != .on)
+    }
+
+    private func applySaveRecordings(_ enabled: Bool) {
+        guard Config.shared.saveRecordings != enabled else {
+            syncSettingsWindow()
+            return
+        }
+        Config.shared.saveRecordings = enabled
+        syncSettingsWindow()
+        yuwpLog("Save recordings \(enabled ? "enabled" : "disabled")")
+    }
+
+    private func chooseRecordingsDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = Config.shared.recordingsDir
+        panel.message = "Choose where Yuwp should save recorded audio files."
+        if panel.runModal() == .OK, let url = panel.url {
+            Config.shared.setRecordingsDir(url)
+            syncSettingsWindow()
+            yuwpLog("Recordings location changed to: \(Config.shared.recordingsDir.path)")
+        }
+    }
+
+    private func resetRecordingsDirectory() {
+        Config.shared.resetRecordingsDir()
+        syncSettingsWindow()
+        yuwpLog("Recordings location reset to default: \(Config.shared.defaultRecordingsDir.path)")
+    }
+
+    private func revealRecordingsDirectory() {
+        NSWorkspace.shared.activateFileViewerSelecting([Config.shared.recordingsDir])
     }
 
     // MARK: - Enter Replay
