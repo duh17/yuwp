@@ -4,12 +4,12 @@ enum ShortcutCommand: String, Sendable {
     case dictation
 }
 
-enum ShortcutPhase: Sendable {
+enum ShortcutPhase: Sendable, Equatable {
     case pressed
     case released
 }
 
-struct ShortcutEvent: Sendable {
+struct ShortcutEvent: Sendable, Equatable {
     let command: ShortcutCommand
     let phase: ShortcutPhase
 }
@@ -22,7 +22,7 @@ enum DictationHotkeyAction: Equatable {
 
 /// Small reducer that maps shortcut press/release events to dictation actions.
 /// Keeps the hotkey interaction policy testable and out of AppDelegate branches.
-struct DictationHotkeyBehavior {
+struct DictationHotkeyBehavior: Equatable {
     private(set) var sessionStartedByPushToTalk = false
 
     mutating func handle(

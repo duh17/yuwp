@@ -40,9 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // Per-dictation session (created on start, torn down on stop)
     private var session: DictationSession?
-    private var dictationHotkeyBehavior = DictationHotkeyBehavior()
-    /// Set when Enter was intercepted mid-session; triggers Enter replay after final commit.
-    private var pendingEnter = false
+    private var appState = AppState()
 
     // Menu bar state
     private var statusItem: NSStatusItem!
@@ -51,17 +49,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var audioInputSubmenu: NSMenu!
     private var saveRecordingsMenuItem: NSMenuItem!
     private var settingsWindowController: SettingsWindowController?
-    private var providerReady = false
-    private var hasPermission = false
     private var permissionTimer: Timer?
-    private var modelDownloadStatus: String?
 
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         normalizeModelSelection()
+        syncAppStateFromConfig()
         audioCapture.inputSelection = Config.shared.audioInputSelection
         setupMenuBar()
+        syncRuntimeUI()
+        updateStatus()
         setupMicPanelDismiss()
         startSttProvider()
         requestMicPermission()
@@ -130,6 +128,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
     }
 
+    private func syncAppStateFromConfig() {
+        appState.settings = AppSettingsState(
+            dictationMode: Config.shared.dictationInteractionMode,
+            serverMode: Config.shared.serverMode
+        )
+        appState.missingConfiguredModelLabels = missingConfiguredModelLabels()
+    }
+
+    private func send(_ action: AppAction) {
+        let effects = appState.send(action, dictationBindingDescription: Config.shared.dictationBinding.description)
+        syncRuntimeUI()
+        updateStatus()
+        run(effects)
+    }
+
+    private func syncRuntimeUI() {
+        HotkeyManager.sessionActive = appState.sessionPhase.isCapturingAudio
+        statusItem?.button?.image = NSImage(
+            systemSymbolName: appState.statusItemSymbolName,
+            accessibilityDescription: appState.sessionPhase == .listening ? "Yuwp — Listening" : "Yuwp"
+        )
+    }
+
+    private func run(_ effects: [AppEffect]) {
+        for effect in effects {
+            switch effect {
+            case .startDictation:
+                performStartDictation()
+            case .stopDictation:
+                performStopDictation()
+            case .replayEnter:
+                replayEnterKey()
+            case .presentMicPanel(let state):
+                micPanel.present(state)
+            case .updateMicLevel(let level):
+                micPanel.updateAudioLevel(level)
+            case .hideMicPanel:
+                micPanel.hide()
+            case .log(let message):
+                yuwpLog(message)
+            }
+        }
+    }
+
     // MARK: - Hotkey Toggle
 
     private func normalizeModelSelection() {
@@ -143,58 +185,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func setupMicPanelDismiss() {
         micPanel.onDismiss = { [weak self] in
             Task { @MainActor in
-                guard let self, self.session?.isActive == true else { return }
-                yuwpLog("Escape pressed — stopping dictation")
-                self.stopDictation()
+                self?.send(.micPanelDismissed)
             }
         }
 
         hotkeyManager.onEnterDuringSession = { [weak self] in
             Task { @MainActor in
-                guard let self else { return }
-                yuwpLog("Enter intercepted — stopping dictation, will replay Enter after commit")
-                self.pendingEnter = true
-                self.stopDictation()
+                self?.send(.enterIntercepted)
             }
         }
     }
 
     private func handleShortcutEvent(_ event: ShortcutEvent) {
-        guard event.command == .dictation else { return }
-
-        let action = dictationHotkeyBehavior.handle(
-            phase: event.phase,
-            mode: Config.shared.dictationInteractionMode,
-            isSessionActive: session?.isActive == true
-        )
-
-        switch action {
-        case .start:
-            startDictation()
-        case .stop:
-            stopDictation()
-        case .none:
-            break
-        }
+        send(.shortcutReceived(event))
     }
 
-    private func startDictation() {
+    private func performStartDictation() {
         guard session == nil else { return }
-        guard Config.shared.serverMode != .off else {
-            yuwpLog("Server mode is off — enable This Mac only or Local network to dictate")
-            return
-        }
-        guard providerReady else {
-            let missingModels = missingConfiguredModelLabels()
-            if missingModels.isEmpty {
-                yuwpLog("Model still loading, please wait...")
-            } else {
-                yuwpLog("\(missingModels.joined(separator: " + ")) model missing — open Settings → Transcription to fix it")
-            }
-            return
-        }
 
-        HotkeyManager.sessionActive = true
         audioCapture.inputSelection = Config.shared.audioInputSelection
         let injector = TextInjectorFactory.capture()
         let s = DictationSession(
@@ -204,31 +212,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         s.onEvent = { [weak self] event in self?.handleSessionEvent(event) }
         s.onRequestStop = { [weak self] in
-            Task { @MainActor in self?.stopDictation() }
+            Task { @MainActor in self?.send(.sessionStopRequested) }
         }
         session = s
-
-        // Update menu bar icon
-        statusItem.button?.image = NSImage(
-            systemSymbolName: "waveform.circle.fill",
-            accessibilityDescription: "Yuwp — Listening"
-        )
-
         s.start()
     }
 
-    private func stopDictation() {
+    private func performStopDictation() {
         guard let s = session else { return }
-        HotkeyManager.sessionActive = false
-        dictationHotkeyBehavior.sessionDidEnd()
         let pcmData = s.stop()
-
-        // Hide panel and reset icon immediately — don't wait for server's final
-        micPanel.hide()
-        statusItem.button?.image = NSImage(
-            systemSymbolName: "waveform",
-            accessibilityDescription: "Yuwp"
-        )
 
         if Config.shared.saveRecordings, let pcmData, !pcmData.isEmpty {
             saveRecording(pcmData)
@@ -238,27 +230,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Session Events → UI
 
     private func handleSessionEvent(_ event: DictationEvent) {
-        switch event {
-        case .presentation(let state):
-            micPanel.present(state)
-
-        case .audioLevel(let level):
-            micPanel.updateAudioLevel(level)
-
-        case .finished:
-            micPanel.hide()
-            HotkeyManager.sessionActive = false
-            dictationHotkeyBehavior.sessionDidEnd()
-            statusItem.button?.image = NSImage(
-                systemSymbolName: "waveform",
-                accessibilityDescription: "Yuwp"
-            )
+        if case .finished = event {
             session = nil
-            if pendingEnter {
-                pendingEnter = false
-                replayEnterKey()
-            }
         }
+        send(.sessionEvent(event))
     }
 
     // MARK: - STT Provider
@@ -266,16 +241,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startSttProvider() {
         asrProvider.onStateChange = { [weak self] state in
             Task { @MainActor in
-                guard let self else { return }
-                self.providerReady = state == .ready
-                self.updateStatus()
-                if state == .ready {
-                    yuwpLog("STT provider ready")
-                }
+                self?.send(.providerStateChanged(state))
             }
         }
         asrProvider.onError = { error in
-            Task { @MainActor in yuwpLog("STT error: \(error)") }
+            yuwpLog("STT error: \(error)")
         }
         asrProvider.start()
     }
@@ -321,9 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func onPermissionGranted() {
-        hasPermission = true
-        updateStatus()
-        yuwpLog("Ready. \(Config.shared.dictationBinding.description) to dictate.")
+        send(.accessibilityPermissionChanged(true))
     }
 
     @objc private func openAccessibilitySettings() {
@@ -435,6 +403,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func applyDictationMode(_ mode: DictationInteractionMode) {
         guard Config.shared.dictationInteractionMode != mode else { return }
         Config.shared.dictationInteractionMode = mode
+        syncAppStateFromConfig()
+        updateStatus()
         yuwpLog("Dictation mode changed to: \(mode.description)")
     }
 
@@ -442,7 +412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard Config.shared.dictationBinding != binding else { return }
         Config.shared.dictationBinding = binding
 
-        if hasPermission, hotkeyManager.restart() {
+        if appState.hasAccessibilityPermission, hotkeyManager.restart() {
             yuwpLog("Dictation shortcut changed to: \(binding.description)")
         }
     }
@@ -459,7 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if session?.isActive == true {
             yuwpLog("Input device changed during dictation — stopping current session")
-            stopDictation()
+            send(.sessionStopRequested)
         }
 
         syncSettingsWindow()
@@ -470,6 +440,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard mode != Config.shared.serverMode else { return }
         Config.shared.serverMode = mode
         asrProvider.serverMode = mode
+        syncAppStateFromConfig()
         restartProviderForSettingsChange()
         yuwpLog("Server mode changed to: \(mode.description)")
     }
@@ -483,7 +454,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func restartProviderForSettingsChange() {
-        if session?.isActive == true { stopDictation() }
+        if session?.isActive == true { send(.sessionStopRequested) }
         asrProvider.shutdown()
         asrProvider.start()
         updateStatus()
@@ -565,53 +536,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Status
 
     private func updateStatus() {
-        if !hasPermission {
-            statusMenuItem.title = "⚠ Grant Accessibility Permission"
+        let status = appState.statusDisplay(port: asrProvider.port)
+        statusMenuItem.title = status.title
+        statusMenuItem.isEnabled = status.isEnabled
+        switch status.behavior {
+        case .none:
+            statusMenuItem.action = nil
+            statusMenuItem.target = nil
+        case .openAccessibilitySettings:
             statusMenuItem.action = #selector(openAccessibilitySettings)
             statusMenuItem.target = self
-            statusMenuItem.isEnabled = true
-            return
         }
-
-        if Config.shared.serverMode == .off {
-            statusMenuItem.title = "Server mode is off"
-            statusMenuItem.action = nil
-            statusMenuItem.isEnabled = false
-            return
-        }
-
-        if let modelDownloadStatus {
-            statusMenuItem.title = "⬇︎ \(modelDownloadStatus)"
-            statusMenuItem.action = nil
-            statusMenuItem.isEnabled = false
-            return
-        }
-
-        let missingModels = missingConfiguredModelLabels()
-        if !missingModels.isEmpty {
-            statusMenuItem.title = "⚠ \(missingModels.joined(separator: " + ")) model missing"
-            statusMenuItem.action = nil
-            statusMenuItem.isEnabled = false
-            return
-        }
-
-        switch asrProvider.state {
-        case .disabled:
-            statusMenuItem.title = "Server mode is off"
-        case .stopped:
-            statusMenuItem.title = "Stopped"
-        case .starting:
-            statusMenuItem.title = "Loading model..."
-        case .ready:
-            let endpoint = Config.shared.serverMode == .allInterfaces
-                ? "0.0.0.0:\(asrProvider.port)"
-                : "127.0.0.1:\(asrProvider.port)"
-            statusMenuItem.title = "✓ Ready (\(endpoint))"
-        case .error(let msg):
-            statusMenuItem.title = "⚠ \(msg)"
-        }
-        statusMenuItem.action = nil
-        statusMenuItem.isEnabled = false
     }
 
     private func missingConfiguredModelLabels() -> [String] {
@@ -688,7 +623,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         transcriptionModel: String? = nil,
         batchCommitEnabled: Bool? = nil
     ) {
-        if session?.isActive == true { stopDictation() }
+        if session?.isActive == true { send(.sessionStopRequested) }
 
         if let transcriptionModel {
             Config.shared.transcriptionModel = transcriptionModel
@@ -699,6 +634,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             asrProvider.batchCommitEnabled = batchCommitEnabled
         }
 
+        syncAppStateFromConfig()
         asrProvider.shutdown()
         asrProvider.start()
         updateStatus()
@@ -714,25 +650,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func downloadModel(repoId: String) async {
-        modelDownloadStatus = "Preparing \(ModelLocator.shortRepoName(repoId))…"
-        updateStatus()
+        send(.modelDownloadStatusChanged("Preparing \(ModelLocator.shortRepoName(repoId))…"))
 
         do {
             let _ = try await ModelDownloadManager.shared.download(repoId: repoId) { [weak self] progress, status in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     let pct = Int(progress * 100)
-                    self.modelDownloadStatus = "\(ModelLocator.shortRepoName(repoId)) \(pct)% — \(status)"
-                    self.updateStatus()
+                    self.send(.modelDownloadStatusChanged("\(ModelLocator.shortRepoName(repoId)) \(pct)% — \(status)"))
                 }
             }
 
-            modelDownloadStatus = nil
+            send(.modelDownloadStatusChanged(nil))
             applyModelConfig(transcriptionModel: repoId)
             yuwpLog("Downloaded model: \(repoId)")
         } catch {
-            modelDownloadStatus = nil
-            updateStatus()
+            send(.modelDownloadStatusChanged(nil))
             syncSettingsWindow()
             showAlert(title: "Model download failed", message: error.localizedDescription)
             yuwpLog("Model download failed: \(repoId) — \(error.localizedDescription)")
