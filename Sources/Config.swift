@@ -124,6 +124,15 @@ final class Config {
         }
     }
 
+    var audioInputSelection: AudioInputSelection {
+        get {
+            AudioInputSelection(persistenceString: defaults.string(forKey: "audioInputSelection"))
+        }
+        set {
+            defaults.set(newValue.persistenceString, forKey: "audioInputSelection")
+        }
+    }
+
     var serverMode: ServerMode {
         get {
             let raw = defaults.string(forKey: "serverMode") ?? ServerMode.localhost.rawValue

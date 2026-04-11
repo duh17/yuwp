@@ -13,6 +13,7 @@ struct ConfigMigrationTests {
 
         #expect(config.dictationBinding == .ctrlBacktick)
         #expect(config.dictationInteractionMode == .toggle)
+        #expect(config.audioInputSelection == .systemDefault)
         #expect(config.serverMode == .localhost)
         #expect(config.serverPort == 9748)
         #expect(config.transcriptionModel == "mlx-community/Qwen3-ASR-0.6B-4bit")
@@ -29,6 +30,7 @@ struct ConfigMigrationTests {
         let config = Config(defaults: defaults)
         config.dictationBinding = .optionSpace
         config.dictationInteractionMode = .pushToTalk
+        config.audioInputSelection = .device(uid: "test-mic")
         config.serverMode = .allInterfaces
         config.serverPort = 8899
         config.transcriptionModel = "mlx-community/Qwen3-ASR-1.7B-bf16"
@@ -38,6 +40,7 @@ struct ConfigMigrationTests {
 
         #expect(config.dictationBinding == .optionSpace)
         #expect(config.dictationInteractionMode == .pushToTalk)
+        #expect(config.audioInputSelection == .device(uid: "test-mic"))
         #expect(config.serverMode == .allInterfaces)
         #expect(config.serverPort == 8899)
         #expect(config.transcriptionModel == "mlx-community/Qwen3-ASR-1.7B-bf16")

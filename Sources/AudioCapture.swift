@@ -1,4 +1,6 @@
 @preconcurrency import AVFoundation
+import AudioToolbox
+import CoreAudio
 import Foundation
 
 /// Warnings emitted by audio capture for the session to handle.
@@ -16,41 +18,124 @@ enum AudioCaptureWarning: Sendable, Equatable {
 /// Captures microphone audio at 16kHz mono PCM and delivers raw buffers.
 /// Also computes real-time RMS audio level for waveform visualization.
 final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturing conformance
+    struct WarningTracker {
+        /// RMS below this for a 100ms buffer means functionally silent (codec conflict, dead mic)
+        static let deadMicRmsThreshold: Float = 0.0005
+        /// Fire warning after this many seconds of dead silence
+        static let silenceWarningSeconds: Double = 2.0
+        /// Buffers per second at ~100ms tap interval
+        static let buffersPerSecond: Int = 10
+        /// RMS below this after speech = "user stopped talking"
+        static let speechPauseRmsThreshold: Float = 0.005
+        /// RMS above this = speech detected
+        static let speechDetectRmsThreshold: Float = 0.01
+        /// Ignore route changes during the first second — engine startup can trigger spurious notifications.
+        static let routeChangeGracePeriod: Double = 1.0
+
+        var speechPauseTimeout: Double?
+
+        private(set) var consecutiveSilentBuffers = 0
+        private(set) var silenceWarningFired = false
+        private(set) var hasDetectedSpeech = false
+        private(set) var consecutivePauseBuffers = 0
+        private(set) var speechPauseFired = false
+
+        mutating func reset() {
+            consecutiveSilentBuffers = 0
+            silenceWarningFired = false
+            hasDetectedSpeech = false
+            consecutivePauseBuffers = 0
+            speechPauseFired = false
+        }
+
+        mutating func ingest(rms: Float) -> [AudioCaptureWarning] {
+            var warnings: [AudioCaptureWarning] = []
+            if let warning = trackSilence(rms: rms) {
+                warnings.append(warning)
+            }
+            if let warning = trackSpeechPause(rms: rms) {
+                warnings.append(warning)
+            }
+            return warnings
+        }
+
+        static func warningForRouteChange(elapsedSinceStart: Double) -> AudioCaptureWarning? {
+            elapsedSinceStart >= routeChangeGracePeriod ? .routeChanged : nil
+        }
+
+        static func bufferThreshold(for seconds: Double) -> Int {
+            max(1, Int(ceil(seconds * Double(buffersPerSecond))))
+        }
+
+        private mutating func trackSilence(rms: Float) -> AudioCaptureWarning? {
+            guard !hasDetectedSpeech else {
+                consecutiveSilentBuffers = 0
+                return nil
+            }
+
+            if rms < Self.deadMicRmsThreshold {
+                consecutiveSilentBuffers += 1
+                let threshold = Self.bufferThreshold(for: Self.silenceWarningSeconds)
+                if consecutiveSilentBuffers >= threshold, !silenceWarningFired {
+                    silenceWarningFired = true
+                    return .silentInput(seconds: Self.silenceWarningSeconds)
+                }
+            } else {
+                consecutiveSilentBuffers = 0
+                // Don't reset silenceWarningFired — only warn once per session.
+            }
+            return nil
+        }
+
+        private mutating func trackSpeechPause(rms: Float) -> AudioCaptureWarning? {
+            if rms >= Self.speechDetectRmsThreshold {
+                hasDetectedSpeech = true
+                consecutiveSilentBuffers = 0
+                consecutivePauseBuffers = 0
+                return nil
+            }
+
+            guard let timeout = speechPauseTimeout, !speechPauseFired, hasDetectedSpeech else { return nil }
+
+            guard rms < Self.speechPauseRmsThreshold else {
+                consecutivePauseBuffers = 0
+                return nil
+            }
+
+            consecutivePauseBuffers += 1
+            let threshold = Self.bufferThreshold(for: timeout)
+            if consecutivePauseBuffers >= threshold {
+                speechPauseFired = true
+                return .speechPause(seconds: timeout)
+            }
+
+            return nil
+        }
+    }
+
     private var engine = AVAudioEngine()
     private var isRunning = false
     private let targetSampleRate: Double = 16000
     private var converter: AVAudioConverter?
 
+    private let inputCatalog: any AudioInputCatalog
+
     /// Accumulated raw PCM for saving
     private var recordingBuffer = Data()
     private let bufferLock = NSLock()
+    private var warningTracker = WarningTracker()
 
-    // Silent buffer detection (dead mic)
-    private var consecutiveSilentBuffers = 0
-    private var silenceWarningFired = false
-    /// RMS below this for a 100ms buffer means functionally silent (codec conflict, dead mic)
-    private static let deadMicRmsThreshold: Float = 0.0005
-    /// Fire warning after this many seconds of dead silence
-    private static let silenceWarningSeconds: Double = 2.0
-    /// Buffers per second at ~100ms tap interval
-    private static let buffersPerSecond: Int = 10
+    var inputSelection: AudioInputSelection = .systemDefault
 
-    // Speech pause detection (auto-stop mode)
-    private var hasDetectedSpeech = false
-    private var consecutivePauseBuffers = 0
-    private var speechPauseFired = false
-    /// RMS below this after speech = "user stopped talking"
-    private static let speechPauseRmsThreshold: Float = 0.005
-    /// RMS above this = speech detected
-    private static let speechDetectRmsThreshold: Float = 0.01
     /// Seconds of post-speech silence before firing .speechPause. nil = disabled.
-    var speechPauseTimeout: Double?
+    var speechPauseTimeout: Double? {
+        get { warningTracker.speechPauseTimeout }
+        set { warningTracker.speechPauseTimeout = newValue }
+    }
 
     // Route change observation
     private var routeChangeObserver: NSObjectProtocol?
     private var startTime: CFAbsoluteTime = 0
-    /// Ignore route changes during the first second — engine startup can trigger spurious notifications.
-    private static let routeChangeGracePeriod: Double = 1.0
 
     /// Audio level callback — fires with normalized RMS (0.0–1.0) per tap (~100ms).
     /// Called on the audio thread; dispatch to main if needed.
@@ -59,6 +144,10 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
     /// Warning callback — fires for route changes and sustained silence.
     /// Called on the audio thread (route change) or audio render thread (silence).
     var onWarning: (@Sendable (AudioCaptureWarning) -> Void)?
+
+    init(inputCatalog: any AudioInputCatalog = SystemAudioInputCatalog()) {
+        self.inputCatalog = inputCatalog
+    }
 
     /// Start capturing. `onBuffer` is called with raw Int16 PCM data at 16kHz mono.
     /// Returns true if capture started successfully.
@@ -76,26 +165,17 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
         engine.reset()
         engine = AVAudioEngine()
 
-        // Reset silence tracking
-        consecutiveSilentBuffers = 0
-        silenceWarningFired = false
-        hasDetectedSpeech = false
-        consecutivePauseBuffers = 0
-        speechPauseFired = false
+        // Reset warning tracking for the new session.
+        warningTracker.reset()
 
-        // Check for a usable audio input device before touching the engine.
-        // Accessing engine.inputNode with no input device can crash.
-        let inputDevices = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.microphone, .external],
-            mediaType: .audio,
-            position: .unspecified
-        ).devices
-        if inputDevices.isEmpty {
+        let availableInputs = inputCatalog.availableInputDevices()
+        guard !availableInputs.isEmpty else {
             yuwpLog("No audio input device found — cannot start capture")
             return false
         }
 
         let inputNode = engine.inputNode
+        let selectedDevice = selectInputDevice(on: inputNode, availableInputs: availableInputs)
         let hardwareFormat = inputNode.inputFormat(forBus: 0)
         let clientFormat = inputNode.outputFormat(forBus: 0)
 
@@ -186,9 +266,9 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
                 self.onAudioLevel?(min(rms / 0.12, 1.0))
             }
 
-            // Silent buffer detection — Bluetooth codec conflicts, dead mics
-            self.trackSilence(rms: rms)
-            self.trackSpeechPause(rms: rms)
+            for warning in self.warningTracker.ingest(rms: rms) {
+                self.emitWarning(warning)
+            }
 
             // Accumulate for recording (bulk append, not per-sample)
             self.bufferLock.lock()
@@ -202,8 +282,9 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
             try engine.start()
             isRunning = true
             startTime = CFAbsoluteTimeGetCurrent()
+            let deviceLabel = selectedDevice.map { " [\($0.name)]" } ?? ""
             yuwpLog(
-                "Audio capture started (hw \(Int(hardwareFormat.sampleRate))Hz/\(hardwareFormat.channelCount)ch, " +
+                "Audio capture started\(deviceLabel) (hw \(Int(hardwareFormat.sampleRate))Hz/\(hardwareFormat.channelCount)ch, " +
                 "client \(Int(clientFormat.sampleRate))Hz/\(clientFormat.channelCount)ch -> 16kHz mono)"
             )
             return true
@@ -237,43 +318,63 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
         return pcmData.isEmpty ? nil : pcmData
     }
 
-    // MARK: - Silent Buffer Detection
+    private func selectInputDevice(
+        on inputNode: AVAudioInputNode,
+        availableInputs: [AudioInputDeviceDescriptor]
+    ) -> AudioInputDeviceDescriptor? {
+        let requestedDevice = inputCatalog.resolve(inputSelection)
+        let defaultDevice = availableInputs.first(where: \.isDefault) ?? availableInputs.first
 
-    private func trackSilence(rms: Float) {
-        if rms < Self.deadMicRmsThreshold {
-            consecutiveSilentBuffers += 1
-            let threshold = Int(Self.silenceWarningSeconds) * Self.buffersPerSecond
-            if consecutiveSilentBuffers >= threshold, !silenceWarningFired {
-                silenceWarningFired = true
-                yuwpLog("Warning: \(Self.silenceWarningSeconds)s of dead silence — mic may not be working")
-                onWarning?(.silentInput(seconds: Self.silenceWarningSeconds))
+        let targetDevice: AudioInputDeviceDescriptor?
+        switch inputSelection {
+        case .systemDefault:
+            targetDevice = defaultDevice
+        case .device(let uid):
+            if let requestedDevice {
+                targetDevice = requestedDevice
+            } else {
+                yuwpLog("Selected input device unavailable (\(uid)) — falling back to system default")
+                targetDevice = defaultDevice
             }
-        } else {
-            consecutiveSilentBuffers = 0
-            // Don't reset silenceWarningFired — only warn once per session
         }
+
+        guard let targetDevice else { return nil }
+        guard let audioUnit = inputNode.audioUnit else {
+            yuwpLog("Input audio unit unavailable — using current system input device")
+            return nil
+        }
+
+        var deviceID = targetDevice.audioObjectID
+        let size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            size
+        )
+        guard status == noErr else {
+            yuwpLog("Failed to select input device \(targetDevice.name) (status \(status)) — using current system input")
+            return nil
+        }
+
+        if case .device = inputSelection {
+            yuwpLog("Using input device: \(targetDevice.detailText)")
+        }
+        return targetDevice
     }
 
-    // MARK: - Speech Pause Detection
-
-    private func trackSpeechPause(rms: Float) {
-        guard let timeout = speechPauseTimeout, !speechPauseFired else { return }
-
-        if rms >= Self.speechDetectRmsThreshold {
-            hasDetectedSpeech = true
-            consecutivePauseBuffers = 0
-            return
+    private func emitWarning(_ warning: AudioCaptureWarning) {
+        switch warning {
+        case .routeChanged:
+            yuwpLog("Audio route changed mid-session")
+        case .silentInput(let seconds):
+            yuwpLog("Warning: \(seconds)s of dead silence — mic may not be working")
+        case .speechPause(let seconds):
+            yuwpLog("Speech pause detected (\(seconds)s silence after speech)")
         }
-
-        guard hasDetectedSpeech, rms < Self.speechPauseRmsThreshold else { return }
-
-        consecutivePauseBuffers += 1
-        let threshold = Int(timeout) * Self.buffersPerSecond
-        if consecutivePauseBuffers >= threshold {
-            speechPauseFired = true
-            yuwpLog("Speech pause detected (\(timeout)s silence after speech)")
-            onWarning?(.speechPause(seconds: timeout))
-        }
+        onWarning?(warning)
     }
 
     // MARK: - Audio Route Change
@@ -286,12 +387,11 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
         ) { [weak self] _ in
             guard let self, self.isRunning else { return }
             let elapsed = CFAbsoluteTimeGetCurrent() - self.startTime
-            if elapsed < Self.routeChangeGracePeriod {
+            guard let warning = WarningTracker.warningForRouteChange(elapsedSinceStart: elapsed) else {
                 yuwpLog("Audio route change ignored (startup, \(String(format: "%.1f", elapsed))s)")
                 return
             }
-            yuwpLog("Audio route changed mid-session")
-            self.onWarning?(.routeChanged)
+            self.emitWarning(warning)
         }
     }
 

@@ -4,6 +4,7 @@ import AppKit
 final class SettingsWindowController: NSWindowController {
     var onDictationModeChange: ((DictationInteractionMode) -> Void)?
     var onDictationBindingChange: ((KeyBinding) -> Void)?
+    var onAudioInputSelectionChange: ((AudioInputSelection) -> Void)?
     var onServerModeChange: ((ServerMode) -> Void)?
     var onServerPortChange: ((UInt16) -> Void)?
     var onSaveRecordingsChange: ((Bool) -> Void)?
@@ -20,6 +21,9 @@ final class SettingsWindowController: NSWindowController {
 
     private let dictationModeControl = NSSegmentedControl(labels: ["Toggle", "Push to Talk"], trackingMode: .selectOne, target: nil, action: nil)
     private let shortcutRecorder = ShortcutRecorderView(defaultBinding: .ctrlBacktick)
+    private let audioInputPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let audioInputDescriptionLabel = NSTextField(wrappingLabelWithString: "")
+    private var audioInputSelections: [AudioInputSelection] = []
 
     private let modelPresetPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let presetDescriptionLabel = NSTextField(wrappingLabelWithString: "")
@@ -66,6 +70,8 @@ final class SettingsWindowController: NSWindowController {
     func sync(
         dictationMode: DictationInteractionMode,
         dictationBinding: KeyBinding,
+        audioInputSelection: AudioInputSelection,
+        availableAudioInputs: [AudioInputDeviceDescriptor],
         serverMode: ServerMode,
         serverPort: UInt16,
         transcriptionModel: String,
@@ -76,6 +82,11 @@ final class SettingsWindowController: NSWindowController {
     ) {
         dictationModeControl.selectedSegment = dictationMode == .toggle ? 0 : 1
         shortcutRecorder.binding = dictationBinding
+        reloadAudioInputPopup(availableAudioInputs, selection: audioInputSelection)
+        audioInputDescriptionLabel.stringValue = audioInputDescription(
+            for: audioInputSelection,
+            availableInputs: availableAudioInputs
+        )
 
         let currentPreset = ModelPreset.current()
         if let preset = currentPreset {
@@ -118,6 +129,10 @@ final class SettingsWindowController: NSWindowController {
         shortcutRecorder.onChange = { [weak self] binding in
             self?.onDictationBindingChange?(binding)
         }
+        audioInputPopup.target = self
+        audioInputPopup.action = #selector(audioInputChanged(_:))
+        audioInputDescriptionLabel.textColor = .secondaryLabelColor
+        audioInputDescriptionLabel.maximumNumberOfLines = 3
 
         modelPresetPopup.addItems(withTitles: ModelPreset.presets.map(\.label) + [customPresetTitle])
         modelPresetPopup.target = self
@@ -180,6 +195,7 @@ final class SettingsWindowController: NSWindowController {
             body: [
                 makeRow(label: "Shortcut", control: shortcutRecorder),
                 makeRow(label: "Behavior", control: dictationModeControl),
+                makeRow(label: "Microphone", control: makeControlWithCaption(audioInputPopup, captionLabel: audioInputDescriptionLabel)),
             ]
         )
         let transcriptionSection = makeSection(
@@ -404,6 +420,57 @@ final class SettingsWindowController: NSWindowController {
         return usingDefault ? "Default location: \(path)" : path
     }
 
+    private func reloadAudioInputPopup(
+        _ availableInputs: [AudioInputDeviceDescriptor],
+        selection: AudioInputSelection
+    ) {
+        audioInputPopup.removeAllItems()
+        audioInputSelections = [.systemDefault] + availableInputs.map(\.selection)
+
+        if let defaultDevice = availableInputs.first(where: \.isDefault) {
+            audioInputPopup.addItem(withTitle: "System Default — \(defaultDevice.name)")
+        } else {
+            audioInputPopup.addItem(withTitle: "System Default")
+        }
+        audioInputPopup.lastItem?.representedObject = AudioInputSelection.systemDefault.persistenceString
+
+        for device in availableInputs {
+            audioInputPopup.addItem(withTitle: device.menuTitle)
+            audioInputPopup.lastItem?.representedObject = device.selection.persistenceString
+        }
+
+        if case .device(let uid) = selection,
+           !availableInputs.contains(where: { $0.uid == uid }) {
+            audioInputSelections.append(selection)
+            audioInputPopup.addItem(withTitle: "Unavailable device")
+            audioInputPopup.lastItem?.representedObject = selection.persistenceString
+        }
+
+        if let index = audioInputSelections.firstIndex(of: selection) {
+            audioInputPopup.selectItem(at: index)
+        } else {
+            audioInputPopup.selectItem(at: 0)
+        }
+    }
+
+    private func audioInputDescription(
+        for selection: AudioInputSelection,
+        availableInputs: [AudioInputDeviceDescriptor]
+    ) -> String {
+        switch selection {
+        case .systemDefault:
+            if let defaultDevice = availableInputs.first(where: \.isDefault) {
+                return "Follows the current macOS default input: \(defaultDevice.detailText). Best when you switch microphones often."
+            }
+            return "Follows the current macOS default input device."
+        case .device(let uid):
+            if let device = availableInputs.first(where: { $0.uid == uid }) {
+                return "Pinned to \(device.detailText). Yuwp will capture this device’s native format and convert it to 16 kHz mono for transcription."
+            }
+            return "The selected device is currently unavailable. Yuwp will fall back to the system default input until it reconnects."
+        }
+    }
+
     private func presetDescriptionText(_ preset: ModelPreset?) -> String {
         guard let preset else {
             return "Using a custom model configuration. The advanced model settings below control transcription."
@@ -461,6 +528,12 @@ final class SettingsWindowController: NSWindowController {
     @objc private func dictationModeChanged(_ sender: NSSegmentedControl) {
         let mode: DictationInteractionMode = sender.selectedSegment == 0 ? .toggle : .pushToTalk
         onDictationModeChange?(mode)
+    }
+
+    @objc private func audioInputChanged(_ sender: NSPopUpButton) {
+        guard sender.indexOfSelectedItem >= 0,
+              sender.indexOfSelectedItem < audioInputSelections.count else { return }
+        onAudioInputSelectionChange?(audioInputSelections[sender.indexOfSelectedItem])
     }
 
     @objc private func modelPresetChanged(_ sender: NSPopUpButton) {

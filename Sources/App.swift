@@ -23,10 +23,11 @@ struct YuwpApp {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Infrastructure — live for the app's lifetime
     private let updaterController = AppDelegate.makeUpdaterController()
     private let hotkeyManager = HotkeyManager()
+    private let audioInputCatalog = SystemAudioInputCatalog()
     private let asrProvider: NativeASRProvider = {
         let p = NativeASRProvider(port: Config.shared.serverPort)
         p.serverMode = Config.shared.serverMode
@@ -34,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         p.batchCommitEnabled = Config.shared.batchCommitEnabled
         return p
     }()
-    private let audioCapture = AudioCapture()
+    private lazy var audioCapture = AudioCapture(inputCatalog: audioInputCatalog)
     private let micPanel = MicPanel()
 
     // Per-dictation session (created on start, torn down on stop)
@@ -46,6 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Menu bar state
     private var statusItem: NSStatusItem!
     private var statusMenuItem: NSMenuItem!
+    private var audioInputMenuItem: NSMenuItem!
+    private var audioInputSubmenu: NSMenu!
     private var saveRecordingsMenuItem: NSMenuItem!
     private var settingsWindowController: SettingsWindowController?
     private var providerReady = false
@@ -57,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         normalizeModelSelection()
+        audioCapture.inputSelection = Config.shared.audioInputSelection
         setupMenuBar()
         setupMicPanelDismiss()
         startSttProvider()
@@ -191,6 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         HotkeyManager.sessionActive = true
+        audioCapture.inputSelection = Config.shared.audioInputSelection
         let injector = TextInjectorFactory.capture()
         let s = DictationSession(
             sttSession: asrProvider.makeSession(),
@@ -334,6 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Yuwp")
 
         let menu = NSMenu()
+        menu.delegate = self
 
         statusMenuItem = NSMenuItem(title: "Loading model...", action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = false
@@ -343,6 +349,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+
+        audioInputMenuItem = NSMenuItem(title: "Input Device", action: nil, keyEquivalent: "")
+        audioInputSubmenu = NSMenu(title: "Input Device")
+        audioInputMenuItem.submenu = audioInputSubmenu
+        menu.addItem(audioInputMenuItem)
+        rebuildAudioInputMenu()
 
         menu.addItem(.separator())
 
@@ -376,6 +388,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             controller.onDictationBindingChange = { [weak self] binding in
                 self?.applyDictationBinding(binding)
+            }
+            controller.onAudioInputSelectionChange = { [weak self] selection in
+                self?.applyAudioInputSelection(selection)
             }
             controller.onServerModeChange = { [weak self] mode in
                 self?.applyServerMode(mode)
@@ -432,6 +447,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func applyAudioInputSelection(_ selection: AudioInputSelection) {
+        guard Config.shared.audioInputSelection != selection else {
+            syncSettingsWindow()
+            return
+        }
+
+        let devices = audioInputCatalog.availableInputDevices()
+        Config.shared.audioInputSelection = selection
+        audioCapture.inputSelection = selection
+
+        if session?.isActive == true {
+            yuwpLog("Input device changed during dictation — stopping current session")
+            stopDictation()
+        }
+
+        syncSettingsWindow()
+        yuwpLog("Input device changed to: \(selection.summary(using: devices))")
+    }
+
     private func applyServerMode(_ mode: ServerMode) {
         guard mode != Config.shared.serverMode else { return }
         Config.shared.serverMode = mode
@@ -458,9 +492,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func syncSettingsWindow(_ controller: SettingsWindowController? = nil) {
         let target = controller ?? settingsWindowController
+        let availableAudioInputs = audioInputCatalog.availableInputDevices()
         target?.sync(
             dictationMode: Config.shared.dictationInteractionMode,
             dictationBinding: Config.shared.dictationBinding,
+            audioInputSelection: Config.shared.audioInputSelection,
+            availableAudioInputs: availableAudioInputs,
             serverMode: Config.shared.serverMode,
             serverPort: Config.shared.serverPort,
             transcriptionModel: Config.shared.transcriptionModel,
@@ -470,6 +507,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             usingDefaultRecordingsDir: Config.shared.usesDefaultRecordingsDir
         )
         saveRecordingsMenuItem?.state = Config.shared.saveRecordings ? .on : .off
+        rebuildAudioInputMenu(with: availableAudioInputs)
+    }
+
+    private func rebuildAudioInputMenu(with devices: [AudioInputDeviceDescriptor]? = nil) {
+        guard let audioInputSubmenu else { return }
+        let availableInputs = devices ?? audioInputCatalog.availableInputDevices()
+        let selection = Config.shared.audioInputSelection
+        audioInputSubmenu.removeAllItems()
+
+        let systemDefaultTitle: String
+        if let defaultDevice = availableInputs.first(where: \.isDefault) {
+            systemDefaultTitle = "System Default — \(defaultDevice.name)"
+        } else {
+            systemDefaultTitle = "System Default"
+        }
+        let systemDefaultItem = NSMenuItem(
+            title: systemDefaultTitle,
+            action: #selector(selectAudioInputFromMenu(_:)),
+            keyEquivalent: ""
+        )
+        systemDefaultItem.target = self
+        systemDefaultItem.state = selection == .systemDefault ? .on : .off
+        systemDefaultItem.representedObject = AudioInputSelection.systemDefault.persistenceString as NSString
+        audioInputSubmenu.addItem(systemDefaultItem)
+
+        if !availableInputs.isEmpty {
+            audioInputSubmenu.addItem(.separator())
+        }
+
+        for device in availableInputs {
+            let item = NSMenuItem(title: device.menuTitle, action: #selector(selectAudioInputFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.state = selection == device.selection ? .on : .off
+            item.representedObject = device.selection.persistenceString as NSString
+            audioInputSubmenu.addItem(item)
+        }
+
+        if case .device(let uid) = selection, !availableInputs.contains(where: { $0.uid == uid }) {
+            audioInputSubmenu.addItem(.separator())
+            let unavailable = NSMenuItem(title: "Unavailable device — using system default for now", action: nil, keyEquivalent: "")
+            unavailable.isEnabled = false
+            audioInputSubmenu.addItem(unavailable)
+        }
+    }
+
+    @objc private func selectAudioInputFromMenu(_ sender: NSMenuItem) {
+        let raw = sender.representedObject as? String
+        applyAudioInputSelection(AudioInputSelection(persistenceString: raw))
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu == statusItem?.menu else { return }
+        rebuildAudioInputMenu()
     }
 
     // MARK: - Status
