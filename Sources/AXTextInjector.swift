@@ -15,12 +15,11 @@ final class AXTextInjector: TextInjecting {
 
     // MARK: - TextInjecting
 
-    private(set) var targetPosition: NSPoint
-
-    var isLiveInjecting: Bool {
-        if fallback != nil { return true }   // CGEvent fallback is always live
-        return axVerified
+    var surfaceMode: DictationSurfaceMode {
+        fallback == nil ? .nativeField : .terminal
     }
+
+    private(set) var targetPosition: NSPoint
 
     func captureTarget() {
         // No-op — element captured at init time by TextInjectorFactory.

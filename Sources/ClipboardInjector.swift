@@ -10,8 +10,8 @@ final class ClipboardInjector: TextInjecting {
 
     // MARK: - TextInjecting
 
-    private(set) var targetPosition: NSPoint = .zero
-    var isLiveInjecting: Bool { false }
+    let surfaceMode: DictationSurfaceMode = .bubbleClipboard
+    private(set) var targetPosition: NSPoint
 
     func captureTarget() {
         // No-op — no element to probe for clipboard paste.
@@ -27,6 +27,12 @@ final class ClipboardInjector: TextInjecting {
 
     func release() {
         // Nothing to clean up.
+    }
+
+    // MARK: - Init
+
+    init(screenPoint: NSPoint = .zero) {
+        self.targetPosition = screenPoint
     }
 
     // MARK: - Internal (also used by AXTextInjector for final commit)

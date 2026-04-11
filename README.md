@@ -172,10 +172,23 @@ curl http://localhost:9748/v1/audio/subtitles \
   -F response_format=json
 ```
 
+Example JSON response:
+
+```json
+{
+  "text": "full transcript",
+  "language": "English",
+  "duration": 123.45,
+  "segments": [
+    { "start": 0.88, "end": 5.28, "text": "first subtitle" }
+  ]
+}
+```
+
 Supported subtitle `response_format` values:
 - `srt`
 - `vtt`
-- `json`
+- `json` → object with `text`, `language`, `duration`, `segments`
 - `text` (transcript only)
 
 Tune subtitle grouping with:

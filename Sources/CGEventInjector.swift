@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import Foundation
 
 /// Injects text into any focused app by simulating keyboard events.
 ///
@@ -10,8 +11,8 @@ final class CGEventInjector: TextInjecting {
 
     // MARK: - TextInjecting
 
+    let surfaceMode: DictationSurfaceMode = .terminal
     private(set) var targetPosition: NSPoint
-    var isLiveInjecting: Bool { true }
 
     func captureTarget() {
         // No-op — screen point captured at init time by TextInjectorFactory.
@@ -63,27 +64,27 @@ final class CGEventInjector: TextInjecting {
     private var writtenText = ""
 
     /// Post text as synthetic keyboard events using Unicode strings.
+    ///
+    /// Terminals are noticeably less reliable with large multi-character Unicode
+    /// payloads per event. Post one grapheme at a time with a tiny pacing delay
+    /// so the focused app has a chance to consume each key event.
     private func postKeyboardEvents(_ text: String) {
         guard !text.isEmpty else { return }
 
-        // CGEvent Unicode string is capped per event — 20 UTF-16 units is reliable.
-        let maxChunkUTF16 = 20
-        let utf16 = Array(text.utf16)
-        var offset = 0
-
-        while offset < utf16.count {
-            let end = min(offset + maxChunkUTF16, utf16.count)
-            var chunk = Array(utf16[offset..<end])
-            let len = chunk.count
+        for character in text {
+            var utf16 = Array(String(character).utf16)
+            let len = utf16.count
 
             if let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) {
-                down.keyboardSetUnicodeString(stringLength: len, unicodeString: &chunk)
+                down.keyboardSetUnicodeString(stringLength: len, unicodeString: &utf16)
                 down.post(tap: .cgSessionEventTap)
             }
             if let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) {
+                up.keyboardSetUnicodeString(stringLength: len, unicodeString: &utf16)
                 up.post(tap: .cgSessionEventTap)
             }
-            offset = end
+
+            Thread.sleep(forTimeInterval: Self.interKeyDelay)
         }
     }
 
@@ -97,6 +98,9 @@ final class CGEventInjector: TextInjecting {
             if let up = CGEvent(keyboardEventSource: nil, virtualKey: backspaceKeyCode, keyDown: false) {
                 up.post(tap: .cgSessionEventTap)
             }
+            Thread.sleep(forTimeInterval: Self.interKeyDelay)
         }
     }
+
+    private static let interKeyDelay: TimeInterval = 0.0015
 }

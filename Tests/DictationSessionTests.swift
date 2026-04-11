@@ -30,10 +30,15 @@ struct DictationSessionTests {
         return (session, stt, audio, injector, events)
     }
 
+    private func waitForAnimationTick() async {
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        await Task.yield()
+    }
+
     // MARK: - Start
 
     @Test func startCapturesTargetAndBeginsSession() {
-        let (session, stt, audio, injector, _) = makeSession()
+        let (session, stt, audio, injector, events) = makeSession()
 
         session.start()
 
@@ -41,6 +46,8 @@ struct DictationSessionTests {
         #expect(injector.captureCallCount == 1)
         #expect(stt.beginCallCount == 1)
         #expect(audio.startCallCount == 1)
+        #expect(events.presentations.last?.bubbleStyle == .compact)
+        #expect(events.presentations.last?.surfaceMode == .nativeField)
     }
 
     @Test func startIsIdempotent() {
@@ -78,18 +85,22 @@ struct DictationSessionTests {
 
     // MARK: - Partial Results
 
-    @Test func partialResultInjectsText() async {
-        let (session, stt, _, injector, _) = makeSession()
+    @Test func partialResultInjectsFullTextIntoLiveSurface() async {
+        let (session, stt, _, injector, events) = makeSession()
+        injector.surfaceMode = .nativeField
         session.start()
 
         stt.simulatePartial("Hello world")
         await Task.yield()
 
         #expect(injector.injectCallCount >= 1)
+        #expect(injector.lastInjected == "Hello world")
+        #expect(events.presentations.last?.bubbleStyle == .compact)
+        #expect(events.presentations.last?.displayText == "")
     }
 
     @Test func partialResultFiltersEmptyText() async {
-        let (session, stt, _, injector, _) = makeSession()
+        let (session, stt, _, injector, events) = makeSession()
         session.start()
 
         stt.simulatePartial("")
@@ -102,44 +113,43 @@ struct DictationSessionTests {
         await Task.yield()
 
         #expect(injector.injectCallCount == 0)
+        #expect(events.presentations.count == 1) // initial compact state only
     }
 
-    @Test func partialResultEmitsTranscriptEventWhenNotLiveInjecting() async {
+    @Test func bubbleClipboardPartialShowsTranscriptBubble() async {
         let (session, stt, _, injector, events) = makeSession()
-        injector.isLiveInjecting = false
+        injector.surfaceMode = .bubbleClipboard
         session.start()
 
-        stt.simulatePartial("Hello")
-        await Task.yield()
+        stt.simulatePartial("hello this is long enough to animate quickly")
+        await waitForAnimationTick()
 
-        let transcriptEvents = events.events.filter {
-            if case .partialTranscript = $0 { return true }
-            return false
-        }
-        #expect(!transcriptEvents.isEmpty)
+        let transcriptStates = events.presentations.filter { $0.bubbleStyle == .transcript }
+        #expect(!transcriptStates.isEmpty)
+        #expect(!(transcriptStates.last?.displayText.isEmpty ?? true))
+        #expect(injector.injectCallCount == 0)
     }
 
-    @Test func partialResultEmitsLiveInjectionWhenVerified() async {
+    @Test func liveSurfacePartialKeepsCompactBubble() async {
         let (session, stt, _, injector, events) = makeSession()
-        injector.isLiveInjecting = true
+        injector.surfaceMode = .terminal
         injector.targetPosition = NSPoint(x: 100, y: 200)
         session.start()
 
         stt.simulatePartial("Hello")
         await Task.yield()
 
-        let liveEvents = events.events.filter {
-            if case .liveInjectionVerified = $0 { return true }
-            return false
-        }
-        #expect(!liveEvents.isEmpty)
+        #expect(events.presentations.last?.surfaceMode == .terminal)
+        #expect(events.presentations.last?.bubbleStyle == .compact)
+        #expect(events.presentations.last?.displayText == "")
+        #expect(events.presentations.last?.caretPosition == NSPoint(x: 100, y: 200))
     }
 
-    // MARK: - Final Result
+    // MARK: - Segment Commits
 
-    @Test func segmentCommitSnapsAnimationAndInjectsCommittedText() async {
+    @Test func segmentCommitSnapsTranscriptBubbleToCommittedText() async {
         let (session, stt, _, injector, events) = makeSession()
-        injector.isLiveInjecting = false
+        injector.surfaceMode = .bubbleClipboard
         session.start()
 
         stt.simulatePartial("hello im testing this")
@@ -147,17 +157,14 @@ struct DictationSessionTests {
         stt.simulateSegmentCommit("Hello, I'm testing this.")
         await Task.yield()
 
-        #expect(injector.lastInjected == "Hello, I'm testing this.")
-        let transcriptEvents = events.events.compactMap { event -> String? in
-            if case .partialTranscript(let text) = event { return text }
-            return nil
-        }
-        #expect(transcriptEvents.last == "Hello, I'm testing this.")
+        #expect(injector.injectCallCount == 0)
+        #expect(events.presentations.last?.bubbleStyle == .transcript)
+        #expect(events.presentations.last?.displayText == "Hello, I'm testing this.")
     }
 
-    @Test func segmentCommitEmitsLiveInjectionEventWhenInjectingLive() async {
+    @Test func segmentCommitInjectsCommittedTextIntoLiveSurface() async {
         let (session, stt, _, injector, events) = makeSession()
-        injector.isLiveInjecting = true
+        injector.surfaceMode = .terminal
         injector.targetPosition = NSPoint(x: 100, y: 200)
         session.start()
 
@@ -165,12 +172,11 @@ struct DictationSessionTests {
         await Task.yield()
 
         #expect(injector.lastInjected == "Hello world")
-        let liveEvents = events.events.filter {
-            if case .liveInjectionVerified = $0 { return true }
-            return false
-        }
-        #expect(!liveEvents.isEmpty)
+        #expect(events.presentations.last?.bubbleStyle == .compact)
+        #expect(events.presentations.last?.surfaceMode == .terminal)
     }
+
+    // MARK: - Final Result
 
     @Test func finalResultCommitsTextAndFinishes() async {
         let (session, stt, _, injector, events) = makeSession()
@@ -210,6 +216,7 @@ struct DictationSessionTests {
         #expect(!session.isActive)
         #expect(stt.endCallCount == 1) // stt session cleaned up
         #expect(injector.releaseCallCount == 1) // injector released
+        #expect(events.presentations.isEmpty)
         #expect(events.events.contains(.finished))
     }
 
@@ -217,37 +224,31 @@ struct DictationSessionTests {
 
     @Test func fullLifecycleWithLiveInjection() async {
         let (session, stt, audio, injector, events) = makeSession()
-        injector.isLiveInjecting = true
+        injector.surfaceMode = .nativeField
         injector.targetPosition = NSPoint(x: 50, y: 50)
 
         // Start
         session.start()
         #expect(session.isActive)
         #expect(injector.captureCallCount == 1)
+        #expect(events.presentations.last?.bubbleStyle == .compact)
 
         // Stream audio
         audio.simulateBuffer(Data([1, 2, 3, 4]))
         #expect(stt.feedCallCount == 1)
 
-        // Partials arrive — inject into target, emit liveInjectionVerified (not partialTranscript)
+        // Partials arrive — inject into target, keep compact bubble
         stt.simulatePartial("Hello")
         await Task.yield()
         #expect(injector.injectCallCount >= 1)
-        let liveEvents = events.events.filter {
-            if case .liveInjectionVerified = $0 { return true }
-            return false
-        }
-        #expect(!liveEvents.isEmpty)
-        let transcriptEvents = events.events.filter {
-            if case .partialTranscript = $0 { return true }
-            return false
-        }
-        #expect(transcriptEvents.isEmpty, "Live injection should NOT emit partialTranscript")
+        #expect(injector.lastInjected == "Hello")
+        #expect(events.presentations.filter { $0.bubbleStyle == .transcript }.isEmpty)
 
         // More partials
         stt.simulatePartial("Hello world")
         await Task.yield()
         #expect(injector.injectCallCount >= 2)
+        #expect(injector.lastInjected == "Hello world")
 
         // Stop
         _ = session.stop()
@@ -264,39 +265,33 @@ struct DictationSessionTests {
 
     @Test func fullLifecycleWithClipboardFallback() async {
         let (session, stt, audio, injector, events) = makeSession()
-        injector.isLiveInjecting = false // clipboard mode
+        injector.surfaceMode = .bubbleClipboard
 
         // Start
         session.start()
+        #expect(events.presentations.last?.bubbleStyle == .compact)
 
         // Stream audio
         audio.simulateBuffer(Data([1, 2, 3, 4]))
 
-        // Partials — should emit partialTranscript (for pill text display), NOT liveInjectionVerified
-        stt.simulatePartial("Hello")
-        await Task.yield()
-        let transcriptEvents = events.events.filter {
-            if case .partialTranscript = $0 { return true }
-            return false
-        }
-        #expect(!transcriptEvents.isEmpty)
-        let liveEvents = events.events.filter {
-            if case .liveInjectionVerified = $0 { return true }
-            return false
-        }
-        #expect(liveEvents.isEmpty, "Clipboard mode should NOT emit liveInjectionVerified")
+        // Partials — bubble becomes the live transcript surface, target stays untouched
+        stt.simulatePartial("hello this is long enough to animate quickly")
+        await waitForAnimationTick()
+        #expect(events.presentations.contains(where: { $0.bubbleStyle == .transcript }))
+        #expect(injector.injectCallCount == 0)
 
         // Stop + final
         _ = session.stop()
         stt.simulateFinal("Hello")
         await Task.yield()
         #expect(injector.commitCallCount == 1)
+        #expect(injector.lastCommitted == "Hello")
         #expect(events.events.contains(.finished))
     }
 
     @Test func multiplePartialsAllInjected() async {
         let (session, stt, _, injector, _) = makeSession()
-        injector.isLiveInjecting = true
+        injector.surfaceMode = .terminal
         session.start()
 
         stt.simulatePartial("H")
@@ -312,6 +307,7 @@ struct DictationSessionTests {
 
         // Each partial should trigger an inject call
         #expect(injector.injectCallCount >= 5)
+        #expect(injector.lastInjected == "Hello")
     }
 
     @Test func finalCommitOverridesPartials() async {

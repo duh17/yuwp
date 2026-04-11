@@ -27,7 +27,9 @@ public final class Qwen3ASRTokenizer: @unchecked Sendable {
     public static let asrText: Int = 151704
 
     public static let eosTokens: Set<Int> = [151645, 151643]
-    public static let allLangTokens: Set<Int> = [11528, 6364, 8453, 22574, 44923, 151704]
+    /// The auto-language header is short (`language <detected><asr_text>`).
+    /// If `<asr_text>` appears much later, treat it as regular decoded output.
+    static let autoLanguagePrefixLookahead = 24
 
     // MARK: - Internal state
 
@@ -134,13 +136,32 @@ public final class Qwen3ASRTokenizer: @unchecked Sendable {
     }
 
     /// Drop the auto-language prefix emitted by the model when language is nil.
-    /// Expected prefix tokens are `language <lang> <asr_text>`.
-    public func stripAutoLanguagePrefix(_ tokens: [Int]) -> [Int] {
-        var index = 0
-        while index < tokens.count, Self.allLangTokens.contains(tokens[index]) {
-            index += 1
+    /// Expected prefix tokens are `language <lang><asr_text>`.
+    ///
+    /// Important: language names are regular BPE tokens, not special tokens.
+    /// Never blanket-filter them everywhere, or real transcript words like
+    /// `English` / `Chinese` can disappear. Instead, strip only a *leading*
+    /// prefix terminated by `<asr_text>`.
+    static func stripLeadingAutoLanguagePrefix(from tokens: [Int]) -> [Int] {
+        guard let asrIndex = tokens.firstIndex(of: Self.asrText),
+              asrIndex < Self.autoLanguagePrefixLookahead else {
+            return tokens
         }
-        return Array(tokens[index...])
+
+        let contentStart = tokens.index(after: asrIndex)
+        guard contentStart < tokens.endIndex else { return [] }
+        return Array(tokens[contentStart...])
+    }
+
+    public func stripAutoLanguagePrefix(_ tokens: [Int]) -> [Int] {
+        Self.stripLeadingAutoLanguagePrefix(from: tokens)
+    }
+
+    /// Decode token IDs, strip any leading auto-language header, and clean
+    /// special markers out of the result.
+    public func cleanTokenOutput(_ tokens: [Int]) -> String {
+        let stripped = stripAutoLanguagePrefix(tokens)
+        return cleanOutput(decode(stripped))
     }
 
     /// Clean ASR output: strip special tokens and extract transcribed text.

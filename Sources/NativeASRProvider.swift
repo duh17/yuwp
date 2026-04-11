@@ -81,6 +81,8 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
 
     func start() {
         isIntentionalShutdown = false
+        readyPollTask?.cancel()
+        readyPollTask = nil
 
         guard let bindHost else {
             updateState(.disabled)
@@ -102,12 +104,19 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
             return
         }
 
+        cleanupOrphanedManagedServerIfNeeded(serverBinaryPath: serverBin)
+
         let proc = Process()
         let stderrPipe = Pipe()
         let alignerModelPath = Self.resolveModelPath(Self.defaultAlignerModel)
 
         proc.executableURL = URL(fileURLWithPath: serverBin)
-        var arguments = [transcriptionModelPath, "--port", "\(port)", "--host", bindHost]
+        var arguments = [
+            transcriptionModelPath,
+            "--port", "\(port)",
+            "--host", bindHost,
+            "--parent-pid", "\(ProcessInfo.processInfo.processIdentifier)",
+        ]
         if batchCommitEnabled {
             arguments += ["--batch-model", transcriptionModelPath]
         } else {
@@ -132,9 +141,19 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         // Monitor for unexpected exit
         proc.terminationHandler = { [weak self] proc in
             guard let self, !self.isIntentionalShutdown else { return }
+            self.readyPollTask?.cancel()
+            self.readyPollTask = nil
             let code = proc.terminationStatus
-            yuwpLog("asr-server exited unexpectedly (code \(code))")
             self.process = nil
+
+            if let listenerPID = Self.listeningPID(on: self.port), listenerPID != proc.processIdentifier {
+                let owner = Self.command(for: listenerPID) ?? "pid \(listenerPID)"
+                yuwpLog("asr-server failed to own port \(self.port); listener PID \(listenerPID): \(owner)")
+                self.updateState(.error("Port \(self.port) already in use"))
+                return
+            }
+
+            yuwpLog("asr-server exited unexpectedly (code \(code))")
             self.updateState(.error("Server crashed (exit \(code))"))
             self.scheduleRestart()
         }
@@ -266,6 +285,69 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         ]
         return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
+
+    private func cleanupOrphanedManagedServerIfNeeded(serverBinaryPath: String) {
+        guard let listenerPID = Self.listeningPID(on: port) else { return }
+        guard let parentPID = Self.parentPID(for: listenerPID), parentPID == 1 else { return }
+        guard let command = Self.command(for: listenerPID), command.contains(serverBinaryPath) else { return }
+
+        yuwpLog("Found orphaned asr-server on port \(port) (PID: \(listenerPID)) — terminating")
+        kill(listenerPID, SIGTERM)
+        Self.waitForListener(on: port, toExit: listenerPID, timeout: 1.5)
+
+        if Self.listeningPID(on: port) == listenerPID {
+            yuwpLog("Orphaned asr-server \(listenerPID) ignored SIGTERM — sending SIGKILL")
+            kill(listenerPID, SIGKILL)
+            Self.waitForListener(on: port, toExit: listenerPID, timeout: 1.0)
+        }
+    }
+
+    private static func listeningPID(on port: UInt16) -> Int32? {
+        guard let output = toolOutput(
+            launchPath: "/usr/sbin/lsof",
+            arguments: ["-tiTCP:\(port)", "-sTCP:LISTEN"]
+        ) else { return nil }
+        guard let line = output.split(whereSeparator: \.isNewline).first,
+              let pid = Int32(line.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+        return pid
+    }
+
+    private static func parentPID(for pid: Int32) -> Int32? {
+        guard let output = toolOutput(launchPath: "/bin/ps", arguments: ["-o", "ppid=", "-p", "\(pid)"])
+        else { return nil }
+        return Int32(output.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private static func command(for pid: Int32) -> String? {
+        toolOutput(launchPath: "/bin/ps", arguments: ["-o", "command=", "-p", "\(pid)"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func toolOutput(launchPath: String, arguments: [String]) -> String? {
+        let process = Process()
+        let stdout = Pipe()
+        process.executableURL = URL(fileURLWithPath: launchPath)
+        process.arguments = arguments
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func waitForListener(on port: UInt16, toExit pid: Int32, timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if listeningPID(on: port) != pid { return }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+    }
 }
 
 // MARK: - Native ASR HTTP Session
@@ -273,9 +355,7 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
 /// HTTP-based STT session communicating with asr-server.
 /// Audio feeds are serialized on a background queue to avoid blocking the audio thread.
 final class NativeASRSession: SttSession, @unchecked Sendable {
-    var onPartial: ((String) -> Void)?
-    var onSegmentCommit: ((String) -> Void)?
-    var onFinal: ((String) -> Void)?
+    var onUpdate: ((TranscriptUpdate) -> Void)?
     var onError: ((String) -> Void)?
 
     private let baseURL: String
@@ -304,12 +384,9 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
             guard let self, let sid = self.sessionId else { return }
             guard let data = self.syncHTTP("POST", path: "\(self.baseURL)/\(sid)", body: pcmData),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let text = json["text"] as? String, !text.isEmpty else { return }
-            if json["batch_corrected"] as? Bool == true {
-                self.onSegmentCommit?(text)
-            } else {
-                self.onPartial?(text)
-            }
+                  let update = self.parseTranscriptUpdate(json, fallbackKind: .partial),
+                  !update.text.isEmpty else { return }
+            self.onUpdate?(update)
         }
     }
 
@@ -317,18 +394,41 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
         queue.async { [weak self] in
             guard let self else { return }
             guard let sid = self.sessionId else {
-                self.onFinal?("")
+                self.onUpdate?(TranscriptUpdate(kind: .final, text: ""))
                 return
             }
             self.sessionId = nil
             guard let data = self.syncHTTP("DELETE", path: "\(self.baseURL)/\(sid)"),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let text = json["text"] as? String else {
-                self.onFinal?("")
+                  let update = self.parseTranscriptUpdate(json, fallbackKind: .final) else {
+                self.onUpdate?(TranscriptUpdate(kind: .final, text: ""))
                 return
             }
-            self.onFinal?(text)
+            self.onUpdate?(update)
         }
+    }
+
+    private func parseTranscriptUpdate(
+        _ json: [String: Any],
+        fallbackKind: TranscriptUpdateKind
+    ) -> TranscriptUpdate? {
+        let kind: TranscriptUpdateKind
+        if let rawKind = json["update_kind"] as? String,
+           let parsedKind = TranscriptUpdateKind(rawValue: rawKind) {
+            kind = parsedKind
+        } else if fallbackKind == .partial, json["batch_corrected"] as? Bool == true {
+            kind = .segmentCommit
+        } else {
+            kind = fallbackKind
+        }
+
+        guard let text = json["text"] as? String else { return nil }
+        return TranscriptUpdate(
+            kind: kind,
+            text: text,
+            committedText: json["committed_text"] as? String,
+            activeText: json["active_text"] as? String
+        )
     }
 
     /// Synchronous HTTP request (always called on the serial background queue).

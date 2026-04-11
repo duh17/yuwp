@@ -314,14 +314,19 @@ struct SubtitleEndpointTests {
         let (data, status) = try await http("POST", subtitleURL, body: body, headers: ["Content-Type": ct])
 
         #expect(status == 200)
-        let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-        #expect(arr != nil, Comment(rawValue: "JSON response should be an array"))
-        #expect(arr!.count > 0, Comment(rawValue: "Should have at least one subtitle"))
-        let first = arr!.first!
-        #expect(first["index"] as? Int == 1)
-        #expect(first["start"] is Double)
-        #expect(first["end"] is Double)
-        #expect(first["text"] is String)
+        let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(payload != nil, Comment(rawValue: "JSON response should be an object"))
+        #expect(payload?["text"] as? String == transcript)
+        #expect(payload?["language"] as? String == "en")
+        #expect(payload?["duration"] is Double)
+        let segments = payload?["segments"] as? [[String: Any]]
+        #expect(segments != nil, Comment(rawValue: "JSON response should include segments"))
+        #expect((segments ?? []).count > 0, Comment(rawValue: "Should have at least one subtitle segment"))
+        if let first = segments?.first {
+            #expect(first["start"] is Double)
+            #expect(first["end"] is Double)
+            #expect(first["text"] is String)
+        }
     }
 
     @Test func subtitleWithoutTextAutoTranscribes() async throws {
@@ -345,9 +350,14 @@ struct SubtitleEndpointTests {
         let (data, status) = try await http("POST", subtitleURL, body: body,
             headers: ["Content-Type": "multipart/form-data; boundary=\(boundary)"])
         #expect(status == 200)
-        let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-        #expect(arr != nil)
-        #expect((arr ?? []).count > 0)
+        let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(payload != nil)
+        #expect(payload?["text"] is String)
+        #expect(payload?["language"] as? String == "en")
+        #expect(payload?["duration"] is Double)
+        let segments = payload?["segments"] as? [[String: Any]]
+        #expect(segments != nil)
+        #expect((segments ?? []).count > 0)
     }
 
     @Test func subtitleChineseAlignment() async throws {
@@ -358,11 +368,15 @@ struct SubtitleEndpointTests {
         let (data, status) = try await http("POST", subtitleURL, body: body, headers: ["Content-Type": ct])
 
         #expect(status == 200)
-        let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-        #expect(arr != nil)
-        #expect(arr!.count > 0)
+        let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(payload != nil)
+        #expect(payload?["text"] as? String == transcript)
+        #expect(payload?["language"] as? String == "zh")
+        let segments = payload?["segments"] as? [[String: Any]]
+        #expect(segments != nil)
+        #expect((segments ?? []).count > 0)
         // Check that all subtitle texts contain Chinese characters without inserted ASCII spaces.
-        for sub in arr! {
+        for sub in segments ?? [] {
             let text = sub["text"] as? String ?? ""
             #expect(!text.isEmpty)
             #expect(!text.contains(" "))

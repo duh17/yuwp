@@ -307,7 +307,7 @@ struct ASRServerTests {
     // batch-retranscribed and frozen into a committed prefix that will never be
     // rewritten by later partials. These tests verify the contract:
     //
-    //   1. Speech + ≥4s silence triggers a commit (response carries `batch_corrected: true`)
+    //   1. Speech + ≥4s silence triggers a commit (response carries `update_kind=segment_commit`)
     //   2. Once committed, the prefix appears in every subsequent partial unchanged
     //   3. After a commit, new speech is appended (committedText + " " + activeText)
     //   4. Stop only finalizes the active segment — committed prefix is preserved verbatim
@@ -320,7 +320,7 @@ struct ASRServerTests {
     private var silenceBufferBytes: Data { Data(repeating: 0, count: chunkBytes * 4) }
 
     /// Stream a sequence of audio buffers as 2s chunks. Returns every feed
-    /// response (text + batch_corrected flag) plus the final text from stop.
+    /// response plus the final response from stop.
     private func streamComposite(_ buffers: [Data]) async throws -> CompositeResult {
         var pcm = Data()
         for b in buffers { pcm.append(b) }
@@ -329,7 +329,7 @@ struct ASRServerTests {
         #expect(createStatus == 200)
         let sid = json(createData)?["session_id"] as! String
 
-        var feeds: [(text: String, batchCorrected: Bool)] = []
+        var feeds: [FeedResponse] = []
         var offset = 0
         while offset < pcm.count {
             let end = min(offset + chunkBytes, pcm.count)
@@ -340,37 +340,64 @@ struct ASRServerTests {
             let payload = json(feedData) ?? [:]
             let text = payload["text"] as? String ?? ""
             let bc = payload["batch_corrected"] as? Bool ?? false
-            feeds.append((text, bc))
+            let kind = payload["update_kind"] as? String ?? (bc ? "segment_commit" : "partial")
+            let committedText = payload["committed_text"] as? String ?? ""
+            let activeText = payload["active_text"] as? String ?? ""
+            feeds.append(FeedResponse(text: text, updateKind: kind, batchCorrected: bc, committedText: committedText, activeText: activeText))
         }
 
         let (stopData, stopStatus) = try await http("DELETE", "\(baseURL)/\(sid)")
         #expect(stopStatus == 200)
-        let finalText = json(stopData)?["text"] as? String ?? ""
-        return CompositeResult(feeds: feeds, final: finalText)
+        let finalPayload = json(stopData) ?? [:]
+        let finalText = finalPayload["text"] as? String ?? ""
+        let finalKind = finalPayload["update_kind"] as? String ?? "final"
+        let finalCommittedText = finalPayload["committed_text"] as? String ?? finalText
+        let finalActiveText = finalPayload["active_text"] as? String ?? ""
+        return CompositeResult(
+            feeds: feeds,
+            final: FeedResponse(
+                text: finalText,
+                updateKind: finalKind,
+                batchCorrected: false,
+                committedText: finalCommittedText,
+                activeText: finalActiveText
+            )
+        )
+    }
+
+    struct FeedResponse {
+        let text: String
+        let updateKind: String
+        let batchCorrected: Bool
+        let committedText: String
+        let activeText: String
     }
 
     struct CompositeResult {
-        let feeds: [(text: String, batchCorrected: Bool)]
-        let final: String
+        let feeds: [FeedResponse]
+        let final: FeedResponse
 
         var firstCommitFeedIndex: Int? {
-            feeds.firstIndex(where: { $0.batchCorrected })
+            feeds.firstIndex(where: { $0.updateKind == "segment_commit" })
         }
     }
 
     /// Long silence after speech triggers a segment commit, signaled by
-    /// `batch_corrected: true` in the feed response.
+    /// `update_kind: segment_commit` in the feed response.
     @Test func pauseAfterSpeechTriggersSegmentCommit() async throws {
         let jfk = try loadFixturePCM("jfk.wav")
         let result = try await streamComposite([jfk, silenceBufferBytes])
 
         let commitIdx = result.firstCommitFeedIndex
         #expect(commitIdx != nil,
-                Comment(rawValue: "Expected at least one feed with batch_corrected=true after silence, got: \(result.feeds.map { $0.batchCorrected })"))
+                Comment(rawValue: "Expected at least one feed with update_kind=segment_commit after silence, got: \(result.feeds.map { $0.updateKind })"))
 
         // Committed text should contain JFK content
         if let idx = commitIdx {
             let committedText = result.feeds[idx].text
+            #expect(result.feeds[idx].updateKind == "segment_commit")
+            #expect(result.feeds[idx].committedText == committedText)
+            #expect(result.feeds[idx].activeText.isEmpty)
             let lower = committedText.lowercased()
             #expect(lower.contains("country") || lower.contains("fellow") || lower.contains("ask"),
                     Comment(rawValue: "Committed segment should contain JFK content, got: \(committedText)"))
@@ -399,8 +426,9 @@ struct ASRServerTests {
                     Comment(rawValue: "Feed[\(i)] should start with committed prefix.\n  prefix: \(committedPrefix)\n  later:  \(later)"))
         }
         // Final text must also preserve the committed prefix
-        #expect(result.final.hasPrefix(committedPrefix),
-                Comment(rawValue: "Final text should start with committed prefix.\n  prefix: \(committedPrefix)\n  final:  \(result.final)"))
+        #expect(result.final.text.hasPrefix(committedPrefix),
+                Comment(rawValue: "Final text should start with committed prefix.\n  prefix: \(committedPrefix)\n  final:  \(result.final.text)"))
+        #expect(result.final.updateKind == "final")
     }
 
     /// After a commit, new speech is appended to the committed text rather than
@@ -415,13 +443,13 @@ struct ASRServerTests {
         let singleResult = try await streamFixture("jfk.wav")
         let singleLen = singleResult.final.count
 
-        #expect(result.final.count > singleLen,
-                Comment(rawValue: "Final text after two JFK segments should be longer than one. single=\(singleLen) double=\(result.final.count)"))
+        #expect(result.final.text.count > singleLen,
+                Comment(rawValue: "Final text after two JFK segments should be longer than one. single=\(singleLen) double=\(result.final.text.count)"))
 
         // Should contain JFK content (basic sanity)
-        let lower = result.final.lowercased()
+        let lower = result.final.text.lowercased()
         #expect(lower.contains("country") || lower.contains("fellow"),
-                Comment(rawValue: "Expected JFK content in composite result, got: \(result.final)"))
+                Comment(rawValue: "Expected JFK content in composite result, got: \(result.final.text)"))
     }
 
     /// If the user stops with a very short trailing silence (no new speech
@@ -441,12 +469,13 @@ struct ASRServerTests {
 
         // Final text should equal the committed text — the trailing silence
         // adds nothing and must not corrupt the committed prefix
-        #expect(result.final == committedText,
-                Comment(rawValue: "Final text should equal committed text after pure-silence trailing segment.\n  committed: \(committedText)\n  final:     \(result.final)"))
+        #expect(result.final.text == committedText,
+                Comment(rawValue: "Final text should equal committed text after pure-silence trailing segment.\n  committed: \(committedText)\n  final:     \(result.final.text)"))
+        #expect(result.final.activeText.isEmpty)
     }
 
     /// Multiple commits chain correctly. Three JFK segments separated by
-    /// silences should produce at least two `batch_corrected: true` feeds
+    /// silences should produce at least two `segment_commit` feeds
     /// during streaming (one per inter-segment pause), and the final text
     /// should be ~3× a single JFK transcript length.
     @Test func multipleCommitsChainCorrectly() async throws {
@@ -464,20 +493,20 @@ struct ASRServerTests {
         // Count the number of commit events during streaming. We expect 2
         // (after the first and second silences). The third jfk is committed
         // implicitly on stop via finalize().
-        let commitCount = result.feeds.filter { $0.batchCorrected }.count
+        let commitCount = result.feeds.filter { $0.updateKind == "segment_commit" }.count
         #expect(commitCount >= 2,
-                Comment(rawValue: "Expected at least 2 streaming commits for three segments with two silences, got \(commitCount). feeds: \(result.feeds.map { $0.batchCorrected })"))
+                Comment(rawValue: "Expected at least 2 streaming commits for three segments with two silences, got \(commitCount). feeds: \(result.feeds.map { $0.updateKind })"))
 
         // Final text should be substantially longer than a single JFK —
         // close to 3× (with some tolerance for segment boundary whitespace)
-        #expect(result.final.count >= Int(Double(singleLen) * 2.5),
-                Comment(rawValue: "Final text should be ~3× single JFK length. single=\(singleLen) triple=\(result.final.count)"))
+        #expect(result.final.text.count >= Int(Double(singleLen) * 2.5),
+                Comment(rawValue: "Final text should be ~3× single JFK length. single=\(singleLen) triple=\(result.final.text.count)"))
 
         // Every commit event during streaming must produce a text that the
         // final still starts with — i.e., no commit was ever rewritten
-        for (idx, feed) in result.feeds.enumerated() where feed.batchCorrected {
-            #expect(result.final.hasPrefix(feed.text),
-                    Comment(rawValue: "Commit[\(idx)] prefix not preserved in final.\n  commit: \(feed.text)\n  final:  \(result.final)"))
+        for (idx, feed) in result.feeds.enumerated() where feed.updateKind == "segment_commit" {
+            #expect(result.final.text.hasPrefix(feed.text),
+                    Comment(rawValue: "Commit[\(idx)] prefix not preserved in final.\n  commit: \(feed.text)\n  final:  \(result.final.text)"))
         }
     }
 
@@ -497,17 +526,17 @@ struct ASRServerTests {
         // Final text should contain roughly double the single-jfk content.
         // If the second segment was broken (e.g., encoder cache regression),
         // final would be approximately singleLen.
-        #expect(result.final.count >= Int(Double(singleLen) * 1.8),
-                Comment(rawValue: "Second segment should contribute ~equal content to first. single=\(singleLen) final=\(result.final.count)\n  final: \(result.final)"))
+        #expect(result.final.text.count >= Int(Double(singleLen) * 1.8),
+                Comment(rawValue: "Second segment should contribute ~equal content to first. single=\(singleLen) final=\(result.final.text.count)\n  final: \(result.final.text)"))
 
         // Final should contain JFK keyword content
-        let lower = result.final.lowercased()
+        let lower = result.final.text.lowercased()
         let keywordCount = ["country", "fellow", "ask"].reduce(0) { acc, kw in
             // Count occurrences of each keyword
             acc + lower.components(separatedBy: kw).count - 1
         }
         #expect(keywordCount >= 2,
-                Comment(rawValue: "Expected at least 2 JFK keyword occurrences across two segments, got \(keywordCount). final: \(result.final)"))
+                Comment(rawValue: "Expected at least 2 JFK keyword occurrences across two segments, got \(keywordCount). final: \(result.final.text)"))
     }
 
     /// If the active segment has audio but not enough to batch (<1s), the
@@ -529,8 +558,8 @@ struct ASRServerTests {
         // Final must start with the committed prefix verbatim. The short
         // active segment may or may not add a few characters via streaming
         // fallback — what matters is the committed text is not corrupted.
-        #expect(result.final.hasPrefix(committedText),
-                Comment(rawValue: "Committed prefix must be preserved when active segment is too short to batch.\n  committed: \(committedText)\n  final:     \(result.final)"))
+        #expect(result.final.text.hasPrefix(committedText),
+                Comment(rawValue: "Committed prefix must be preserved when active segment is too short to batch.\n  committed: \(committedText)\n  final:     \(result.final.text)"))
     }
 }
 

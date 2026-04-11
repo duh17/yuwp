@@ -209,10 +209,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             accessibilityDescription: "Yuwp — Listening"
         )
 
-        // Start with minimal waveform pill. Upgrades to full text pill
-        // only if we enter clipboard-fallback mode (first .partialTranscript event).
-        micPanel.show(near: injector.targetPosition, minimal: true)
-
         s.start()
     }
 
@@ -238,16 +234,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleSessionEvent(_ event: DictationEvent) {
         switch event {
-        case .liveInjectionVerified:
-            break // already showing minimal pill
-
-        case .partialTranscript(let text):
-            // Non-live mode — upgrade from compact dot to full pill to show text
-            micPanel.show(near: session?.textInjector.targetPosition ?? .zero)
-            micPanel.updateTranscript(text)
-
-        case .caretMoved:
-            break // pill stays in pinned position
+        case .presentation(let state):
+            micPanel.present(state)
 
         case .audioLevel(let level):
             micPanel.updateAudioLevel(level)

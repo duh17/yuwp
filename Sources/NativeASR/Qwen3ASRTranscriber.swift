@@ -176,11 +176,9 @@ public final class Qwen3ASRTranscriber: @unchecked Sendable {
         }
 
         // Phase 5: Decode and clean
-        let outputTokens = language == nil
-            ? tokenizer.stripAutoLanguagePrefix(generatedTokens)
-            : generatedTokens
-        let rawText = tokenizer.decode(outputTokens)
-        let cleanedText = tokenizer.cleanOutput(rawText)
+        let cleanedText = language == nil
+            ? tokenizer.cleanTokenOutput(generatedTokens)
+            : tokenizer.cleanOutput(tokenizer.decode(generatedTokens))
 
         return TranscriptionResult(
             text: cleanedText,

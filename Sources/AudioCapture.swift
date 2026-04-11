@@ -69,6 +69,13 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
             return false
         }
 
+        // Reset the engine on every session. Route/sample-rate changes can leave
+        // the previous graph advertising a stale client format, which can crash
+        // installTap() when the live hardware format no longer matches.
+        engine.stop()
+        engine.reset()
+        engine = AVAudioEngine()
+
         // Reset silence tracking
         consecutiveSilentBuffers = 0
         silenceWarningFired = false
@@ -89,12 +96,21 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
         }
 
         let inputNode = engine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
+        let hardwareFormat = inputNode.inputFormat(forBus: 0)
+        let clientFormat = inputNode.outputFormat(forBus: 0)
 
-        // Sanity-check the input format (invalid when device disappeared mid-access)
-        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
-            yuwpLog("Invalid input format (\(inputFormat.sampleRate)Hz, \(inputFormat.channelCount)ch) — no usable mic?")
+        // Sanity-check the live hardware format (invalid when device disappeared mid-access)
+        guard hardwareFormat.sampleRate > 0, hardwareFormat.channelCount > 0 else {
+            yuwpLog("Invalid hardware input format (\(hardwareFormat.sampleRate)Hz, \(hardwareFormat.channelCount)ch) — no usable mic?")
             return false
+        }
+
+        if hardwareFormat.sampleRate != clientFormat.sampleRate || hardwareFormat.channelCount != clientFormat.channelCount {
+            yuwpLog(
+                "Audio format mismatch detected before tap install — using hardware format " +
+                "(hw: \(Int(hardwareFormat.sampleRate))Hz/\(hardwareFormat.channelCount)ch, " +
+                "client: \(Int(clientFormat.sampleRate))Hz/\(clientFormat.channelCount)ch)"
+            )
         }
 
         // Target format: 16kHz, mono, Int16
@@ -108,9 +124,9 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
             return false
         }
 
-        // Create converter from mic format to target format
-        guard let conv = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            yuwpLog("Failed to create audio converter: \(inputFormat) -> \(targetFormat)")
+        // Convert from the live hardware capture format, not the engine's stale client format.
+        guard let conv = AVAudioConverter(from: hardwareFormat, to: targetFormat) else {
+            yuwpLog("Failed to create audio converter: \(hardwareFormat) -> \(targetFormat)")
             return false
         }
         converter = conv
@@ -119,15 +135,15 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
         startRouteChangeObserver()
 
         // Buffer size: ~100ms at input sample rate
-        let bufferSize = AVAudioFrameCount(inputFormat.sampleRate * 0.1)
+        let bufferSize = AVAudioFrameCount(hardwareFormat.sampleRate * 0.1)
 
-        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) {
+        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: hardwareFormat) {
             [weak self] buffer, _ in
             guard let self, let converter = self.converter else { return }
 
             // Convert to 16kHz mono Int16
             let frameCapacity = AVAudioFrameCount(
-                Double(buffer.frameLength) * self.targetSampleRate / inputFormat.sampleRate
+                Double(buffer.frameLength) * self.targetSampleRate / hardwareFormat.sampleRate
             )
             guard let outputBuffer = AVAudioPCMBuffer(
                 pcmFormat: targetFormat,
@@ -186,7 +202,10 @@ final class AudioCapture: @unchecked Sendable, AudioCapturing {  // AudioCapturi
             try engine.start()
             isRunning = true
             startTime = CFAbsoluteTimeGetCurrent()
-            yuwpLog("Audio capture started (\(Int(inputFormat.sampleRate))Hz -> 16kHz mono)")
+            yuwpLog(
+                "Audio capture started (hw \(Int(hardwareFormat.sampleRate))Hz/\(hardwareFormat.channelCount)ch, " +
+                "client \(Int(clientFormat.sampleRate))Hz/\(clientFormat.channelCount)ch -> 16kHz mono)"
+            )
             return true
         } catch {
             yuwpLog("Failed to start audio engine: \(error)")

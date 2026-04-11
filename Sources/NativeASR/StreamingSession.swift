@@ -123,7 +123,7 @@ public final class StreamingSession: @unchecked Sendable {
         if chunkIdx >= config.unfixedChunks && !rawTokens.isEmpty {
             let nPrefix = max(0, rawTokens.count - config.rollback)
             prefixTokens = Array(rawTokens.prefix(nPrefix))
-            prefixTokens = prefixTokens.filter { !Qwen3ASRTokenizer.allLangTokens.contains($0) }
+            prefixTokens = transcriber.tokenizer.stripAutoLanguagePrefix(prefixTokens)
             if prefixTokens.count > config.maxPrefixTokens {
                 prefixTokens = Array(prefixTokens.suffix(config.maxPrefixTokens))
             }
@@ -183,7 +183,7 @@ public final class StreamingSession: @unchecked Sendable {
                 let n = rawTokens.count - config.rollback
                 if n > 0 { uncappedPrefix = Array(rawTokens.prefix(n)) }
             }
-            rawTokens = uncappedPrefix + newTokens
+            rawTokens = transcriber.tokenizer.stripAutoLanguagePrefix(uncappedPrefix + newTokens)
         }
 
         var activeText = extractText(rawTokens)
@@ -218,6 +218,13 @@ public final class StreamingSession: @unchecked Sendable {
     public var processedChunkCount: Int { chunkIdx }
 
     public func finalText() -> String { lastText }
+
+    public func committedSegmentText() -> String { committedText }
+
+    public func activeSegmentText() -> String {
+        guard !rawTokens.isEmpty else { return "" }
+        return extractText(rawTokens).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     /// Finalize the session on stop. Batch retranscribes the active segment
     /// (if any), appends it to committed text, and returns the full transcript.
@@ -393,9 +400,7 @@ public final class StreamingSession: @unchecked Sendable {
     }
 
     private func extractText(_ tokens: [Int]) -> String {
-        let filtered = tokens.filter { !Qwen3ASRTokenizer.allLangTokens.contains($0) }
-        let raw = transcriber.tokenizer.decode(filtered)
-        let cleaned = transcriber.tokenizer.cleanOutput(raw)
+        let cleaned = transcriber.tokenizer.cleanTokenOutput(tokens)
         return cleaned == "None" ? "" : cleaned
     }
 
@@ -425,7 +430,6 @@ public final class StreamingSession: @unchecked Sendable {
         fputs("[StreamingSession] Repetition trimmed \(text.count)→\(trimmed.count) chars\n", stderr)
 
         rawTokens = transcriber.tokenizer.encode(trimmed)
-            .filter { !Qwen3ASRTokenizer.allLangTokens.contains($0) }
         return trimmed
     }
 
@@ -438,7 +442,6 @@ public final class StreamingSession: @unchecked Sendable {
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
                 rawTokens = transcriber.tokenizer.encode(text)
-                    .filter { !Qwen3ASRTokenizer.allLangTokens.contains($0) }
             }
             // Reset cache — batch changed the token sequence
             kvCache = transcriber.model.makeCache()

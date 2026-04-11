@@ -25,6 +25,7 @@ import NativeASR
 
 nonisolated(unsafe) var serverSocket: Int32 = -1
 nonisolated(unsafe) var shuttingDown = false
+nonisolated(unsafe) var parentWatchTimer: DispatchSourceTimer?
 private let vadLock = NSLock()
 
 #if YUWP_INTERNAL_DIAGNOSTICS
@@ -36,12 +37,30 @@ let internalDiagnosticsEnabled = false
 func handleShutdown(_: Int32) {
     guard !shuttingDown else { return }
     shuttingDown = true
+    parentWatchTimer?.cancel()
+    parentWatchTimer = nil
     let fd = serverSocket
     serverSocket = -1
     if fd >= 0 {
         Darwin.shutdown(fd, SHUT_RDWR)
         close(fd)
     }
+}
+
+func startParentWatch(expectedParentPID: Int32?) {
+    guard let expectedParentPID else { return }
+    let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .background))
+    timer.schedule(deadline: .now() + .seconds(1), repeating: .seconds(1))
+    timer.setEventHandler {
+        let currentParentPID = getppid()
+        guard currentParentPID == expectedParentPID else {
+            log("Parent process \(expectedParentPID) disappeared (current ppid: \(currentParentPID)) — shutting down")
+            handleShutdown(SIGTERM)
+            return
+        }
+    }
+    parentWatchTimer = timer
+    timer.resume()
 }
 
 // MARK: - Session Manager
@@ -130,6 +149,13 @@ final class SessionManager: @unchecked Sendable {
             )
 #endif
         }
+
+        let response = transcriptPayload(
+            session: session,
+            kind: batchCorrected ? "segment_commit" : "partial",
+            isFinal: false,
+            batchCorrected: batchCorrected
+        )
         inferenceLock.unlock()
 
         stateLock.lock()
@@ -139,12 +165,10 @@ final class SessionManager: @unchecked Sendable {
         }
         stateLock.unlock()
 
-        var resp: [String: Any] = ["text": session.finalText()]
-        if batchCorrected { resp["batch_corrected"] = true }
-        return resp
+        return response
     }
 
-    func stop(_ sid: String) -> String? {
+    func stop(_ sid: String) -> [String: Any]? {
         stateLock.lock()
         guard let session = sessions.removeValue(forKey: sid) else { stateLock.unlock(); return nil }
         let pending = pendingAudio.removeValue(forKey: sid) ?? []
@@ -155,10 +179,33 @@ final class SessionManager: @unchecked Sendable {
         inferenceLock.lock()
         if !pending.isEmpty { _ = session.processChunk(pending) }
         let text = session.finalize()
+        let response = transcriptPayload(
+            session: session,
+            kind: "final",
+            isFinal: true,
+            batchCorrected: false
+        )
         inferenceLock.unlock()
 
         log("Session stopped (\(sid)): \(text.count) chars")
-        return text
+        return response
+    }
+
+    private func transcriptPayload(
+        session: StreamingSession,
+        kind: String,
+        isFinal: Bool,
+        batchCorrected: Bool
+    ) -> [String: Any] {
+        var resp: [String: Any] = [
+            "text": session.finalText(),
+            "committed_text": session.committedSegmentText(),
+            "active_text": session.activeSegmentText(),
+            "update_kind": kind,
+            "is_final": isFinal,
+        ]
+        if batchCorrected { resp["batch_corrected"] = true }
+        return resp
     }
 
     func transcribeFile(
@@ -575,11 +622,78 @@ func formatVTT(_ subtitles: [Subtitle]) -> String {
     }.joined(separator: "\n\n")
 }
 
-func formatSubtitleJSON(_ subtitles: [Subtitle]) -> Data {
-    let arr: [[String: Any]] = subtitles.map { sub in
-        ["index": sub.index, "start": sub.start, "end": sub.end, "text": sub.text]
+func normalizedLanguageCode(_ language: String?) -> String? {
+    guard let language else { return nil }
+    let trimmed = language.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+
+    let normalized = trimmed
+        .replacingOccurrences(of: "_", with: "-")
+        .lowercased()
+
+    let aliases: [String: String] = [
+        "auto": "auto",
+        "english": "en",
+        "chinese": "zh",
+        "mandarin": "zh",
+        "cantonese": "yue",
+        "japanese": "ja",
+        "korean": "ko",
+        "french": "fr",
+        "german": "de",
+        "spanish": "es",
+        "portuguese": "pt",
+        "russian": "ru",
+        "arabic": "ar",
+        "hindi": "hi",
+        "thai": "th",
+        "vietnamese": "vi",
+        "indonesian": "id",
+        "malay": "ms",
+        "turkish": "tr",
+        "italian": "it",
+        "dutch": "nl",
+        "polish": "pl",
+        "ukrainian": "uk",
+    ]
+    if let alias = aliases[normalized] { return alias }
+
+    let parts = normalized.split(separator: "-", omittingEmptySubsequences: true)
+    guard let first = parts.first,
+          (2...3).contains(first.count),
+          first.allSatisfy(\.isLetter)
+    else {
+        return normalized
     }
-    return (try? JSONSerialization.data(withJSONObject: arr)) ?? Data("[]".utf8)
+
+    var output = [String(first)]
+    for part in parts.dropFirst() {
+        let piece = String(part)
+        if piece.count == 2, piece.allSatisfy(\.isLetter) {
+            output.append(piece.uppercased())
+        } else {
+            output.append(piece.lowercased())
+        }
+    }
+    return output.joined(separator: "-")
+}
+
+func formatSubtitleJSON(
+    transcript: String,
+    language: String,
+    duration: Double,
+    subtitles: [Subtitle]
+) -> Data {
+    let segments: [[String: Any]] = subtitles.map { sub in
+        ["start": sub.start, "end": sub.end, "text": sub.text]
+    }
+    let payload: [String: Any] = [
+        "text": transcript,
+        "language": normalizedLanguageCode(language) ?? language,
+        "duration": duration,
+        "segments": segments,
+    ]
+    return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
 }
 
 private func splitTextProportionally(_ text: String, chunkDurations: [Double]) -> [String] {
@@ -817,7 +931,7 @@ func route(
                     "duration": result.audioDuration,
                 ]
                 if let language = result.language {
-                    payload["language"] = language
+                    payload["language"] = normalizedLanguageCode(language) ?? language
                 }
                 return writeJSONResponse(status: 200, payload)
             default:
@@ -913,7 +1027,12 @@ func route(
                     maxDuration: maxDuration,
                     pauseThreshold: pauseThreshold
                 )
-                let body = formatSubtitleJSON(subtitles)
+                let body = formatSubtitleJSON(
+                    transcript: subtitleResult.transcript,
+                    language: subtitleResult.language,
+                    duration: audioDuration,
+                    subtitles: subtitles
+                )
                 return HTTPResponse(status: 200, contentType: "application/json", body: body)
             case "vtt":
                 let subtitles = groupSubtitles(
@@ -953,10 +1072,10 @@ func route(
             }
             return writeJSONResponse(status: 200, result)
         case "DELETE":
-            guard let text = mgr.stop(sid) else {
+            guard let result = mgr.stop(sid) else {
                 return writeJSONResponse(status: 404, ["error": "session not found"])
             }
-            return writeJSONResponse(status: 200, ["text": text])
+            return writeJSONResponse(status: 200, result)
         default:
             return writeJSONResponse(status: 405, ["error": "method not allowed"])
         }
@@ -991,7 +1110,8 @@ func startServer(
     vad: SileroVAD?,
     streamingModelName: String,
     batchModelName: String?,
-    batchRetranscribeEnabled: Bool
+    batchRetranscribeEnabled: Bool,
+    parentPID: Int32?
 ) {
     let serverFd = socket(AF_INET, SOCK_STREAM, 0)
     guard serverFd >= 0 else { fputs("socket() failed\n", stderr); exit(1) }
@@ -1017,6 +1137,7 @@ func startServer(
     serverSocket = serverFd
     signal(SIGINT, handleShutdown)
     signal(SIGTERM, handleShutdown)
+    startParentWatch(expectedParentPID: parentPID)
 
     log("Listening on http://\(host):\(port)")
 
@@ -1062,6 +1183,8 @@ func startServer(
     if result == .timedOut { log("Timed out waiting for in-flight requests") }
 
     // Defensive cleanup (signal handler may have already closed)
+    parentWatchTimer?.cancel()
+    parentWatchTimer = nil
     let fd = serverSocket
     serverSocket = -1
     if fd >= 0 { close(fd) }
@@ -1080,13 +1203,14 @@ func log(_ msg: String) {
 do {
     var args = Array(CommandLine.arguments.dropFirst())
     guard !args.isEmpty else {
-        fputs("Usage: asr-server <streaming-model-dir> [--batch-model <dir>] [--aligner-model <dir>] [--disable-batch-retranscribe] [--port 9748] [--host 127.0.0.1] [--warmup]\n", stderr)
+        fputs("Usage: asr-server <streaming-model-dir> [--batch-model <dir>] [--aligner-model <dir>] [--disable-batch-retranscribe] [--port 9748] [--host 127.0.0.1] [--parent-pid <pid>] [--warmup]\n", stderr)
         exit(1)
     }
 
     let modelPath = args.removeFirst()
     var port: UInt16 = 9748
     var host = "127.0.0.1"
+    var parentPID: Int32?
     var doWarmup = false
     var batchModelPath: String?
     var alignerModelPath: String?
@@ -1102,6 +1226,11 @@ do {
         case "--host":
             guard !args.isEmpty else { fputs("--host requires a value\n", stderr); exit(1) }
             host = args.removeFirst()
+        case "--parent-pid":
+            guard !args.isEmpty, let pid = Int32(args.removeFirst()) else {
+                fputs("--parent-pid requires a pid\n", stderr); exit(1)
+            }
+            parentPID = pid
         case "--warmup": doWarmup = true
         case "--batch-model":
             guard !args.isEmpty else { fputs("--batch-model requires a path\n", stderr); exit(1) }
@@ -1178,7 +1307,8 @@ do {
         vad: vad,
         streamingModelName: modelURL.lastPathComponent,
         batchModelName: batchTranscriber?.modelDirectory.lastPathComponent,
-        batchRetranscribeEnabled: batchRetranscribeEnabled
+        batchRetranscribeEnabled: batchRetranscribeEnabled,
+        parentPID: parentPID
     )
 } catch {
     fputs("Error: \(error.localizedDescription)\n", stderr)

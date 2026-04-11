@@ -22,7 +22,7 @@ enum TextInjectorFactory {
     static func capture() -> any TextInjecting {
         guard let focused = focusedElement() else {
             yuwpLog("No focused element — will use clipboard fallback")
-            return ClipboardInjector()
+            return ClipboardInjector(screenPoint: NSEvent.mouseLocation)
         }
 
         let point = readTargetScreenPoint(from: focused) ?? NSEvent.mouseLocation
@@ -47,7 +47,7 @@ enum TextInjectorFactory {
             focused, kAXSelectedTextRangeAttribute as CFString, &rangeRef
         ) == .success else {
             yuwpLog("No AX selection range — using clipboard")
-            return ClipboardInjector()
+            return ClipboardInjector(screenPoint: point)
         }
 
         // Verify we can write selected text — the op used by AXTextInjector.
@@ -56,7 +56,7 @@ enum TextInjectorFactory {
         )
         guard writeOK == .success else {
             yuwpLog("AX write probe failed — using clipboard")
-            return ClipboardInjector()
+            return ClipboardInjector(screenPoint: point)
         }
 
         let cursor = readCursorOffset(from: focused) ?? 0

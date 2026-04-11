@@ -23,9 +23,7 @@ protocol SttProvider: AnyObject, Sendable {
 /// Each session is used once (begin → feed → end), then discarded.
 /// `feedAudio` is not actor-isolated — called from the real-time audio thread.
 protocol SttSession: AnyObject, Sendable {
-    var onPartial: ((String) -> Void)? { get set }
-    var onSegmentCommit: ((String) -> Void)? { get set }
-    var onFinal: ((String) -> Void)? { get set }
+    var onUpdate: ((TranscriptUpdate) -> Void)? { get set }
     var onError: ((String) -> Void)? { get set }
     @MainActor func begin(language: String?)
     func feedAudio(_ pcmData: Data)
@@ -47,8 +45,8 @@ protocol AudioCapturing: AnyObject, Sendable {
 /// Text injection abstraction. Real implementation: `TextInjector`.
 @MainActor
 protocol TextInjecting: AnyObject {
+    var surfaceMode: DictationSurfaceMode { get }
     var targetPosition: NSPoint { get }
-    var isLiveInjecting: Bool { get }
     func captureTarget()
     func inject(_ text: String)
     func commit(_ text: String)
@@ -57,17 +55,44 @@ protocol TextInjecting: AnyObject {
 
 // MARK: - Session Events
 
+enum DictationSurfaceMode: Sendable, Equatable {
+    case nativeField
+    case terminal
+    case bubbleClipboard
+
+    var liveInjectsTarget: Bool {
+        self != .bubbleClipboard
+    }
+
+    func bubbleStyle(hasVisibleText: Bool) -> DictationBubbleStyle {
+        switch self {
+        case .bubbleClipboard:
+            hasVisibleText ? .transcript : .compact
+        case .nativeField, .terminal:
+            .compact
+        }
+    }
+}
+
+enum DictationBubbleStyle: Sendable, Equatable {
+    case compact
+    case transcript
+}
+
+struct DictationPresentationState: Equatable {
+    let surfaceMode: DictationSurfaceMode
+    let bubbleStyle: DictationBubbleStyle
+    let displayText: String
+    let caretPosition: NSPoint
+}
+
 /// Events emitted by DictationSession for UI consumption.
 enum DictationEvent: Equatable {
-    /// AX injection verified — switch to compact indicator
-    case liveInjectionVerified(caretPosition: NSPoint)
-    /// Partial transcript available (clipboard mode — show in panel)
-    case partialTranscript(String)
-    /// Caret moved during AX injection — reposition compact indicator
-    case caretMoved(NSPoint)
-    /// Audio level update for waveform visualization
+    /// Session-level presentation update for the floating bubble.
+    case presentation(DictationPresentationState)
+    /// Audio level update for waveform visualization.
     case audioLevel(Float)
-    /// Final transcript committed — session is done
+    /// Final transcript committed — session is done.
     case finished
 }
 
@@ -83,6 +108,7 @@ final class DictationSession {
     private let audioCapture: any AudioCapturing
     private let sttSession: any SttSession
     private let typewriter = TypewriterAnimator()
+    private var transcriptState = TranscriptState.empty
     private var typewriterDriveTask: Task<Void, Never>?
     private var finalTimeoutTask: Task<Void, Never>?
     private var maxDurationTask: Task<Void, Never>?
@@ -114,15 +140,11 @@ final class DictationSession {
 
         textInjector.captureTarget()
 
+        transcriptState = .empty
+
         // Wire STT callbacks
-        sttSession.onPartial = { [weak self] text in
-            Task { @MainActor in self?.handlePartial(text) }
-        }
-        sttSession.onSegmentCommit = { [weak self] text in
-            Task { @MainActor in self?.handleSegmentCommit(text) }
-        }
-        sttSession.onFinal = { [weak self] text in
-            Task { @MainActor in self?.handleFinal(text) }
+        sttSession.onUpdate = { [weak self] update in
+            Task { @MainActor in self?.handleUpdate(update) }
         }
         sttSession.onError = { msg in
             Task { @MainActor in yuwpLog("STT error: \(msg)") }
@@ -167,6 +189,7 @@ final class DictationSession {
             return
         }
 
+        emitPresentation(displayText: "")
         yuwpLog("Listening...")
 
         // Safety net: auto-stop after max duration
@@ -208,52 +231,63 @@ final class DictationSession {
 
     // MARK: - STT Callbacks
 
-    private func handlePartial(_ text: String) {
+    private func handleUpdate(_ update: TranscriptUpdate) {
+        transcriptState = transcriptState.applying(update)
+        let text = transcriptState.fullText
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if update.kind.commitsTargetText {
+            finalTimeoutTask?.cancel()
+            finalTimeoutTask = nil
+
+            typewriter.commitCurrentAnimation()
+            textInjector.commit(text)
+            finalize()
+            return
+        }
+
         guard !trimmed.isEmpty, trimmed.lowercased() != "none" else { return }
 
-        typewriter.update(fullText: text)
-        textInjector.inject(typewriter.displayText)
+        if textInjector.surfaceMode.liveInjectsTarget {
+            typewriter.commitCurrentAnimation()
+            textInjector.inject(text)
+            emitPresentation(displayText: "")
+            return
+        }
 
-        if textInjector.isLiveInjecting {
-            onEvent?(.liveInjectionVerified(caretPosition: textInjector.targetPosition))
-        } else {
-            onEvent?(.partialTranscript(typewriter.displayText))
+        typewriter.update(fullText: text)
+        if update.kind.settlesPreviewImmediately {
+            typewriter.commitCurrentAnimation()
+        }
+        emitPresentation(displayText: typewriter.displayText)
+
+        if update.kind == .partial {
             driveTypewriterDisplay()
         }
-    }
-
-    private func handleSegmentCommit(_ text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.lowercased() != "none" else { return }
-
-        typewriter.update(fullText: text)
-        typewriter.commitCurrentAnimation()
-        textInjector.inject(typewriter.displayText)
-
-        if textInjector.isLiveInjecting {
-            onEvent?(.liveInjectionVerified(caretPosition: textInjector.targetPosition))
-        } else {
-            onEvent?(.partialTranscript(typewriter.displayText))
-        }
-    }
-
-    private func handleFinal(_ text: String) {
-        finalTimeoutTask?.cancel()
-        finalTimeoutTask = nil
-
-        typewriter.commitCurrentAnimation()
-        textInjector.commit(text)
-
-        finalize()
     }
 
     // MARK: - Private
 
     private func finalize() {
+        transcriptState = .empty
         typewriter.reset()
         textInjector.release()
         onEvent?(.finished)
+    }
+
+    private func emitPresentation(displayText: String) {
+        let visibleText = !displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let surfaceMode = textInjector.surfaceMode
+        onEvent?(
+            .presentation(
+                DictationPresentationState(
+                    surfaceMode: surfaceMode,
+                    bubbleStyle: surfaceMode.bubbleStyle(hasVisibleText: visibleText),
+                    displayText: displayText,
+                    caretPosition: textInjector.targetPosition
+                )
+            )
+        )
     }
 
     private func driveTypewriterDisplay() {
@@ -263,9 +297,7 @@ final class DictationSession {
             while typewriter.isAnimating {
                 try? await Task.sleep(nanoseconds: 16_000_000)
                 guard !Task.isCancelled else { break }
-                let display = typewriter.displayText
-                onEvent?(.partialTranscript(display))
-                textInjector.inject(display)
+                emitPresentation(displayText: typewriter.displayText)
             }
         }
     }

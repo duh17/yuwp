@@ -5,9 +5,7 @@ import Testing
 // MARK: - Mock STT Session
 
 final class MockSttSession: SttSession, @unchecked Sendable {
-    var onPartial: ((String) -> Void)?
-    var onSegmentCommit: ((String) -> Void)?
-    var onFinal: ((String) -> Void)?
+    var onUpdate: ((TranscriptUpdate) -> Void)?
     var onError: ((String) -> Void)?
 
     var beginCallCount = 0
@@ -33,15 +31,15 @@ final class MockSttSession: SttSession, @unchecked Sendable {
     // Test helpers
 
     func simulatePartial(_ text: String) {
-        onPartial?(text)
+        onUpdate?(TranscriptUpdate(kind: .partial, text: text))
     }
 
     func simulateSegmentCommit(_ text: String) {
-        onSegmentCommit?(text)
+        onUpdate?(TranscriptUpdate(kind: .segmentCommit, text: text))
     }
 
     func simulateFinal(_ text: String) {
-        onFinal?(text)
+        onUpdate?(TranscriptUpdate(kind: .final, text: text))
     }
 
     func simulateError(_ msg: String) {
@@ -88,8 +86,8 @@ final class MockAudioCapture: AudioCapturing, @unchecked Sendable {
 
 @MainActor
 final class MockTextInjector: TextInjecting {
+    var surfaceMode: DictationSurfaceMode = .nativeField
     var targetPosition: NSPoint = .zero
-    var isLiveInjecting = false
 
     var captureCallCount = 0
     var injectCallCount = 0
@@ -122,6 +120,13 @@ final class MockTextInjector: TextInjecting {
 @MainActor
 final class EventCollector {
     var events: [DictationEvent] = []
+
+    var presentations: [DictationPresentationState] {
+        events.compactMap { event in
+            guard case .presentation(let state) = event else { return nil }
+            return state
+        }
+    }
 
     func handler(_ event: DictationEvent) {
         events.append(event)

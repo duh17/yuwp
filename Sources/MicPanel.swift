@@ -95,6 +95,18 @@ final class MicPanel {
         startEscapeMonitor()
     }
 
+    func present(_ state: DictationPresentationState) {
+        let minimal = state.bubbleStyle == .compact
+        if panel?.isVisible != true || isMinimal != minimal {
+            show(near: state.caretPosition, minimal: minimal)
+        }
+        if minimal {
+            textView?.string = ""
+        } else {
+            updateTranscript(state.displayText)
+        }
+    }
+
     func updateTranscript(_ text: String) {
         guard !isMinimal else { return }
         textView?.string = text

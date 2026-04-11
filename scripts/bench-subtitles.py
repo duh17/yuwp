@@ -76,7 +76,7 @@ def build_samples(files: list[str], manifest: str | None) -> list[dict[str, Any]
     return samples
 
 
-def run_subtitle_request(base_url: str, sample: dict[str, Any]) -> tuple[Any, float, str]:
+def run_subtitle_request(base_url: str, sample: dict[str, Any]) -> tuple[dict[str, Any], float, str]:
     file_path = Path(str(sample["file"])).expanduser()
     if not file_path.exists():
         raise SampleFailure(f"file not found: {file_path}")
@@ -116,8 +116,11 @@ def run_subtitle_request(base_url: str, sample: dict[str, Any]) -> tuple[Any, fl
 
     if isinstance(payload, dict) and payload.get("error"):
         raise SampleFailure(str(payload["error"]))
-    if not isinstance(payload, list):
-        raise SampleFailure(f"expected subtitle JSON array, got {type(payload).__name__}")
+    if not isinstance(payload, dict):
+        raise SampleFailure(f"expected subtitle JSON object, got {type(payload).__name__}")
+    segments = payload.get("segments")
+    if not isinstance(segments, list):
+        raise SampleFailure("subtitle JSON object is missing a 'segments' array")
 
     return payload, wall_seconds, stdout
 
@@ -253,9 +256,12 @@ def main() -> int:
         eprint(f"[bench-subtitles] running {name} -> {sample_result['file']}")
 
         try:
-            items, wall_seconds, raw_json = run_subtitle_request(args.base_url, sample)
+            payload, wall_seconds, raw_json = run_subtitle_request(args.base_url, sample)
             raw_path.write_text(raw_json)
-            metrics = analyze_subtitles(items, wall_seconds, args.gap_warn_sec)
+            metrics = analyze_subtitles(payload["segments"], wall_seconds, args.gap_warn_sec)
+            metrics["transcript_length"] = len(str(payload.get("text") or ""))
+            metrics["language"] = payload.get("language")
+            metrics["reported_duration"] = payload.get("duration")
             sample_result.update(metrics)
             sample_result["status"] = "ok"
             sample_result["raw_subtitles_json"] = str(raw_path)
