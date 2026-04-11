@@ -11,11 +11,30 @@ import ApplicationServices
 ///      (degrades to `CGEventInjector` on first inject if verification fails)
 @MainActor
 enum TextInjectorFactory {
+    enum Strategy: Equatable {
+        case ax
+        case cgEvent
+        case clipboard
+    }
 
     // Roles known to support AX text editing.
     private static let editableRoles: Set<String> = [
         "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField",
     ]
+
+    static func decideStrategy(
+        hasFocusedElement: Bool,
+        role: String?,
+        hasReadableSelectionRange: Bool,
+        canWriteSelectedText: Bool
+    ) -> Strategy {
+        guard hasFocusedElement else { return .clipboard }
+        guard let role else { return .cgEvent }
+        guard editableRoles.contains(role) else { return .cgEvent }
+        guard hasReadableSelectionRange else { return .clipboard }
+        guard canWriteSelectedText else { return .clipboard }
+        return .ax
+    }
 
     /// Probe the focused element and return an appropriate injector.
     /// Must be called before any UI panel appears — focus changes after that.
@@ -29,39 +48,56 @@ enum TextInjectorFactory {
 
         // Read role.
         var roleRef: AnyObject?
-        guard AXUIElementCopyAttributeValue(
+        let roleStatus = AXUIElementCopyAttributeValue(
             focused, kAXRoleAttribute as CFString, &roleRef
-        ) == .success, let role = roleRef as? String else {
-            yuwpLog("No AX role — using CGEvent")
-            return CGEventInjector(screenPoint: point)
-        }
-
-        guard editableRoles.contains(role) else {
-            yuwpLog("Non-editable role (\(role)) — using CGEvent")
-            return CGEventInjector(screenPoint: point)
-        }
+        )
+        let role = roleStatus == .success ? roleRef as? String : nil
 
         // Verify AX selection range is readable.
         var rangeRef: AnyObject?
-        guard AXUIElementCopyAttributeValue(
+        let hasSelectionRange = AXUIElementCopyAttributeValue(
             focused, kAXSelectedTextRangeAttribute as CFString, &rangeRef
-        ) == .success else {
-            yuwpLog("No AX selection range — using clipboard")
-            return ClipboardInjector(screenPoint: point)
-        }
+        ) == .success
 
         // Verify we can write selected text — the op used by AXTextInjector.
-        let writeOK = AXUIElementSetAttributeValue(
-            focused, kAXSelectedTextAttribute as CFString, "" as CFTypeRef
-        )
-        guard writeOK == .success else {
-            yuwpLog("AX write probe failed — using clipboard")
-            return ClipboardInjector(screenPoint: point)
+        let canWriteSelectedText: Bool
+        if let role, editableRoles.contains(role), hasSelectionRange {
+            canWriteSelectedText = AXUIElementSetAttributeValue(
+                focused, kAXSelectedTextAttribute as CFString, "" as CFTypeRef
+            ) == .success
+        } else {
+            canWriteSelectedText = false
         }
 
-        let cursor = readCursorOffset(from: focused) ?? 0
-        yuwpLog("Target captured (AX, cursor: \(cursor))")
-        return AXTextInjector(element: focused, cursorPosition: cursor, screenPoint: point)
+        switch decideStrategy(
+            hasFocusedElement: true,
+            role: role,
+            hasReadableSelectionRange: hasSelectionRange,
+            canWriteSelectedText: canWriteSelectedText
+        ) {
+        case .clipboard:
+            if role == nil {
+                yuwpLog("No AX role — using clipboard fallback")
+            } else if !hasSelectionRange {
+                yuwpLog("No AX selection range — using clipboard")
+            } else {
+                yuwpLog("AX write probe failed — using clipboard")
+            }
+            return ClipboardInjector(screenPoint: point)
+
+        case .cgEvent:
+            if let role {
+                yuwpLog("Non-editable role (\(role)) — using CGEvent")
+            } else {
+                yuwpLog("No AX role — using CGEvent")
+            }
+            return CGEventInjector(screenPoint: point)
+
+        case .ax:
+            let cursor = readCursorOffset(from: focused) ?? 0
+            yuwpLog("Target captured (AX, cursor: \(cursor))")
+            return AXTextInjector(element: focused, cursorPosition: cursor, screenPoint: point)
+        }
     }
 
     // MARK: - Private AX helpers

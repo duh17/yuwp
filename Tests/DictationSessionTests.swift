@@ -30,9 +30,17 @@ struct DictationSessionTests {
         return (session, stt, audio, injector, events)
     }
 
-    private func waitForAnimationTick() async {
-        try? await Task.sleep(nanoseconds: 60_000_000)
-        await Task.yield()
+    private func waitForCondition(
+        timeoutNanoseconds: UInt64 = 500_000_000,
+        pollNanoseconds: UInt64 = 20_000_000,
+        _ condition: @escaping () -> Bool
+    ) async {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            if condition() { return }
+            try? await Task.sleep(nanoseconds: pollNanoseconds)
+            await Task.yield()
+        }
     }
 
     // MARK: - Start
@@ -122,7 +130,9 @@ struct DictationSessionTests {
         session.start()
 
         stt.simulatePartial("hello this is long enough to animate quickly")
-        await waitForAnimationTick()
+        await waitForCondition {
+            events.presentations.contains(where: { $0.bubbleStyle == .transcript })
+        }
 
         let transcriptStates = events.presentations.filter { $0.bubbleStyle == .transcript }
         #expect(!transcriptStates.isEmpty)
@@ -276,7 +286,9 @@ struct DictationSessionTests {
 
         // Partials — bubble becomes the live transcript surface, target stays untouched
         stt.simulatePartial("hello this is long enough to animate quickly")
-        await waitForAnimationTick()
+        await waitForCondition {
+            events.presentations.contains(where: { $0.bubbleStyle == .transcript })
+        }
         #expect(events.presentations.contains(where: { $0.bubbleStyle == .transcript }))
         #expect(injector.injectCallCount == 0)
 

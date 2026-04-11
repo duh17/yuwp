@@ -1,12 +1,48 @@
 import AppKit
 import CoreGraphics
 
+@MainActor
+protocol ClipboardPasting {
+    func pasteViaClipboard(_ text: String)
+}
+
+@MainActor
+protocol ClipboardPasteboard {
+    var changeCount: Int { get }
+    func string(forType type: NSPasteboard.PasteboardType) -> String?
+    func clearContents()
+    func setString(_ text: String, forType type: NSPasteboard.PasteboardType)
+}
+
+@MainActor
+final class SystemClipboardPasteboard: ClipboardPasteboard {
+    private let pasteboard: NSPasteboard
+
+    init(_ pasteboard: NSPasteboard = .general) {
+        self.pasteboard = pasteboard
+    }
+
+    var changeCount: Int { pasteboard.changeCount }
+
+    func string(forType type: NSPasteboard.PasteboardType) -> String? {
+        pasteboard.string(forType: type)
+    }
+
+    func clearContents() {
+        pasteboard.clearContents()
+    }
+
+    func setString(_ text: String, forType type: NSPasteboard.PasteboardType) {
+        pasteboard.setString(text, forType: type)
+    }
+}
+
 /// Injects text via clipboard paste (Cmd+V).
 ///
 /// Last-resort fallback when neither AX nor CGEvent can be used.
 /// No live streaming — text only appears on commit.
 @MainActor
-final class ClipboardInjector: TextInjecting {
+final class ClipboardInjector: TextInjecting, ClipboardPasting {
 
     // MARK: - TextInjecting
 
@@ -33,20 +69,56 @@ final class ClipboardInjector: TextInjecting {
 
     init(screenPoint: NSPoint = .zero) {
         self.targetPosition = screenPoint
+        self.pasteboard = SystemClipboardPasteboard()
+        self.postPasteShortcut = Self.postCommandV
+        self.scheduleRestore = { work in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                work()
+            }
+        }
+    }
+
+    init(
+        screenPoint: NSPoint = .zero,
+        pasteboard: any ClipboardPasteboard,
+        postPasteShortcut: @escaping () -> Void,
+        scheduleRestore: @escaping (@escaping () -> Void) -> Void
+    ) {
+        self.targetPosition = screenPoint
+        self.pasteboard = pasteboard
+        self.postPasteShortcut = postPasteShortcut
+        self.scheduleRestore = scheduleRestore
     }
 
     // MARK: - Internal (also used by AXTextInjector for final commit)
 
     func pasteViaClipboard(_ text: String) {
-        let pb = NSPasteboard.general
+        let savedString = pasteboard.string(forType: .string)
+        let savedChangeCount = pasteboard.changeCount
 
-        // Snapshot current clipboard so we can restore it.
-        let savedString = pb.string(forType: .string)
-        let savedChangeCount = pb.changeCount
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        postPasteShortcut()
 
-        pb.clearContents()
-        pb.setString(text, forType: .string)
+        scheduleRestore { [pasteboard] in
+            if pasteboard.changeCount == savedChangeCount + 1 {
+                pasteboard.clearContents()
+                if let saved = savedString {
+                    pasteboard.setString(saved, forType: .string)
+                }
+            }
+        }
 
+        yuwpLog("Pasted via clipboard")
+    }
+
+    // MARK: - Private
+
+    private let pasteboard: any ClipboardPasteboard
+    private let postPasteShortcut: () -> Void
+    private let scheduleRestore: (@escaping () -> Void) -> Void
+
+    private static func postCommandV() {
         let vKey: CGKeyCode = 9
         if let down = CGEvent(keyboardEventSource: nil, virtualKey: vKey, keyDown: true),
            let up = CGEvent(keyboardEventSource: nil, virtualKey: vKey, keyDown: false) {
@@ -55,17 +127,5 @@ final class ClipboardInjector: TextInjecting {
             down.post(tap: .cgSessionEventTap)
             up.post(tap: .cgSessionEventTap)
         }
-
-        // Restore clipboard after the paste event lands.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            if pb.changeCount == savedChangeCount + 1 {
-                pb.clearContents()
-                if let saved = savedString {
-                    pb.setString(saved, forType: .string)
-                }
-            }
-        }
-
-        yuwpLog("Pasted via clipboard")
     }
 }
