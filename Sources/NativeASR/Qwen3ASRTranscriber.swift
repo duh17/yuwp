@@ -179,13 +179,52 @@ public final class Qwen3ASRTranscriber: @unchecked Sendable {
         let cleanedText = language == nil
             ? tokenizer.cleanTokenOutput(generatedTokens)
             : tokenizer.cleanOutput(tokenizer.decode(generatedTokens))
+        let finalizedText = Self.trimPathologicalRepetition(in: cleanedText)
 
         return TranscriptionResult(
-            text: cleanedText,
+            text: finalizedText,
             language: language,
             audioDuration: audioDuration,
             processingTime: Date().timeIntervalSince(t0)
         )
+    }
+
+    private static func trimPathologicalRepetition(in text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 24 else { return trimmed }
+
+        let chars = Array(trimmed)
+        let maxPeriod = min(24, chars.count / 4)
+        guard maxPeriod >= 3 else { return trimmed }
+
+        for period in 3 ... maxPeriod {
+            let patternStart = chars.count - period
+            let pattern = Array(chars[patternStart ..< chars.count])
+            guard pattern.contains(where: { $0.isLetter || $0.isNumber }) else { continue }
+
+            var repeatStart = patternStart
+            var repeats = 1
+            while repeatStart - period >= 0 {
+                let candidate = Array(chars[(repeatStart - period) ..< repeatStart])
+                if candidate == pattern {
+                    repeats += 1
+                    repeatStart -= period
+                } else {
+                    break
+                }
+            }
+
+            if repeats >= 4 {
+                let collapsed = String(chars[..<repeatStart] + pattern)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if collapsed.count < trimmed.count {
+                    fputs("[NativeASR] Batch repetition trimmed \(trimmed.count)→\(collapsed.count) chars\n", stderr)
+                    return collapsed
+                }
+            }
+        }
+
+        return trimmed
     }
 
     // MARK: - Token Sampling

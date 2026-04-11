@@ -111,6 +111,35 @@ final class ShutdownCoordinator: @unchecked Sendable {
 
 // MARK: - Session Manager
 
+private let vadLock = NSLock()
+
+private func analyzeSpeechActivity(_ audio: [Float], vad: SileroVAD?) -> SpeechActivityHint? {
+    guard let vad else { return nil }
+    guard !audio.isEmpty else { return SpeechActivityHint(hasSpeech: false, speechDurationSec: 0) }
+
+    let frameSize = SileroVAD.chunkSize
+    var speechFrames = 0
+    var offset = 0
+    vadLock.lock()
+    defer { vadLock.unlock() }
+    vad.reset()
+
+    while offset < audio.count {
+        let end = min(offset + frameSize, audio.count)
+        var frame = Array(audio[offset ..< end])
+        if frame.count < frameSize {
+            frame.append(contentsOf: repeatElement(0, count: frameSize - frame.count))
+        }
+        if let probability = try? vad.process(frame), probability >= 0.5 {
+            speechFrames += 1
+        }
+        offset = end
+    }
+
+    let speechDurationSec = Double(speechFrames * frameSize) / Double(ASRAudio.sampleRate)
+    return SpeechActivityHint(hasSpeech: speechFrames > 0, speechDurationSec: speechDurationSec)
+}
+
 final class StreamingSessionManager: @unchecked Sendable {
     private let transcriber: Qwen3ASRTranscriber
     private let batchTranscriber: Qwen3ASRTranscriber?
@@ -121,18 +150,23 @@ final class StreamingSessionManager: @unchecked Sendable {
     private let stateLock = NSLock()
     private let inferenceLock = NSLock()
     private let chunkSamples: Int
+    private let bootstrapChunkSamples: Int
+    private let vad: SileroVAD?
     private let sessionTimeout: TimeInterval = 300
 
     init(
         transcriber: Qwen3ASRTranscriber,
         batchTranscriber: Qwen3ASRTranscriber? = nil,
         batchRetranscribeEnabled: Bool = true,
-        chunkSec: Double = 2.0
+        vad: SileroVAD? = nil,
+        chunkSec: Double = 2.25
     ) {
         self.transcriber = transcriber
         self.batchTranscriber = batchTranscriber
         self.batchRetranscribeEnabled = batchRetranscribeEnabled
+        self.vad = vad
         self.chunkSamples = Int(chunkSec * Double(ASRAudio.sampleRate))
+        self.bootstrapChunkSamples = Int(min(chunkSec, 1.5) * Double(ASRAudio.sampleRate))
         DispatchQueue.global().async { [weak self] in
             while true {
                 Thread.sleep(forTimeInterval: 30)
@@ -173,10 +207,16 @@ final class StreamingSessionManager: @unchecked Sendable {
 
         var batchCorrected = false
         inferenceLock.lock()
-        while pending.count >= chunkSamples {
-            let chunk = Array(pending.prefix(chunkSamples))
-            pending = Array(pending.dropFirst(chunkSamples))
-            let result = session.processChunk(chunk)
+        while true {
+            let currentChunkSamples = session.activeSegmentText().isEmpty
+                ? bootstrapChunkSamples
+                : chunkSamples
+            guard pending.count >= currentChunkSamples else { break }
+
+            let chunk = Array(pending.prefix(currentChunkSamples))
+            pending = Array(pending.dropFirst(currentChunkSamples))
+            let speechHint = analyzeSpeechActivity(chunk, vad: vad)
+            let result = session.processChunk(chunk, speechHint: speechHint)
             if result.batchCorrected { batchCorrected = true }
 #if YUWP_INTERNAL_DIAGNOSTICS
             log(
@@ -218,7 +258,10 @@ final class StreamingSessionManager: @unchecked Sendable {
         stateLock.unlock()
 
         inferenceLock.lock()
-        if !pending.isEmpty { _ = session.processChunk(pending) }
+        if !pending.isEmpty {
+            let speechHint = analyzeSpeechActivity(pending, vad: vad)
+            _ = session.processChunk(pending, speechHint: speechHint)
+        }
         let text = session.finalize()
         let response = transcriptPayload(
             session: session,

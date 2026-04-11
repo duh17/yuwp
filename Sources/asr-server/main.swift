@@ -65,7 +65,8 @@ do {
     let manager = StreamingSessionManager(
         transcriber: transcriber,
         batchTranscriber: batchTranscriber,
-        batchRetranscribeEnabled: config.batchRetranscribeEnabled
+        batchRetranscribeEnabled: config.batchRetranscribeEnabled,
+        vad: vad
     )
     startServer(
         host: config.host,

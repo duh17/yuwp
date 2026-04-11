@@ -10,13 +10,23 @@ public struct StreamConfig: Sendable {
     public var batchRetranscribe: Bool
 
     public init(
-        chunkSec: Double = 2.0, rollback: Int = 5, unfixedChunks: Int = 2,
+        chunkSec: Double = 2.25, rollback: Int = 5, unfixedChunks: Int = 2,
         maxNewTokens: Int = 32, maxEncWindows: Int = 4, maxPrefixTokens: Int = 20,
         batchRetranscribe: Bool = true
     ) {
         self.chunkSec = chunkSec; self.rollback = rollback; self.unfixedChunks = unfixedChunks
         self.maxNewTokens = maxNewTokens; self.maxEncWindows = maxEncWindows
         self.maxPrefixTokens = maxPrefixTokens; self.batchRetranscribe = batchRetranscribe
+    }
+}
+
+public struct SpeechActivityHint: Sendable {
+    public let hasSpeech: Bool
+    public let speechDurationSec: Double
+
+    public init(hasSpeech: Bool, speechDurationSec: Double) {
+        self.hasSpeech = hasSpeech
+        self.speechDurationSec = speechDurationSec
     }
 }
 
@@ -33,6 +43,7 @@ public final class StreamingSession: @unchecked Sendable {
     private let batchTranscriber: Qwen3ASRTranscriber?
     private let config: StreamConfig
     private var audioBuffer: [Float] = []
+    private var sessionAudioBuffer: [Float] = []
     private var encWindowCache: [MLXArray] = []
     private var nextWindowStart: Int = 0
     private let encWindowSamples: Int
@@ -44,12 +55,19 @@ public final class StreamingSession: @unchecked Sendable {
     private var consecutiveSilence: Int = 0
     private var batchDoneForPause: Bool = false
     private var hasSpeech: Bool = false
+    private var consecutiveSpeechNoGrowth: Int = 0
+    private var lastStallBatchAttemptChunk: Int = -1_000_000
     /// Concatenated text from all previously committed segments. Frozen — never
     /// rewritten by streaming or batch passes after a commit fires.
     private var committedText: String = ""
     private static let silenceRMS: Float = 0.003
+    private static let speechStartRMS: Float = 0.010
     private static let pauseRMS: Float = 0.020
     private static let pauseChunks = 2
+    private static let stallRefreshRMS: Float = 0.008
+    private static let stallRefreshChunks = 1
+    private static let stallRefreshMinSamples = ASRAudio.sampleRate * 2
+    private static let stallRefreshRetryChunks = 1
 
     public init(
         transcriber: Qwen3ASRTranscriber,
@@ -64,12 +82,14 @@ public final class StreamingSession: @unchecked Sendable {
     }
 
     /// Process one chunk of audio. Returns partial transcription result.
-    public func processChunk(_ audioChunk: [Float]) -> ChunkResult {
+    public func processChunk(_ audioChunk: [Float], speechHint: SpeechActivityHint? = nil) -> ChunkResult {
         let t0 = Date()
+        sessionAudioBuffer.append(contentsOf: audioChunk)
         let rms = Self.computeRMS(audioChunk)
+        let chunkHasSpeech = speechHint?.hasSpeech ?? (rms >= Self.speechStartRMS)
 
-        if rms < Self.pauseRMS { consecutiveSilence += 1 }
-        else { consecutiveSilence = 0; batchDoneForPause = false }
+        if chunkHasSpeech { consecutiveSilence = 0; batchDoneForPause = false }
+        else { consecutiveSilence += 1 }
 
         // Segment commit on pause: batch retranscribe the active segment,
         // append it to committedText, then reset streaming state so the next
@@ -78,7 +98,7 @@ public final class StreamingSession: @unchecked Sendable {
             && consecutiveSilence >= Self.pauseChunks && !batchDoneForPause && !rawTokens.isEmpty
         {
             batchDoneForPause = true
-            if let segmentText = batchRetranscribe() {
+            if let segmentText = batchCommitSegmentText() {
                 committedText = Self.appendSegment(committedText, segmentText)
                 resetActiveSegment()
                 lastText = committedText
@@ -90,7 +110,7 @@ public final class StreamingSession: @unchecked Sendable {
             }
         }
 
-        if rms < Self.silenceRMS {
+        if !chunkHasSpeech && rms < Self.silenceRMS {
             chunkIdx += 1
             let activeText = rawTokens.isEmpty ? "" : extractText(rawTokens)
             let combined = Self.appendSegment(committedText, activeText)
@@ -98,7 +118,7 @@ public final class StreamingSession: @unchecked Sendable {
             return ChunkResult(text: combined, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000)
         }
 
-        if rms >= Self.pauseRMS { hasSpeech = true }
+        if chunkHasSpeech { hasSpeech = true }
         if !hasSpeech {
             audioBuffer.append(contentsOf: audioChunk)
             chunkIdx += 1
@@ -188,7 +208,40 @@ public final class StreamingSession: @unchecked Sendable {
 
         var activeText = extractText(rawTokens)
         if let trimmed = trimRepetition() { activeText = trimmed }
-        let combined = Self.appendSegment(committedText, activeText)
+        var combined = Self.appendSegment(committedText, activeText)
+        let speechActiveForRefresh = speechHint?.hasSpeech ?? (rms >= Self.stallRefreshRMS)
+        var textChanged = combined != lastText
+        let projectedNoGrowthRun = (!textChanged && hasSpeech && speechActiveForRefresh)
+            ? (consecutiveSpeechNoGrowth + 1)
+            : 0
+
+        if !textChanged,
+           config.batchRetranscribe,
+           hasSpeech,
+           speechActiveForRefresh,
+           projectedNoGrowthRun >= Self.stallRefreshChunks,
+           audioBuffer.count >= Self.stallRefreshMinSamples,
+           chunkIdx - lastStallBatchAttemptChunk >= Self.stallRefreshRetryChunks,
+           let refreshedText = batchRefreshFromSessionContext(minSamples: Self.stallRefreshMinSamples)
+        {
+            lastStallBatchAttemptChunk = chunkIdx
+            let refreshedCombined = Self.appendSegment(committedText, refreshedText)
+            if refreshedCombined != combined {
+                activeText = refreshedText
+                combined = refreshedCombined
+                textChanged = true
+            }
+        }
+
+        if textChanged {
+            consecutiveSpeechNoGrowth = 0
+            lastStallBatchAttemptChunk = -1_000_000
+        } else if hasSpeech && speechActiveForRefresh {
+            consecutiveSpeechNoGrowth = projectedNoGrowthRun
+        } else {
+            consecutiveSpeechNoGrowth = 0
+            lastStallBatchAttemptChunk = -1_000_000
+        }
 
         lastText = combined
         chunkIdx += 1
@@ -213,6 +266,8 @@ public final class StreamingSession: @unchecked Sendable {
         consecutiveSilence = 0
         batchDoneForPause = false
         hasSpeech = false
+        consecutiveSpeechNoGrowth = 0
+        lastStallBatchAttemptChunk = -1_000_000
     }
 
     public var processedChunkCount: Int { chunkIdx }
@@ -230,6 +285,16 @@ public final class StreamingSession: @unchecked Sendable {
     /// (if any), appends it to committed text, and returns the full transcript.
     /// The committed prefix is never re-batched.
     public func finalize() -> String {
+        if config.batchRetranscribe,
+           sessionAudioBuffer.count >= ASRAudio.sampleRate,
+           let fullText = batchRetranscribeFullSession()
+        {
+            committedText = fullText
+            rawTokens = []
+            lastText = committedText
+            return committedText
+        }
+
         // For the *first* segment of a session (no commits yet), match the old
         // behavior: batch any audio >= 1s, no speech check. This preserves
         // transcription of quiet speech that never crosses pauseRMS.
@@ -263,6 +328,17 @@ public final class StreamingSession: @unchecked Sendable {
         if trimmedSegment.isEmpty { return committed }
         if committed.isEmpty { return trimmedSegment }
         return committed + " " + trimmedSegment
+    }
+
+    private static func splitActiveText(from fullText: String, committedText: String) -> String? {
+        let trimmedFull = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCommitted = committedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCommitted.isEmpty else { return trimmedFull }
+        if trimmedFull == trimmedCommitted { return "" }
+
+        let separator = trimmedCommitted + " "
+        guard trimmedFull.hasPrefix(separator) else { return nil }
+        return String(trimmedFull.dropFirst(separator.count))
     }
 
     private func encodeSegment(_ audio: [Float]) -> MLXArray {
@@ -450,6 +526,52 @@ public final class StreamingSession: @unchecked Sendable {
             return text
         } catch {
             fputs("[StreamingSession] Batch retranscribe error: \(error)\n", stderr)
+            return nil
+        }
+    }
+
+    private func batchRefreshFromSessionContext(minSamples: Int) -> String? {
+        guard sessionAudioBuffer.count >= minSamples else { return nil }
+
+        guard let activeText = sessionContextActiveText() else { return nil }
+        if !activeText.isEmpty {
+            rawTokens = transcriber.tokenizer.encode(activeText)
+        }
+        kvCache = transcriber.model.makeCache()
+        prevPrefillEmbeds = nil
+        fputs("[StreamingSession] Session-context batch refresh: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s audio → \(activeText.count) chars\n", stderr)
+        return activeText
+    }
+
+    private func batchCommitSegmentText() -> String? {
+        if let activeText = sessionContextActiveText(), !activeText.isEmpty {
+            fputs("[StreamingSession] Session-context pause commit: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s audio → \(activeText.count) chars\n", stderr)
+            return activeText
+        }
+        return batchRetranscribe()
+    }
+
+    private func sessionContextActiveText() -> String? {
+        do {
+            let batcher = batchTranscriber ?? transcriber
+            let result = try batcher.transcribe(audio: sessionAudioBuffer)
+            let fullText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return Self.splitActiveText(from: fullText, committedText: committedText) ?? fullText
+        } catch {
+            fputs("[StreamingSession] Session-context batch error: \(error)\n", stderr)
+            return nil
+        }
+    }
+
+    private func batchRetranscribeFullSession() -> String? {
+        do {
+            let batcher = batchTranscriber ?? transcriber
+            let result = try batcher.transcribe(audio: sessionAudioBuffer)
+            let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            fputs("[StreamingSession] Final full-session batch: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s audio → \(text.count) chars\n", stderr)
+            return text
+        } catch {
+            fputs("[StreamingSession] Final full-session batch error: \(error)\n", stderr)
             return nil
         }
     }
