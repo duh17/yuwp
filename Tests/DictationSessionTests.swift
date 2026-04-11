@@ -230,6 +230,24 @@ struct DictationSessionTests {
         #expect(events.events.contains(.finished))
     }
 
+    @Test func sttErrorStopsSessionAndPreventsFurtherAudio() async {
+        let (session, stt, audio, injector, events) = makeSession()
+
+        session.start()
+        stt.simulateError("decoder crashed")
+        await Task.yield()
+
+        audio.simulateBuffer(Data([1, 2, 3, 4]))
+        await Task.yield()
+
+        #expect(!session.isActive)
+        #expect(audio.stopCallCount == 1)
+        #expect(stt.endCallCount == 1)
+        #expect(injector.releaseCallCount == 1)
+        #expect(stt.feedCallCount == 0)
+        #expect(events.events.contains(.finished))
+    }
+
     // MARK: - Full Session Lifecycle
 
     @Test func fullLifecycleWithLiveInjection() async {

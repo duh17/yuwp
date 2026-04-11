@@ -1,4 +1,5 @@
 import Testing
+import ApplicationServices
 @testable import Yuwp
 
 @Suite("TextInjectorFactory strategy")
@@ -37,14 +38,14 @@ struct TextInjectorFactoryTests {
         )
     }
 
-    @Test func failedWriteProbeUsesClipboard() {
+    @Test func failedWriteProbeUsesCgEvent() {
         #expect(
             TextInjectorFactory.decideStrategy(
                 hasFocusedElement: true,
                 role: "AXTextArea",
                 hasReadableSelectionRange: true,
                 canWriteSelectedText: false
-            ) == .clipboard
+            ) == .cgEvent
         )
     }
 
@@ -67,6 +68,37 @@ struct TextInjectorFactoryTests {
                 hasReadableSelectionRange: true,
                 canWriteSelectedText: true
             ) == .cgEvent
+        )
+    }
+
+    @Test func axCapabilityCheckUsesValueAttributeAndPreservesSelectionState() {
+        let element = AXUIElementCreateSystemWide()
+        var observedAttribute: String?
+
+        let canUseAX = TextInjectorFactory.supportsAXTextInjection(
+            focused: element,
+            role: "AXTextField",
+            hasReadableSelectionRange: true,
+            attributeIsSettable: { _, attribute in
+                observedAttribute = attribute as String
+                return true
+            }
+        )
+
+        #expect(canUseAX)
+        #expect(observedAttribute == (kAXValueAttribute as String))
+    }
+
+    @Test func axCapabilityCheckFallsBackWhenValueAttributeIsNotSettable() {
+        let element = AXUIElementCreateSystemWide()
+
+        #expect(
+            TextInjectorFactory.supportsAXTextInjection(
+                focused: element,
+                role: "AXTextArea",
+                hasReadableSelectionRange: true,
+                attributeIsSettable: { _, _ in false }
+            ) == false
         )
     }
 }

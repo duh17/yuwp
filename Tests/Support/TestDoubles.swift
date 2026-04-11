@@ -70,6 +70,7 @@ final class MockAudioCapture: AudioCapturing, @unchecked Sendable {
 
     func stop() -> Data? {
         stopCallCount += 1
+        onBufferCallback = nil
         return stopReturnData
     }
 

@@ -32,92 +32,76 @@ enum ASRServerState: Sendable, Equatable {
     case error(String)  // crashed or failed to start
 }
 
-// MARK: - Native ASR Provider
-
-/// Manages the native ASR server process (asr-server).
-/// Communicates via HTTP on localhost.
-///
-/// Launches `asr-server` as a child process, monitors its health,
-/// and provides STT sessions via the HTTP streaming API.
-final class NativeASRProvider: @unchecked Sendable, SttProvider {
-    // SttProvider
-    var isReady: Bool { state == .ready }
-    var onReady: (@Sendable () -> Void)?
-    var onError: (@Sendable (String) -> Void)?
-
-    // State observation (for menu bar)
-    private(set) var state: ASRServerState = .stopped
-    var onStateChange: (@Sendable (ASRServerState) -> Void)?
-
-    /// Transcription model spec: Hugging Face repo id or local model directory.
+private struct ASRServerConfiguration: Sendable, Equatable {
     var transcriptionModel: String = "mlx-community/Qwen3-ASR-0.6B-4bit"
-    /// Whether pause/final batch commit is enabled.
     var batchCommitEnabled: Bool = true
-
-    /// Hidden default aligner model used to power `/v1/audio/subtitles` when available locally.
-    private static let defaultAlignerModel = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
-
-    // Process management
-    private var process: Process?
-    private var readyPollTask: Task<Void, Never>?
-    private var restartTask: Task<Void, Never>?
-
-    // Crash recovery
-    private var isIntentionalShutdown = false
-    private var restartAttempts = 0
-    private static let maxRestartAttempts = 5
-
     var port: UInt16
     var serverMode: ServerMode = .localhost
 
-    private var bindHost: String? { serverMode.bindHost }
-    private var clientHost: String { serverMode.clientHost }
+    var bindHost: String? { serverMode.bindHost }
+    var clientHost: String { serverMode.clientHost }
+}
 
-    init(port: UInt16 = 9748) {
-        self.port = port
+private actor NativeASRServerLifecycle {
+    private let stateSink: @Sendable (ASRServerState) -> Void
+
+    private var process: Process?
+    private var readyPollTask: Task<Void, Never>?
+    private var restartTask: Task<Void, Never>?
+    private var isIntentionalShutdown = false
+    private var restartAttempts = 0
+    private var launchGeneration: UInt64 = 0
+    private var activeConfiguration: ASRServerConfiguration?
+
+    private static let maxRestartAttempts = 5
+
+    init(stateSink: @escaping @Sendable (ASRServerState) -> Void) {
+        self.stateSink = stateSink
     }
 
-    // MARK: - Lifecycle
+    func start(configuration: ASRServerConfiguration) -> ASRServerState {
+        launchGeneration &+= 1
+        let generation = launchGeneration
 
-    func start() {
+        activeConfiguration = configuration
         isIntentionalShutdown = false
-        readyPollTask?.cancel()
-        readyPollTask = nil
+        cancelBackgroundTasks()
 
-        guard let bindHost else {
-            updateState(.disabled)
+        guard let bindHost = configuration.bindHost else {
+            process = nil
             yuwpLog("asr-server disabled")
-            return
+            return .disabled
         }
 
-        updateState(.starting)
-
-        guard let transcriptionModelPath = Self.resolveModelPath(transcriptionModel) else {
-            yuwpLog("Transcription model not found: \(transcriptionModel)")
-            updateState(.error("Transcription model not found"))
-            return
+        guard let transcriptionModelPath = NativeASRProvider.resolveModelPath(configuration.transcriptionModel) else {
+            yuwpLog("Transcription model not found: \(configuration.transcriptionModel)")
+            process = nil
+            return .error("Transcription model not found")
         }
 
-        guard let serverBin = Self.findServerBinary() else {
+        guard let serverBin = NativeASRProvider.findServerBinary() else {
             yuwpLog("asr-server binary not found — run: swift build -c release --product asr-server")
-            updateState(.error("asr-server not found"))
-            return
+            process = nil
+            return .error("asr-server not found")
         }
 
-        cleanupOrphanedManagedServerIfNeeded(serverBinaryPath: serverBin)
+        NativeASRProvider.cleanupOrphanedManagedServerIfNeeded(
+            port: configuration.port,
+            serverBinaryPath: serverBin
+        )
 
         let proc = Process()
         let stderrPipe = Pipe()
-        let alignerModelPath = Self.resolveModelPath(Self.defaultAlignerModel)
+        let alignerModelPath = NativeASRProvider.resolveModelPath(NativeASRProvider.defaultAlignerModel)
 
         proc.executableURL = URL(fileURLWithPath: serverBin)
         var arguments = [
             transcriptionModelPath,
-            "--port", "\(port)",
+            "--port", "\(configuration.port)",
             "--host", bindHost,
             "--parent-pid", "\(ProcessInfo.processInfo.processIdentifier)",
         ]
-        if batchCommitEnabled {
+        if configuration.batchCommitEnabled {
             arguments += ["--batch-model", transcriptionModelPath]
         } else {
             arguments += ["--disable-batch-retranscribe"]
@@ -125,46 +109,39 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         if let alignerModelPath {
             arguments += ["--aligner-model", alignerModelPath]
         } else {
-            yuwpLog("Aligner model not found locally: \(Self.defaultAlignerModel) — subtitles disabled")
+            yuwpLog("Aligner model not found locally: \(NativeASRProvider.defaultAlignerModel) — subtitles disabled")
         }
         proc.arguments = arguments
         proc.standardInput = FileHandle.nullDevice
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = stderrPipe
 
-        // Forward server stderr to our stderr
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if !data.isEmpty { FileHandle.standardError.write(data) }
         }
 
-        // Monitor for unexpected exit
         proc.terminationHandler = { [weak self] proc in
-            guard let self, !self.isIntentionalShutdown else { return }
-            self.readyPollTask?.cancel()
-            self.readyPollTask = nil
-            let code = proc.terminationStatus
-            self.process = nil
-
-            if let listenerPID = Self.listeningPID(on: self.port), listenerPID != proc.processIdentifier {
-                let owner = Self.command(for: listenerPID) ?? "pid \(listenerPID)"
-                yuwpLog("asr-server failed to own port \(self.port); listener PID \(listenerPID): \(owner)")
-                self.updateState(.error("Port \(self.port) already in use"))
-                return
+            guard let self else { return }
+            let pid = proc.processIdentifier
+            let status = proc.terminationStatus
+            Task.detached {
+                await self.handleUnexpectedTermination(
+                    processIdentifier: pid,
+                    terminationStatus: status,
+                    generation: generation,
+                    port: configuration.port
+                )
             }
-
-            yuwpLog("asr-server exited unexpectedly (code \(code))")
-            self.updateState(.error("Server crashed (exit \(code))"))
-            self.scheduleRestart()
         }
 
         do {
             try proc.run()
         } catch {
+            process = nil
             yuwpLog("Failed to start asr-server: \(error)")
-            updateState(.error("Failed to start server"))
-            scheduleRestart()
-            return
+            scheduleRestart(generation: generation)
+            return .error("Failed to start server")
         }
 
         process = proc
@@ -174,29 +151,16 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
             yuwpLog("asr-server started (PID: \(proc.processIdentifier))")
         }
 
-        // Poll for readiness
-        readyPollTask = Task.detached { [weak self] in
-            for _ in 0..<60 {  // 30s timeout (60 × 500ms)
-                try? await Task.sleep(for: .milliseconds(500))
-                guard let self, !Task.isCancelled else { return }
-                if self.checkReady() {
-                    self.restartAttempts = 0
-                    self.updateState(.ready)
-                    return
-                }
-            }
-            guard let self, !Task.isCancelled else { return }
-            yuwpLog("asr-server failed to become ready within 30s")
-            self.updateState(.error("Server startup timeout"))
-        }
+        scheduleReadyPoll(generation: generation, configuration: configuration)
+        return .starting
     }
 
-    func shutdown() {
+    func shutdown(targetState: ASRServerState) -> ASRServerState {
+        launchGeneration &+= 1
         isIntentionalShutdown = true
-        readyPollTask?.cancel()
-        readyPollTask = nil
-        restartTask?.cancel()
-        restartTask = nil
+        activeConfiguration = nil
+        restartAttempts = 0
+        cancelBackgroundTasks()
 
         if let proc = process, proc.isRunning {
             kill(proc.processIdentifier, SIGTERM)
@@ -204,72 +168,222 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         }
 
         process = nil
-        updateState(serverMode == .off ? .disabled : .stopped)
-        yuwpLog(serverMode == .off ? "asr-server disabled" : "asr-server stopped")
+        yuwpLog(targetState == .disabled ? "asr-server disabled" : "asr-server stopped")
+        return targetState
+    }
+
+    private func scheduleReadyPoll(generation: UInt64, configuration: ASRServerConfiguration) {
+        readyPollTask?.cancel()
+        readyPollTask = Task.detached { [weak self] in
+            guard let self else { return }
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled else { return }
+                if NativeASRProvider.checkReady(host: configuration.clientHost, port: configuration.port) {
+                    await self.handleReady(generation: generation)
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+            await self.handleStartupTimeout(generation: generation)
+        }
+    }
+
+    private func handleReady(generation: UInt64) {
+        guard generation == launchGeneration, !isIntentionalShutdown else { return }
+        readyPollTask = nil
+        restartAttempts = 0
+        stateSink(.ready)
+    }
+
+    private func handleStartupTimeout(generation: UInt64) {
+        guard generation == launchGeneration, !isIntentionalShutdown else { return }
+        readyPollTask = nil
+        yuwpLog("asr-server failed to become ready within 30s")
+        stateSink(.error("Server startup timeout"))
+    }
+
+    private func handleUnexpectedTermination(
+        processIdentifier: Int32,
+        terminationStatus: Int32,
+        generation: UInt64,
+        port: UInt16
+    ) {
+        guard generation == launchGeneration, !isIntentionalShutdown else { return }
+
+        readyPollTask?.cancel()
+        readyPollTask = nil
+        if process?.processIdentifier == processIdentifier {
+            process = nil
+        }
+
+        let code = terminationStatus
+        if let listenerPID = NativeASRProvider.listeningPID(on: port), listenerPID != processIdentifier {
+            let owner = NativeASRProvider.command(for: listenerPID) ?? "pid \(listenerPID)"
+            yuwpLog("asr-server failed to own port \(port); listener PID \(listenerPID): \(owner)")
+            stateSink(.error("Port \(port) already in use"))
+            return
+        }
+
+        yuwpLog("asr-server exited unexpectedly (code \(code))")
+        stateSink(.error("Server crashed (exit \(code))"))
+        scheduleRestart(generation: generation)
+    }
+
+    private func scheduleRestart(generation: UInt64) {
+        guard generation == launchGeneration, !isIntentionalShutdown else { return }
+        guard let configuration = activeConfiguration else { return }
+        guard restartAttempts < Self.maxRestartAttempts else {
+            yuwpLog("Max restart attempts reached (\(Self.maxRestartAttempts))")
+            stateSink(.error("Server failed after \(Self.maxRestartAttempts) attempts"))
+            return
+        }
+
+        restartAttempts += 1
+        let delay = min(Double(1 << restartAttempts), 30.0)
+        yuwpLog("Restarting asr-server in \(Int(delay))s (\(restartAttempts)/\(Self.maxRestartAttempts))")
+
+        restartTask?.cancel()
+        restartTask = Task.detached { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await self.restartIfNeeded(generation: generation, configuration: configuration)
+        }
+    }
+
+    private func restartIfNeeded(generation: UInt64, configuration: ASRServerConfiguration) {
+        guard generation == launchGeneration, !isIntentionalShutdown else { return }
+        let state = start(configuration: configuration)
+        stateSink(state)
+    }
+
+    private func cancelBackgroundTasks() {
+        readyPollTask?.cancel()
+        readyPollTask = nil
+        restartTask?.cancel()
+        restartTask = nil
+    }
+}
+
+// MARK: - Native ASR Provider
+
+/// Manages the native ASR server process (asr-server).
+/// Communicates via HTTP on localhost.
+///
+/// Launches `asr-server` as a child process, monitors its health,
+/// and provides STT sessions via the HTTP streaming API.
+@MainActor
+final class NativeASRProvider: SttProvider {
+    // SttProvider
+    var isReady: Bool { state == .ready }
+    var onReady: (@MainActor @Sendable () -> Void)?
+    var onError: (@MainActor @Sendable (String) -> Void)?
+
+    // State observation (for menu bar)
+    private(set) var state: ASRServerState = .stopped
+    var onStateChange: (@MainActor @Sendable (ASRServerState) -> Void)?
+
+    /// Hidden default aligner model used to power `/v1/audio/subtitles` when available locally.
+    nonisolated fileprivate static let defaultAlignerModel = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
+
+    private var configuration: ASRServerConfiguration
+
+    /// Transcription model spec: Hugging Face repo id or local model directory.
+    var transcriptionModel: String {
+        get { configuration.transcriptionModel }
+        set { configuration.transcriptionModel = newValue }
+    }
+
+    /// Whether pause/final batch commit is enabled.
+    var batchCommitEnabled: Bool {
+        get { configuration.batchCommitEnabled }
+        set { configuration.batchCommitEnabled = newValue }
+    }
+
+    var port: UInt16 {
+        get { configuration.port }
+        set { configuration.port = newValue }
+    }
+
+    var serverMode: ServerMode {
+        get { configuration.serverMode }
+        set { configuration.serverMode = newValue }
+    }
+
+    private lazy var lifecycle = NativeASRServerLifecycle { [weak self] newState in
+        Task { @MainActor [weak self] in
+            self?.applyState(newState)
+        }
+    }
+
+    init(port: UInt16 = 9748) {
+        self.configuration = ASRServerConfiguration(port: port)
+    }
+
+    // MARK: - Lifecycle
+
+    func start() {
+        let configuration = configuration
+        applyState(runLifecycleSync { lifecycle in
+            await lifecycle.start(configuration: configuration)
+        })
+    }
+
+    func shutdown() {
+        let targetState: ASRServerState = configuration.serverMode == .off ? .disabled : .stopped
+        applyState(runLifecycleSync { lifecycle in
+            await lifecycle.shutdown(targetState: targetState)
+        })
     }
 
     // MARK: - SttProvider
 
     func makeSession() -> any SttSession {
-        NativeASRSession(host: clientHost, port: port)
+        NativeASRSession(host: configuration.clientHost, port: configuration.port)
     }
 
     // MARK: - State
 
-    private func updateState(_ newState: ASRServerState) {
+    private func applyState(_ newState: ASRServerState) {
         state = newState
         onStateChange?(newState)
-        if case .ready = newState { onReady?() }
-    }
-
-    // MARK: - Crash Recovery
-
-    private func scheduleRestart() {
-        guard !isIntentionalShutdown else { return }
-        guard restartAttempts < Self.maxRestartAttempts else {
-            yuwpLog("Max restart attempts reached (\(Self.maxRestartAttempts))")
-            updateState(.error("Server failed after \(Self.maxRestartAttempts) attempts"))
-            return
+        if case .ready = newState {
+            onReady?()
         }
-        restartAttempts += 1
-        let delay = min(Double(1 << restartAttempts), 30.0)
-        yuwpLog("Restarting asr-server in \(Int(delay))s (\(restartAttempts)/\(Self.maxRestartAttempts))")
-
-        restartTask = Task.detached { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
-            guard let self, !Task.isCancelled else { return }
-            self.start()
+        if case .error(let message) = newState {
+            onError?(message)
         }
     }
 
-    // MARK: - Health Check
-
-    private func checkReady() -> Bool {
-        guard let url = URL(string: "http://\(clientHost):\(port)/v1/info") else { return false }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 2
-        let ready = LockedBox(false)
+    private func runLifecycleSync<Result: Sendable>(
+        _ operation: @escaping @Sendable (NativeASRServerLifecycle) async -> Result
+    ) -> Result {
+        let result = LockedBox<Result?>(nil)
         let sema = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { data, _, _ in
-            defer { sema.signal() }
-            guard let data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  json["status"] as? String == "ready" else { return }
-            ready.set(true)
-        }.resume()
+
+        Task.detached { [lifecycle] in
+            let value = await operation(lifecycle)
+            result.set(value)
+            sema.signal()
+        }
+
         sema.wait()
-        return ready.get()
+        guard let value = result.get() else {
+            fatalError("NativeASRProvider lifecycle operation returned no result")
+        }
+        return value
     }
 
     // MARK: - Model + Binary Resolution
 
     /// Resolve a model spec (Hugging Face repo id or local directory) to a local directory path.
-    static func resolveModelPath(_ spec: String) -> String? {
+    nonisolated static func resolveModelPath(_ spec: String) -> String? {
         ModelLocator.resolve(spec)?.path
     }
 
     /// Find the asr-server binary in expected locations.
-    static func findServerBinary() -> String? {
+    nonisolated static func findServerBinary() -> String? {
         let candidates = [
             // App bundle
             Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/asr-server").path,
@@ -286,7 +400,7 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
 
-    private func cleanupOrphanedManagedServerIfNeeded(serverBinaryPath: String) {
+    nonisolated fileprivate static func cleanupOrphanedManagedServerIfNeeded(port: UInt16, serverBinaryPath: String) {
         guard let listenerPID = Self.listeningPID(on: port) else { return }
         guard let parentPID = Self.parentPID(for: listenerPID), parentPID == 1 else { return }
         guard let command = Self.command(for: listenerPID), command.contains(serverBinaryPath) else { return }
@@ -302,7 +416,24 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         }
     }
 
-    private static func listeningPID(on port: UInt16) -> Int32? {
+    nonisolated fileprivate static func checkReady(host: String, port: UInt16) -> Bool {
+        guard let url = URL(string: "http://\(host):\(port)/v1/info") else { return false }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 2
+        let ready = LockedBox(false)
+        let sema = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            defer { sema.signal() }
+            guard let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  json["status"] as? String == "ready" else { return }
+            ready.set(true)
+        }.resume()
+        sema.wait()
+        return ready.get()
+    }
+
+    nonisolated fileprivate static func listeningPID(on port: UInt16) -> Int32? {
         guard let output = toolOutput(
             launchPath: "/usr/sbin/lsof",
             arguments: ["-tiTCP:\(port)", "-sTCP:LISTEN"]
@@ -312,18 +443,18 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         return pid
     }
 
-    private static func parentPID(for pid: Int32) -> Int32? {
+    nonisolated private static func parentPID(for pid: Int32) -> Int32? {
         guard let output = toolOutput(launchPath: "/bin/ps", arguments: ["-o", "ppid=", "-p", "\(pid)"])
         else { return nil }
         return Int32(output.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    private static func command(for pid: Int32) -> String? {
+    nonisolated fileprivate static func command(for pid: Int32) -> String? {
         toolOutput(launchPath: "/bin/ps", arguments: ["-o", "command=", "-p", "\(pid)"])?
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func toolOutput(launchPath: String, arguments: [String]) -> String? {
+    nonisolated private static func toolOutput(launchPath: String, arguments: [String]) -> String? {
         let process = Process()
         let stdout = Pipe()
         process.executableURL = URL(fileURLWithPath: launchPath)
@@ -341,7 +472,7 @@ final class NativeASRProvider: @unchecked Sendable, SttProvider {
         return String(data: data, encoding: .utf8)
     }
 
-    private static func waitForListener(on port: UInt16, toExit pid: Int32, timeout: TimeInterval) {
+    nonisolated private static func waitForListener(on port: UInt16, toExit pid: Int32, timeout: TimeInterval) {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if listeningPID(on: port) != pid { return }

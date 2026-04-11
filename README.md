@@ -263,6 +263,8 @@ Sources/
     Resources/              # Bundled Silero VAD CoreML model
   asr-server/
     main.swift              # Native HTTP streaming + batch + subtitle server
+  asr-stream-test/
+    main.swift              # Replay WAVs through streaming + batch, emit quality metrics
   align-test/
     main.swift              # Local forced-alignment CLI
 Tests/
@@ -287,6 +289,7 @@ scripts/
 ```bash
 swift build       # build
 swift test        # run tests
+swift run asr-stream-test ~/path/to/sample.wav   # replay + compare against batch baseline
 scripts/build.sh  # build + codesign with stable identity
 scripts/run.sh    # build + launch as .app bundle
 ```

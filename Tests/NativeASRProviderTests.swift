@@ -58,3 +58,40 @@ struct NativeASRProviderTests {
         #expect(update == nil)
     }
 }
+
+@Suite("NativeASRProvider lifecycle")
+struct NativeASRProviderLifecycleTests {
+    @Test func offModeTransitionsToDisabledSynchronously() async {
+        await MainActor.run {
+            let provider = NativeASRProvider()
+            var states: [ASRServerState] = []
+
+            provider.serverMode = .off
+            provider.onStateChange = { states.append($0) }
+
+            provider.start()
+
+            #expect(provider.state == .disabled)
+            #expect(states == [.disabled])
+        }
+    }
+
+    @Test func missingModelSurfacesImmediateErrorAndCallback() async {
+        await MainActor.run {
+            let provider = NativeASRProvider()
+            let missingModel = "missing-model-\(UUID().uuidString)"
+            var states: [ASRServerState] = []
+            var errors: [String] = []
+
+            provider.transcriptionModel = missingModel
+            provider.onStateChange = { states.append($0) }
+            provider.onError = { errors.append($0) }
+
+            provider.start()
+
+            #expect(provider.state == .error("Transcription model not found"))
+            #expect(states.last == .error("Transcription model not found"))
+            #expect(errors == ["Transcription model not found"])
+        }
+    }
+}

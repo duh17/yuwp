@@ -4,6 +4,22 @@ import Testing
 
 @Suite("CGEventInjector diff algorithm")
 struct CGEventInjectorTests {
+    private final class OperationRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var operations: [String] = []
+
+        func append(_ operation: String) {
+            lock.lock()
+            operations.append(operation)
+            lock.unlock()
+        }
+
+        func snapshot() -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return operations
+        }
+    }
 
     @Test func emptyToText() {
         let (bs, suffix) = CGEventInjector.diff(old: "", new: "hello")
@@ -133,5 +149,86 @@ struct CGEventInjectorTests {
         let (bs2, s2) = CGEventInjector.diff(old: state, new: "hello")
         #expect(bs2 == 0)
         #expect(s2 == "")
+    }
+
+    @Test @MainActor func injectReturnsBeforeTransportFinishes() {
+        let started = DispatchSemaphore(value: 0)
+        let unblock = DispatchSemaphore(value: 0)
+        let queue = DispatchQueue(label: "test.cg.inject.async")
+        let injector = CGEventInjector(
+            eventQueue: queue,
+            transport: CGEventTransport(
+                postText: { _, _ in
+                    started.signal()
+                    _ = unblock.wait(timeout: .now() + 1)
+                },
+                postBackspaces: { _, _ in }
+            )
+        )
+
+        let t0 = Date()
+        injector.inject("hello")
+        let elapsed = Date().timeIntervalSince(t0)
+
+        #expect(elapsed < 0.05)
+        #expect(started.wait(timeout: .now() + 0.5) == .success)
+        unblock.signal()
+        queue.sync {}
+    }
+
+    @Test @MainActor func commitDrainsQueuedPreviewBeforeReturning() {
+        let recorder = OperationRecorder()
+        let queue = DispatchQueue(label: "test.cg.inject.commit")
+        let injector = CGEventInjector(
+            eventQueue: queue,
+            transport: CGEventTransport(
+                postText: { text, shouldContinue in
+                    guard shouldContinue() else { return }
+                    recorder.append("text:\(text)")
+                },
+                postBackspaces: { count, shouldContinue in
+                    guard count > 0 else { return }
+                    guard shouldContinue() else { return }
+                    recorder.append("bs:\(count)")
+                }
+            )
+        )
+
+        injector.inject("hel")
+        injector.commit("hello")
+
+        #expect(recorder.snapshot() == ["text:hel", "text:lo"])
+    }
+
+    @Test @MainActor func releaseCancelsQueuedPreviewBeforeTyping() {
+        let recorder = OperationRecorder()
+        let started = DispatchSemaphore(value: 0)
+        let unblock = DispatchSemaphore(value: 0)
+        let queue = DispatchQueue(label: "test.cg.inject.release")
+        let injector = CGEventInjector(
+            eventQueue: queue,
+            transport: CGEventTransport(
+                postText: { text, shouldContinue in
+                    for character in text {
+                        started.signal()
+                        _ = unblock.wait(timeout: .now() + 1)
+                        guard shouldContinue() else { return }
+                        recorder.append("char:\(character)")
+                    }
+                },
+                postBackspaces: { _, _ in }
+            )
+        )
+
+        injector.inject("hello")
+        #expect(started.wait(timeout: .now() + 0.5) == .success)
+        injector.release()
+
+        for _ in 0..<5 {
+            unblock.signal()
+        }
+        queue.sync {}
+
+        #expect(recorder.snapshot().isEmpty)
     }
 }

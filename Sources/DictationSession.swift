@@ -7,14 +7,15 @@ import Foundation
 ///
 /// Implementations:
 ///   - `NativeASRProvider` — local asr-server (Qwen3-ASR via MLX)
-/// Not actor-isolated — implementations handle their own thread safety.
+/// Provider lifecycle and visible state are app-owned, so the API is main-actor isolated.
+@MainActor
 protocol SttProvider: AnyObject, Sendable {
     var isReady: Bool { get }
-    var onReady: (@Sendable () -> Void)? { get set }
-    var onError: (@Sendable (String) -> Void)? { get set }
+    var onReady: (@MainActor @Sendable () -> Void)? { get set }
+    var onError: (@MainActor @Sendable (String) -> Void)? { get set }
     func start()
     func shutdown()
-    @MainActor func makeSession() -> any SttSession
+    func makeSession() -> any SttSession
 }
 
 /// A single dictation recording cycle. Created by `SttProvider.makeSession()`.
@@ -112,6 +113,7 @@ final class DictationSession {
     private var typewriterDriveTask: Task<Void, Never>?
     private var finalTimeoutTask: Task<Void, Never>?
     private var maxDurationTask: Task<Void, Never>?
+    private var didFinalize = false
     private static let maxDurationSeconds: UInt64 = 5 * 60 // 5 minutes
 
     /// Callback for events — set by AppDelegate to update UI.
@@ -137,6 +139,7 @@ final class DictationSession {
     func start() {
         guard !isActive else { return }
         isActive = true
+        didFinalize = false
 
         textInjector.captureTarget()
 
@@ -146,8 +149,8 @@ final class DictationSession {
         sttSession.onUpdate = { [weak self] update in
             Task { @MainActor in self?.handleUpdate(update) }
         }
-        sttSession.onError = { msg in
-            Task { @MainActor in yuwpLog("STT error: \(msg)") }
+        sttSession.onError = { [weak self] msg in
+            Task { @MainActor in self?.handleFailure(msg) }
         }
         sttSession.begin(language: nil)
 
@@ -232,6 +235,7 @@ final class DictationSession {
     // MARK: - STT Callbacks
 
     private func handleUpdate(_ update: TranscriptUpdate) {
+        guard !didFinalize else { return }
         transcriptState = transcriptState.applying(update)
         let text = transcriptState.fullText
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -268,7 +272,34 @@ final class DictationSession {
 
     // MARK: - Private
 
+    private func handleFailure(_ message: String) {
+        guard !didFinalize else { return }
+
+        yuwpLog("STT error: \(message) — stopping session")
+        if isActive {
+            isActive = false
+            maxDurationTask?.cancel()
+            maxDurationTask = nil
+            finalTimeoutTask?.cancel()
+            finalTimeoutTask = nil
+            typewriterDriveTask?.cancel()
+            typewriterDriveTask = nil
+            _ = audioCapture.stop()
+            sttSession.end()
+        }
+
+        finalize()
+    }
+
     private func finalize() {
+        guard !didFinalize else { return }
+        didFinalize = true
+        maxDurationTask?.cancel()
+        maxDurationTask = nil
+        finalTimeoutTask?.cancel()
+        finalTimeoutTask = nil
+        typewriterDriveTask?.cancel()
+        typewriterDriveTask = nil
         transcriptState = .empty
         typewriter.reset()
         textInjector.release()

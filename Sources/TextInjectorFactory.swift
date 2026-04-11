@@ -6,8 +6,8 @@ import ApplicationServices
 /// Decision tree:
 ///   1. No focused element → `ClipboardInjector`
 ///   2. Non-editable AX role (terminals, etc.) → `CGEventInjector`
-///   3. Editable role but AX write probe fails → `ClipboardInjector`
-///   4. Editable role, AX write probe OK → `AXTextInjector`
+///   3. Editable role but AX value probe fails → `CGEventInjector`
+///   4. Editable role, AX value probe OK → `AXTextInjector`
 ///      (degrades to `CGEventInjector` on first inject if verification fails)
 @MainActor
 enum TextInjectorFactory {
@@ -18,7 +18,7 @@ enum TextInjectorFactory {
     }
 
     // Roles known to support AX text editing.
-    private static let editableRoles: Set<String> = [
+    nonisolated private static let editableRoles: Set<String> = [
         "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField",
     ]
 
@@ -32,7 +32,7 @@ enum TextInjectorFactory {
         guard let role else { return .cgEvent }
         guard editableRoles.contains(role) else { return .cgEvent }
         guard hasReadableSelectionRange else { return .clipboard }
-        guard canWriteSelectedText else { return .clipboard }
+        guard canWriteSelectedText else { return .cgEvent }
         return .ax
     }
 
@@ -59,15 +59,11 @@ enum TextInjectorFactory {
             focused, kAXSelectedTextRangeAttribute as CFString, &rangeRef
         ) == .success
 
-        // Verify we can write selected text — the op used by AXTextInjector.
-        let canWriteSelectedText: Bool
-        if let role, editableRoles.contains(role), hasSelectionRange {
-            canWriteSelectedText = AXUIElementSetAttributeValue(
-                focused, kAXSelectedTextAttribute as CFString, "" as CFTypeRef
-            ) == .success
-        } else {
-            canWriteSelectedText = false
-        }
+        let canWriteSelectedText = supportsAXTextInjection(
+            focused: focused,
+            role: role,
+            hasReadableSelectionRange: hasSelectionRange
+        )
 
         switch decideStrategy(
             hasFocusedElement: true,
@@ -81,12 +77,14 @@ enum TextInjectorFactory {
             } else if !hasSelectionRange {
                 yuwpLog("No AX selection range — using clipboard")
             } else {
-                yuwpLog("AX write probe failed — using clipboard")
+                yuwpLog("AX value attribute not settable — using clipboard")
             }
             return ClipboardInjector(screenPoint: point)
 
         case .cgEvent:
-            if let role {
+            if let role, editableRoles.contains(role), hasSelectionRange, !canWriteSelectedText {
+                yuwpLog("AX value attribute not settable — using CGEvent")
+            } else if let role {
                 yuwpLog("Non-editable role (\(role)) — using CGEvent")
             } else {
                 yuwpLog("No AX role — using CGEvent")
@@ -101,6 +99,23 @@ enum TextInjectorFactory {
     }
 
     // MARK: - Private AX helpers
+
+    nonisolated static func supportsAXTextInjection(
+        focused: AXUIElement,
+        role: String?,
+        hasReadableSelectionRange: Bool,
+        attributeIsSettable: (AXUIElement, CFString) -> Bool = Self.systemAttributeIsSettable
+    ) -> Bool {
+        guard let role, editableRoles.contains(role), hasReadableSelectionRange else {
+            return false
+        }
+        return attributeIsSettable(focused, kAXValueAttribute as CFString)
+    }
+
+    nonisolated private static func systemAttributeIsSettable(_ element: AXUIElement, _ attribute: CFString) -> Bool {
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(element, attribute, &settable) == .success && settable.boolValue
+    }
 
     private static func focusedElement() -> AXUIElement? {
         let sys = AXUIElementCreateSystemWide()
