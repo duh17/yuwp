@@ -384,7 +384,7 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
             guard let self, let sid = self.sessionId else { return }
             guard let data = self.syncHTTP("POST", path: "\(self.baseURL)/\(sid)", body: pcmData),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let update = self.parseTranscriptUpdate(json, fallbackKind: .partial),
+                  let update = Self.parseTranscriptUpdate(json, fallbackKind: .partial),
                   !update.text.isEmpty else { return }
             self.onUpdate?(update)
         }
@@ -400,7 +400,7 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
             self.sessionId = nil
             guard let data = self.syncHTTP("DELETE", path: "\(self.baseURL)/\(sid)"),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let update = self.parseTranscriptUpdate(json, fallbackKind: .final) else {
+                  let update = Self.parseTranscriptUpdate(json, fallbackKind: .final) else {
                 self.onUpdate?(TranscriptUpdate(kind: .final, text: ""))
                 return
             }
@@ -408,7 +408,7 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
         }
     }
 
-    private func parseTranscriptUpdate(
+    static func parseTranscriptUpdate(
         _ json: [String: Any],
         fallbackKind: TranscriptUpdateKind
     ) -> TranscriptUpdate? {
