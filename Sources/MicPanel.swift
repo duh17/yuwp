@@ -8,7 +8,7 @@ import AppKit
 ///
 /// Draggable — remembers pinned position across sessions.
 @MainActor
-final class MicPanel {
+final class MicPanel: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
     private var contentView: NSView?
     private var textView: NSTextView?
@@ -35,7 +35,9 @@ final class MicPanel {
     private let cornerRadius: CGFloat = 16 // fully rounded ends
     private let textPadding: CGFloat = 14
     private let verticalPadding: CGFloat = 8
-    private let cursorGap: CGFloat = 20
+    private let screenEdgePadding: CGFloat = 8
+    private let bottomPadding: CGFloat = 36
+    private var lastProgrammaticOrigin: NSPoint?
 
     // Bar waveform
     private let barCount = 5
@@ -50,39 +52,27 @@ final class MicPanel {
 
     // MARK: - Public API
 
-    /// Show the pill near a position.
+    /// Show the pill at the pinned position, or bottom-center on the active screen.
     /// - `minimal: true` — narrow pill with waveform bars (live injection mode)
     /// - `minimal: false` — wide pill with transcript text (clipboard fallback)
-    func show(near position: NSPoint, minimal: Bool = false) {
+    func show(minimal: Bool = false) {
         isMinimal = minimal
         if panel == nil { createPanel() }
         guard let panel else { return }
 
         let width = minimal ? minimalWidth : fullWidth
+        let size = NSSize(width: width, height: pillHeight)
 
-        // Resize
-        panel.setContentSize(NSSize(width: width, height: pillHeight))
-        contentView?.frame = NSRect(x: 0, y: 0, width: width, height: pillHeight)
+        panel.setContentSize(size)
+        contentView?.frame = NSRect(origin: .zero, size: size)
         textView?.isHidden = minimal
         bars.forEach { $0.isHidden = !minimal }
 
-        // Position bars centered in the pill
         if minimal {
             layoutBars(in: width)
         }
 
-        let origin: NSPoint
-        if let pinned = pinnedOrigin {
-            origin = pinned
-        } else {
-            let anchor = (position == .zero) ? NSEvent.mouseLocation : position
-            let size = NSSize(width: width, height: pillHeight)
-            origin = clampToScreen(
-                NSPoint(x: anchor.x - size.width / 2, y: anchor.y + cursorGap),
-                panelSize: size
-            )
-        }
-        panel.setFrameOrigin(origin)
+        placePanel(at: resolvedOrigin(for: size))
 
         if !minimal {
             textView?.string = ""
@@ -98,7 +88,7 @@ final class MicPanel {
     func present(_ state: DictationPresentationState) {
         let minimal = state.bubbleStyle == .compact
         if panel?.isVisible != true || isMinimal != minimal {
-            show(near: state.caretPosition, minimal: minimal)
+            show(minimal: minimal)
         }
         if minimal {
             textView?.string = ""
@@ -119,9 +109,6 @@ final class MicPanel {
     }
 
     func hide() {
-        if let panel, panel.isVisible {
-            pinnedOrigin = panel.frame.origin
-        }
         stopAnimation()
         stopEscapeMonitor()
         panel?.orderOut(nil)
@@ -151,17 +138,82 @@ final class MicPanel {
         }
     }
 
-    // MARK: - Screen Clamping
+    // MARK: - Screen Placement
 
-    private func clampToScreen(_ point: NSPoint, panelSize: NSSize) -> NSPoint {
-        guard let screen = NSScreen.main?.visibleFrame else { return point }
+    func windowDidMove(_ notification: Notification) {
+        guard let panel else { return }
+        let origin = panel.frame.origin
+        if let lastProgrammaticOrigin, pointsEqual(origin, lastProgrammaticOrigin) {
+            self.lastProgrammaticOrigin = nil
+            return
+        }
+
+        let midpoint = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
+        pinnedOrigin = clampToVisibleFrame(
+            origin,
+            panelSize: panel.frame.size,
+            visibleFrame: visibleFrame(containing: midpoint)
+        )
+    }
+
+    private func placePanel(at origin: NSPoint) {
+        guard let panel else { return }
+        lastProgrammaticOrigin = origin
+        panel.setFrameOrigin(origin)
+    }
+
+    private func resolvedOrigin(for panelSize: NSSize) -> NSPoint {
+        if let pinned = pinnedOrigin {
+            return clampToVisibleFrame(
+                pinned,
+                panelSize: panelSize,
+                visibleFrame: visibleFrame(containing: pinned)
+            )
+        }
+        return defaultOrigin(for: panelSize)
+    }
+
+    private func defaultOrigin(for panelSize: NSSize) -> NSPoint {
+        guard let visibleFrame = activeVisibleFrame() ?? NSScreen.main?.visibleFrame else {
+            return .zero
+        }
+        return clampToVisibleFrame(
+            NSPoint(
+                x: visibleFrame.midX - panelSize.width / 2,
+                y: visibleFrame.minY + bottomPadding
+            ),
+            panelSize: panelSize,
+            visibleFrame: visibleFrame
+        )
+    }
+
+    private func activeVisibleFrame() -> NSRect? {
+        visibleFrame(containing: NSEvent.mouseLocation)
+    }
+
+    private func visibleFrame(containing point: NSPoint) -> NSRect? {
+        NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) })?.visibleFrame
+    }
+
+    private func clampToVisibleFrame(
+        _ point: NSPoint,
+        panelSize: NSSize,
+        visibleFrame: NSRect?
+    ) -> NSPoint {
+        guard let visibleFrame = visibleFrame ?? activeVisibleFrame() ?? NSScreen.main?.visibleFrame else {
+            return point
+        }
         var x = point.x
         var y = point.y
-        if x + panelSize.width > screen.maxX { x = screen.maxX - panelSize.width - 8 }
-        if x < screen.minX { x = screen.minX + 8 }
-        if y + panelSize.height > screen.maxY { y = screen.maxY - panelSize.height - 8 }
-        if y < screen.minY { y = screen.minY + 8 }
+        if x + panelSize.width > visibleFrame.maxX { x = visibleFrame.maxX - panelSize.width - screenEdgePadding }
+        if x < visibleFrame.minX { x = visibleFrame.minX + screenEdgePadding }
+        if y + panelSize.height > visibleFrame.maxY { y = visibleFrame.maxY - panelSize.height - screenEdgePadding }
+        if y < visibleFrame.minY { y = visibleFrame.minY + screenEdgePadding }
         return NSPoint(x: x, y: y)
+    }
+
+    private func pointsEqual(_ lhs: NSPoint, _ rhs: NSPoint, tolerance: CGFloat = 0.5) -> Bool {
+        abs(lhs.x - rhs.x) <= tolerance && abs(lhs.y - rhs.y) <= tolerance
     }
 
     // MARK: - Animation
@@ -328,6 +380,7 @@ final class MicPanel {
         textView = tv
 
         p.contentView = cv
+        p.delegate = self
         contentView = cv
         panel = p
     }

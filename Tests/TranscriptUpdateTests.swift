@@ -63,6 +63,21 @@ struct TranscriptUpdateTests {
         #expect(state.fullText == "committed active")
     }
 
+    @Test func finalIgnoresExplicitActiveTailToAvoidDuplication() {
+        let state = TranscriptState.empty.applying(
+            TranscriptUpdate(
+                kind: .final,
+                text: "more delightful",
+                committedText: "more delightful",
+                activeText: "more delightful"
+            )
+        )
+
+        #expect(state.committedText == "more delightful")
+        #expect(state.activeText.isEmpty)
+        #expect(state.fullText == "more delightful")
+    }
+
     @Test func kindDefaultsAreSane() {
         #expect(TranscriptUpdateKind.partial.settlesPreviewImmediately == false)
         #expect(TranscriptUpdateKind.segmentCommit.settlesPreviewImmediately)

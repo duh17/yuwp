@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }()
     private lazy var audioCapture = AudioCapture(inputCatalog: audioInputCatalog)
     private let micPanel = MicPanel()
+    private let chimePlayer = DictationChimePlayer()
 
     // Per-dictation session (created on start, torn down on stop)
     private var session: DictationSession?
@@ -50,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var saveRecordingsMenuItem: NSMenuItem!
     private var settingsWindowController: SettingsWindowController?
     private var permissionTimer: Timer?
+    private var hotkeyRecordingActive = false
 
     // MARK: - Lifecycle
 
@@ -215,15 +217,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Task { @MainActor in self?.send(.sessionStopRequested) }
         }
         session = s
+        chimePlayer.play(.start)
         s.start()
     }
 
     private func performStopDictation() {
         guard let s = session else { return }
+        let sessionID = s.debugSessionID
         let pcmData = s.stop()
+        chimePlayer.play(.stop)
 
         if Config.shared.saveRecordings, let pcmData, !pcmData.isEmpty {
-            saveRecording(pcmData)
+            saveRecording(pcmData, sessionID: sessionID)
         }
     }
 
@@ -314,11 +319,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(statusMenuItem)
         menu.addItem(.separator())
 
-        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-        settingsItem.target = self
+        let settingsItem = makeMenuItem(
+            title: "Settings…",
+            symbolName: "gearshape",
+            action: #selector(openSettings),
+            keyEquivalent: ",",
+            target: self
+        )
         menu.addItem(settingsItem)
 
-        audioInputMenuItem = NSMenuItem(title: "Input Device", action: nil, keyEquivalent: "")
+        audioInputMenuItem = makeMenuItem(title: "Input Device", symbolName: "mic", action: nil, keyEquivalent: "")
         audioInputSubmenu = NSMenu(title: "Input Device")
         audioInputMenuItem.submenu = audioInputSubmenu
         menu.addItem(audioInputMenuItem)
@@ -326,26 +336,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        saveRecordingsMenuItem = NSMenuItem(title: "Save Recordings", action: #selector(toggleSaveRecordings(_:)), keyEquivalent: "")
-        saveRecordingsMenuItem.target = self
-        saveRecordingsMenuItem.state = Config.shared.saveRecordings ? .on : .off
+        saveRecordingsMenuItem = makeMenuItem(
+            title: "Save Recordings",
+            symbolName: "record.circle",
+            action: #selector(toggleSaveRecordings(_:)),
+            keyEquivalent: "",
+            target: self
+        )
+        updateSaveRecordingsMenuItem()
         menu.addItem(saveRecordingsMenuItem)
 
         if let updaterController {
             menu.addItem(.separator())
-            let updateItem = NSMenuItem(
+            let updateItem = makeMenuItem(
                 title: "Check for Updates...",
+                symbolName: "arrow.trianglehead.clockwise",
                 action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
-                keyEquivalent: ""
+                keyEquivalent: "",
+                target: updaterController
             )
-            updateItem.target = updaterController
             menu.addItem(updateItem)
         }
 
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Yuwp", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quitItem = makeMenuItem(
+            title: "Quit Yuwp",
+            symbolName: "xmark.square",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q",
+            target: NSApp
+        )
+        menu.addItem(quitItem)
 
         statusItem.menu = menu
+    }
+
+    private func makeMenuItem(
+        title: String,
+        symbolName: String,
+        action: Selector?,
+        keyEquivalent: String,
+        target: AnyObject? = nil
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+        item.target = target
+        item.image = menuSymbol(named: symbolName, accessibilityDescription: title)
+        return item
+    }
+
+    private func menuSymbol(named symbolName: String, accessibilityDescription: String) -> NSImage? {
+        guard let symbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityDescription) else {
+            return nil
+        }
+        let configuration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+        let configured = symbol.withSymbolConfiguration(configuration) ?? symbol
+        configured.isTemplate = true
+        return configured
+    }
+
+    private func updateSaveRecordingsMenuItem() {
+        guard let saveRecordingsMenuItem else { return }
+        let enabled = Config.shared.saveRecordings
+        saveRecordingsMenuItem.state = .off
+        saveRecordingsMenuItem.image = menuSymbol(
+            named: enabled ? "record.circle.fill" : "record.circle",
+            accessibilityDescription: saveRecordingsMenuItem.title
+        )
     }
 
     @objc private func openSettings() {
@@ -356,6 +412,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             controller.onDictationBindingChange = { [weak self] binding in
                 self?.applyDictationBinding(binding)
+            }
+            controller.onDictationBindingRecordingChange = { [weak self] isRecording in
+                self?.setHotkeyRecordingActive(isRecording)
             }
             controller.onAudioInputSelectionChange = { [weak self] selection in
                 self?.applyAudioInputSelection(selection)
@@ -412,8 +471,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard Config.shared.dictationBinding != binding else { return }
         Config.shared.dictationBinding = binding
 
+        if hotkeyRecordingActive {
+            yuwpLog("Dictation shortcut changed to: \(binding.description)")
+            return
+        }
+
         if appState.hasAccessibilityPermission, hotkeyManager.restart() {
             yuwpLog("Dictation shortcut changed to: \(binding.description)")
+        }
+    }
+
+    private func setHotkeyRecordingActive(_ isRecording: Bool) {
+        guard hotkeyRecordingActive != isRecording else { return }
+        hotkeyRecordingActive = isRecording
+
+        guard appState.hasAccessibilityPermission else { return }
+
+        if isRecording {
+            hotkeyManager.stop()
+            return
+        }
+
+        if !hotkeyManager.start() {
+            yuwpLog("Failed to restore dictation shortcut after recording")
         }
     }
 
@@ -477,7 +557,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             recordingsDir: Config.shared.recordingsDir,
             usingDefaultRecordingsDir: Config.shared.usesDefaultRecordingsDir
         )
-        saveRecordingsMenuItem?.state = Config.shared.saveRecordings ? .on : .off
+        updateSaveRecordingsMenuItem()
         rebuildAudioInputMenu(with: availableAudioInputs)
     }
 
@@ -538,6 +618,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateStatus() {
         let status = appState.statusDisplay(port: asrProvider.port)
         statusMenuItem.title = status.title
+        statusMenuItem.image = menuSymbol(named: status.symbolName, accessibilityDescription: status.title)
         statusMenuItem.isEnabled = status.isEnabled
         switch status.behavior {
         case .none:
@@ -675,7 +756,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Recording Settings
 
     @objc private func toggleSaveRecordings(_ sender: NSMenuItem) {
-        applySaveRecordings(sender.state != .on)
+        applySaveRecordings(!Config.shared.saveRecordings)
     }
 
     private func applySaveRecordings(_ enabled: Bool) {
@@ -728,7 +809,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Recording
 
-    private func saveRecording(_ pcmData: Data) {
+    private func saveRecording(_ pcmData: Data, sessionID: String?) {
         let dir = Config.shared.recordingsDir
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
@@ -737,9 +818,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         do {
             try WAVWriter.write(pcmData, to: url)
-            yuwpLog("Recording saved: \(url.path) (\(String(format: "%.1f", Double(pcmData.count) / 32000))s)")
+            let sid = sessionID ?? "unknown"
+            yuwpLog(
+                "Recording saved: sid=\(sid) path=\(url.path) "
+                    + "(\(String(format: "%.1f", Double(pcmData.count) / 32000))s)"
+            )
         } catch {
             yuwpLog("Failed to save recording: \(error)")
+        }
+    }
+}
+
+private enum DictationChime {
+    case start
+    case stop
+}
+
+@MainActor
+private final class DictationChimePlayer {
+    private let startSound = NSSound(named: NSSound.Name("Glass"))
+    private let stopSound = NSSound(named: NSSound.Name("Pop"))
+
+    func play(_ chime: DictationChime) {
+        let sound = switch chime {
+        case .start:
+            startSound
+        case .stop:
+            stopSound
+        }
+
+        if let sound {
+            if sound.isPlaying {
+                sound.stop()
+            }
+            sound.play()
+        } else {
+            NSSound.beep()
         }
     }
 }

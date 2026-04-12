@@ -284,7 +284,7 @@ final class NativeASRProvider: SttProvider {
     private(set) var state: ASRServerState = .stopped
     var onStateChange: (@MainActor @Sendable (ASRServerState) -> Void)?
 
-    /// Hidden default aligner model used to power `/v1/audio/subtitles` when available locally.
+    /// Hidden default aligner model used to power timed transcription output when available locally.
     nonisolated fileprivate static let defaultAlignerModel = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
 
     private var configuration: ASRServerConfiguration
@@ -488,9 +488,11 @@ final class NativeASRProvider: SttProvider {
 final class NativeASRSession: SttSession, @unchecked Sendable {
     var onUpdate: ((TranscriptUpdate) -> Void)?
     var onError: ((String) -> Void)?
+    var debugSessionID: String? { sessionIDBox.get() }
 
     private let baseURL: String
     private var sessionId: String?
+    private let sessionIDBox = LockedBox<String?>(nil)
     private let queue = DispatchQueue(label: "yuwp.asr-session", qos: .userInitiated)
 
     init(host: String, port: UInt16) {
@@ -507,6 +509,7 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
                 return
             }
             self.sessionId = sid
+            self.sessionIDBox.set(sid)
         }
     }
 

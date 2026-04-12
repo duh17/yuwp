@@ -7,6 +7,7 @@ import Testing
 final class MockSttSession: SttSession, @unchecked Sendable {
     var onUpdate: ((TranscriptUpdate) -> Void)?
     var onError: ((String) -> Void)?
+    var debugSessionID: String?
 
     var beginCallCount = 0
     var beginLanguage: String?

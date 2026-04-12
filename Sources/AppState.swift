@@ -45,6 +45,7 @@ enum AppStatusBehavior: Sendable, Equatable {
 
 struct AppStatusDisplay: Sendable, Equatable {
     let title: String
+    let symbolName: String
     let isEnabled: Bool
     let behavior: AppStatusBehavior
 }
@@ -128,7 +129,8 @@ struct AppState: Sendable, Equatable {
     func statusDisplay(port: UInt16) -> AppStatusDisplay {
         if !hasAccessibilityPermission {
             return AppStatusDisplay(
-                title: "⚠ Grant Accessibility Permission",
+                title: "Grant Accessibility Permission",
+                symbolName: "hand.raised.fill",
                 isEnabled: true,
                 behavior: .openAccessibilitySettings
             )
@@ -137,6 +139,7 @@ struct AppState: Sendable, Equatable {
         if settings.serverMode == .off {
             return AppStatusDisplay(
                 title: "Server mode is off",
+                symbolName: "power",
                 isEnabled: false,
                 behavior: .none
             )
@@ -144,7 +147,8 @@ struct AppState: Sendable, Equatable {
 
         if let modelDownloadStatus {
             return AppStatusDisplay(
-                title: "⬇︎ \(modelDownloadStatus)",
+                title: modelDownloadStatus,
+                symbolName: "arrow.down.circle",
                 isEnabled: false,
                 behavior: .none
             )
@@ -152,30 +156,37 @@ struct AppState: Sendable, Equatable {
 
         if !missingConfiguredModelLabels.isEmpty {
             return AppStatusDisplay(
-                title: "⚠ \(missingConfiguredModelLabels.joined(separator: " + ")) model missing",
+                title: "\(missingConfiguredModelLabels.joined(separator: " + ")) model missing",
+                symbolName: "exclamationmark.triangle.fill",
                 isEnabled: false,
                 behavior: .none
             )
         }
 
         let title: String
+        let symbolName: String
         switch providerState {
         case .disabled:
             title = "Server mode is off"
+            symbolName = "power"
         case .stopped:
             title = "Stopped"
+            symbolName = "stop.circle"
         case .starting:
             title = "Loading model..."
+            symbolName = "arrow.trianglehead.clockwise"
         case .ready:
             let endpoint = settings.serverMode == .allInterfaces
                 ? "0.0.0.0:\(port)"
                 : "127.0.0.1:\(port)"
-            title = "✓ Ready (\(endpoint))"
+            title = "Ready (\(endpoint))"
+            symbolName = "checkmark.circle.fill"
         case .error(let message):
-            title = "⚠ \(message)"
+            title = message
+            symbolName = "exclamationmark.triangle.fill"
         }
 
-        return AppStatusDisplay(title: title, isEnabled: false, behavior: .none)
+        return AppStatusDisplay(title: title, symbolName: symbolName, isEnabled: false, behavior: .none)
     }
 
     private mutating func handleShortcutEvent(_ event: ShortcutEvent) -> [AppEffect] {

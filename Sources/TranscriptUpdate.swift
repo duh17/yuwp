@@ -53,12 +53,12 @@ struct TranscriptState: Sendable, Equatable {
     }
 
     func applying(_ update: TranscriptUpdate) -> TranscriptState {
-        if let explicit = Self.explicitState(from: update) {
-            return explicit
-        }
-
         switch update.kind {
         case .partial:
+            if let explicit = Self.explicitState(from: update) {
+                return explicit
+            }
+
             let fullText = update.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if let split = Self.splitActiveText(from: fullText, committedText: committedText) {
                 return TranscriptState(committedText: committedText, activeText: split)

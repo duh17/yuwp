@@ -71,6 +71,7 @@ struct ConfigMigrationTests {
         #expect(KeyBinding.ctrlBacktick.description == "Ctrl+`")
         #expect(KeyBinding.optionSpace.description == "⌥+Space")
         #expect(KeyBinding.commandShiftD.description == "⌘+⇧+D")
+        #expect(KeyBinding(keyCode: 62, modifiers: 0).description == "Right Ctrl")
     }
 
     private func makeDefaults() -> (UserDefaults, String) {

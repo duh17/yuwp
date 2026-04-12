@@ -95,7 +95,8 @@ struct AppStateTests {
         let status = state.statusDisplay(port: 9748)
 
         #expect(status == AppStatusDisplay(
-            title: "✓ Ready (0.0.0.0:9748)",
+            title: "Ready (0.0.0.0:9748)",
+            symbolName: "checkmark.circle.fill",
             isEnabled: false,
             behavior: .none
         ))

@@ -67,6 +67,13 @@ struct DictationSessionTests {
         #expect(stt.beginCallCount == 1)
     }
 
+    @Test func debugSessionIDPassesThroughFromSttSession() {
+        let (session, stt, _, _, _) = makeSession()
+        stt.debugSessionID = "abc123"
+
+        #expect(session.debugSessionID == "abc123")
+    }
+
     // MARK: - Stop
 
     @Test func stopEndsSessionAndReturnsAudio() {

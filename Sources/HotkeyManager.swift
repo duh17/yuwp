@@ -2,9 +2,10 @@ import AppKit
 import Carbon.HIToolbox
 import CoreGraphics
 
-/// Detects the configured dictation key combo globally and emits press/release events.
+/// Detects the configured dictation shortcut globally and emits press/release events.
 ///
-/// Combo shortcuts use Carbon global hotkeys. Enter interception during active
+/// Combo shortcuts use Carbon global hotkeys. Modifier-only shortcuts use the
+/// existing event tap. Enter interception during active
 /// dictation still uses an event tap because it needs to swallow Return in the
 /// focused app until final commit completes.
 @MainActor
@@ -23,7 +24,7 @@ final class HotkeyManager {
 
     // Static state for the C callbacks (no captures allowed)
     nonisolated(unsafe) private static var instance: HotkeyManager?
-    nonisolated(unsafe) private static var activeBinding = KeyBinding.ctrlBacktick
+    nonisolated(unsafe) private static var modifierHotkeyTracker: ModifierHotkeyTracker?
     /// When true, Enter/Return keys are intercepted during dictation.
     nonisolated(unsafe) static var sessionActive = false
 
@@ -37,12 +38,14 @@ final class HotkeyManager {
 
         let binding = Config.shared.dictationBinding
         HotkeyManager.instance = self
-        HotkeyManager.activeBinding = binding
+        HotkeyManager.modifierHotkeyTracker = ModifierHotkeyTracker(binding: binding)
 
-        guard installCarbonHotkey(for: binding) else {
-            yuwpLog("Failed to register Carbon hotkey: \(binding.description)")
-            stop()
-            return false
+        if HotkeyManager.modifierHotkeyTracker == nil {
+            guard installCarbonHotkey(for: binding) else {
+                yuwpLog("Failed to register Carbon hotkey: \(binding.description)")
+                stop()
+                return false
+            }
         }
 
         guard installEnterInterceptionTap() else {
@@ -73,6 +76,7 @@ final class HotkeyManager {
         }
         carbonHotKey = nil
         carbonHandler = nil
+        HotkeyManager.modifierHotkeyTracker = nil
         HotkeyManager.instance = nil
     }
 
@@ -151,7 +155,8 @@ final class HotkeyManager {
     // MARK: - Enter Interception Tap
 
     private func installEnterInterceptionTap() -> Bool {
-        let eventMask: CGEventMask = 1 << CGEventType.keyDown.rawValue
+        let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.flagsChanged.rawValue)
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -177,16 +182,27 @@ final class HotkeyManager {
             return Unmanaged.passRetained(event)
         }
 
+        let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+
+        if type == .flagsChanged,
+           var tracker = HotkeyManager.modifierHotkeyTracker,
+           let phase = tracker.handleFlagsChanged(keyCode: keyCode) {
+            HotkeyManager.modifierHotkeyTracker = tracker
+            Task { @MainActor in
+                HotkeyManager.instance?.onShortcutEvent?(
+                    ShortcutEvent(command: .dictation, phase: phase)
+                )
+            }
+            return Unmanaged.passRetained(event)
+        }
+
         guard type == .keyDown else {
             return Unmanaged.passRetained(event)
         }
 
-        if sessionActive {
-            let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-            if keyCode == 36 || keyCode == 76 { // Return or numpad Enter
-                Task { @MainActor in HotkeyManager.instance?.onEnterDuringSession?() }
-                return nil
-            }
+        if sessionActive, (keyCode == 36 || keyCode == 76) { // Return or numpad Enter
+            Task { @MainActor in HotkeyManager.instance?.onEnterDuringSession?() }
+            return nil
         }
 
         return Unmanaged.passRetained(event)

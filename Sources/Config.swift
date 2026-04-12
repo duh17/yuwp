@@ -45,6 +45,10 @@ struct KeyBinding: Sendable, Codable, Equatable {
     let keyCode: UInt16
     let modifiers: UInt64
 
+    var isModifierOnly: Bool {
+        modifiers == 0 && Self.isModifierKeyCode(keyCode)
+    }
+
     var description: String {
         var parts: [String] = []
         if modifiers & 0x40000 != 0 { parts.append("Ctrl") }
@@ -53,6 +57,15 @@ struct KeyBinding: Sendable, Codable, Equatable {
         if modifiers & 0x20000 != 0 { parts.append("⇧") }
         parts.append(Self.keyName(for: keyCode))
         return parts.joined(separator: "+")
+    }
+
+    static func isModifierKeyCode(_ keyCode: UInt16) -> Bool {
+        switch keyCode {
+        case 54, 55, 56, 58, 59, 60, 61, 62, 63:
+            true
+        default:
+            false
+        }
     }
 
     static func keyName(for keyCode: UInt16) -> String {

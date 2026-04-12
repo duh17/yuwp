@@ -26,6 +26,7 @@ protocol SttProvider: AnyObject, Sendable {
 protocol SttSession: AnyObject, Sendable {
     var onUpdate: ((TranscriptUpdate) -> Void)? { get set }
     var onError: ((String) -> Void)? { get set }
+    var debugSessionID: String? { get }
     @MainActor func begin(language: String?)
     func feedAudio(_ pcmData: Data)
     func end()
@@ -124,6 +125,10 @@ final class DictationSession {
     var onRequestStop: (() -> Void)?
 
     private(set) var isActive = false
+
+    var debugSessionID: String? {
+        sttSession.debugSessionID
+    }
 
     init(
         sttSession: any SttSession,

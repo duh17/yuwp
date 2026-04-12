@@ -4,6 +4,7 @@ import AppKit
 final class SettingsWindowController: NSWindowController {
     var onDictationModeChange: ((DictationInteractionMode) -> Void)?
     var onDictationBindingChange: ((KeyBinding) -> Void)?
+    var onDictationBindingRecordingChange: ((Bool) -> Void)?
     var onAudioInputSelectionChange: ((AudioInputSelection) -> Void)?
     var onServerModeChange: ((ServerMode) -> Void)?
     var onServerPortChange: ((UInt16) -> Void)?
@@ -128,6 +129,9 @@ final class SettingsWindowController: NSWindowController {
 
         shortcutRecorder.onChange = { [weak self] binding in
             self?.onDictationBindingChange?(binding)
+        }
+        shortcutRecorder.onRecordingChange = { [weak self] isRecording in
+            self?.onDictationBindingRecordingChange?(isRecording)
         }
         audioInputPopup.target = self
         audioInputPopup.action = #selector(audioInputChanged(_:))
@@ -633,8 +637,12 @@ private final class CardView: NSView {
 @MainActor
 private final class ShortcutRecorderView: NSStackView {
     var onChange: ((KeyBinding) -> Void)?
+    var onRecordingChange: ((Bool) -> Void)?
     var binding: KeyBinding {
-        didSet { bindingLabel.stringValue = binding.description }
+        didSet {
+            guard !isRecording else { return }
+            bindingLabel.stringValue = binding.description
+        }
     }
 
     private let defaultBinding: KeyBinding
@@ -643,6 +651,7 @@ private final class ShortcutRecorderView: NSStackView {
     private let resetButton = NSButton(title: "Reset Default", target: nil, action: nil)
     private var recordingMonitor: Any?
     private var isRecording = false
+    private var captureState = ShortcutCaptureState()
 
     init(defaultBinding: KeyBinding) {
         self.defaultBinding = defaultBinding
@@ -689,39 +698,67 @@ private final class ShortcutRecorderView: NSStackView {
 
     private func startRecording() {
         guard !isRecording else { return }
+        captureState = ShortcutCaptureState()
         isRecording = true
         bindingLabel.stringValue = "Press shortcut…"
         recordButton.title = "Cancel"
+        onRecordingChange?(true)
 
-        recordingMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        recordingMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
             guard let self else { return event }
-            if event.keyCode == 53 { // Esc
-                self.stopRecording()
-                return nil
+
+            let result: ShortcutCaptureResult
+            switch event.type {
+            case .keyDown:
+                result = self.captureState.handleKeyDown(
+                    keyCode: UInt16(event.keyCode),
+                    modifiers: Self.modifierMask(from: event.modifierFlags)
+                )
+            case .flagsChanged:
+                result = self.captureState.handleFlagsChanged(keyCode: UInt16(event.keyCode))
+                if let pendingModifierKeyCode = self.captureState.pendingModifierKeyCode {
+                    self.bindingLabel.stringValue = "Release \(KeyBinding.keyName(for: pendingModifierKeyCode)) to use it, or press another key for a combo…"
+                }
+            default:
+                return event
             }
 
-            let modifiers = Self.modifierMask(from: event.modifierFlags)
-            guard modifiers != 0 else {
-                NSSound.beep()
-                return nil
-            }
-
-            let binding = KeyBinding(keyCode: UInt16(event.keyCode), modifiers: modifiers)
-            self.binding = binding
-            self.stopRecording()
-            self.onChange?(binding)
-            return nil
+            return self.handleCaptureResult(result)
         }
     }
 
     private func stopRecording() {
+        let wasRecording = isRecording
         if let monitor = recordingMonitor {
             NSEvent.removeMonitor(monitor)
             recordingMonitor = nil
         }
+        captureState = ShortcutCaptureState()
         isRecording = false
         bindingLabel.stringValue = binding.description
         recordButton.title = "Record…"
+        if wasRecording {
+            onRecordingChange?(false)
+        }
+    }
+
+    private func handleCaptureResult(_ result: ShortcutCaptureResult) -> NSEvent? {
+        switch result {
+        case .none:
+            return nil
+        case .captured(let binding):
+            self.binding = binding
+            onChange?(binding)
+            stopRecording()
+            return nil
+        case .cancelled:
+            stopRecording()
+            return nil
+        case .invalid:
+            NSSound.beep()
+            bindingLabel.stringValue = "Use a modifier combo, or press and release one modifier."
+            return nil
+        }
     }
 
     private static func modifierMask(from flags: NSEvent.ModifierFlags) -> UInt64 {
