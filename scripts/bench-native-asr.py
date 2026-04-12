@@ -4,11 +4,15 @@
 # dependencies = ["numpy", "psutil", "requests"]
 # ///
 """
-Benchmark native asr-server with single-model presets and concurrent HTTP clients.
+Benchmark native Yuwp ASR server with single-model presets and concurrent HTTP clients.
 
-This script targets the Swift `asr-server`, not the old Python sidecar.
+This script targets the Swift local ASR server, not the old Python sidecar.
 It can compare the small/large single-model presets, capture final transcripts,
 and measure how latency and memory behave as concurrency increases.
+
+Interface note:
+- canonical user-facing server CLI is `yuwp-asr serve --model <path-or-repo-id>`
+- legacy compatibility binary `asr-server` remains supported
 
 Examples:
   # Compare the two built-in single-model presets on a balanced corpus.
@@ -184,13 +188,15 @@ def is_valid_model_dir(path: Path) -> bool:
 
 def find_server_binary() -> Path:
     candidates = [
+        Path(".build/arm64-apple-macosx/release/yuwp-asr"),
+        Path(".build/release/yuwp-asr"),
         Path(".build/arm64-apple-macosx/release/asr-server"),
         Path(".build/release/asr-server"),
     ]
     for candidate in candidates:
         if candidate.exists():
             return candidate.resolve()
-    raise FileNotFoundError("asr-server not found — run: swift build -c release --product asr-server")
+    raise FileNotFoundError("server binary not found — run: swift build -c release --product yuwp-asr")
 
 
 def count_cjk(text: str) -> int:
@@ -344,16 +350,29 @@ def process_tree_rss_mb(pid: int) -> float:
 
 
 def launch_server(server_bin: Path, model: PreparedModel, port: int, warmup: bool) -> tuple[subprocess.Popen[str], float, dict[str, Any]]:
-    cmd = [
-        str(server_bin),
-        str(model.resolved_path),
-        "--batch-model",
-        str(model.resolved_path),
-        "--port",
-        str(port),
-        "--host",
-        "127.0.0.1",
-    ]
+    cmd = [str(server_bin)]
+    if server_bin.name == "yuwp-asr":
+        cmd += [
+            "serve",
+            "--model",
+            str(model.resolved_path),
+            "--batch-model",
+            str(model.resolved_path),
+            "--port",
+            str(port),
+            "--host",
+            "127.0.0.1",
+        ]
+    else:
+        cmd += [
+            str(model.resolved_path),
+            "--batch-model",
+            str(model.resolved_path),
+            "--port",
+            str(port),
+            "--host",
+            "127.0.0.1",
+        ]
     if warmup:
         cmd.append("--warmup")
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)

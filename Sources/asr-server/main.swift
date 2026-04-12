@@ -8,9 +8,8 @@ import NativeASR
 do {
     let config = try parseASRServerCLI(arguments: Array(CommandLine.arguments.dropFirst()))
 
-    let modelURL = URL(fileURLWithPath: config.modelPath)
-    guard FileManager.default.fileExists(atPath: modelURL.path) else {
-        fputs("Model not found: \(config.modelPath)\n", stderr)
+    guard let modelURL = YuwpModelSupport.resolveConfiguredModelURL(explicitSpec: config.modelSpec) else {
+        fputs("Error: could not resolve a model directory. Pass --model or set Yuwp's transcription model first.\n", stderr)
         exit(1)
     }
 
@@ -30,14 +29,15 @@ do {
         batchTranscriber = nil
     }
 
+    let alignerSpec = config.alignerModelPath ?? YuwpModelSupport.defaultAlignerURL()?.path
     let aligner: ForcedAligner?
-    if let alignerModelPath = config.alignerModelPath {
-        let alignerURL = URL(fileURLWithPath: alignerModelPath)
+    if let alignerSpec {
+        let alignerURL = URL(fileURLWithPath: alignerSpec).standardizedFileURL
         guard FileManager.default.fileExists(atPath: alignerURL.path) else {
-            fputs("Aligner model not found: \(alignerModelPath)\n", stderr)
+            fputs("Aligner model not found: \(alignerSpec)\n", stderr)
             exit(1)
         }
-        log("Loading aligner model from \(alignerModelPath)...")
+        log("Loading aligner model from \(alignerURL.path)...")
         aligner = try ForcedAligner.load(from: alignerURL)
         if let aligner {
             log("Aligner loaded (classify_num=\(aligner.model.config.classifyNum))")
@@ -47,11 +47,16 @@ do {
     }
 
     let vad: SileroVAD?
-    do {
-        vad = try SileroVAD()
-        log("Silero VAD loaded")
-    } catch {
-        log("Silero VAD unavailable: \(error.localizedDescription)")
+    if config.vadEnabled {
+        do {
+            vad = try SileroVAD()
+            log("Silero VAD loaded")
+        } catch {
+            log("Silero VAD unavailable: \(error.localizedDescription)")
+            vad = nil
+        }
+    } else {
+        log("Silero VAD disabled")
         vad = nil
     }
 
@@ -75,6 +80,7 @@ do {
         aligner: aligner,
         vad: vad,
         streamingModelName: modelURL.lastPathComponent,
+        activeModelID: YuwpModelSupport.publicModelID(for: config.modelSpec ?? YuwpModelSupport.defaultYuwpModelSpec() ?? modelURL.path),
         batchModelName: batchTranscriber?.modelDirectory.lastPathComponent,
         batchRetranscribeEnabled: config.batchRetranscribeEnabled,
         parentPID: config.parentPID

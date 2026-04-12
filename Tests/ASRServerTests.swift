@@ -7,7 +7,9 @@ import Testing
 /// Uses public-domain test fixtures — no personal voice recordings.
 ///
 /// Requires asr-server running on localhost:9748 (or port set via ASR_TEST_PORT env).
-/// Start the server before running:
+/// Start the server before running (canonical interface):
+///   .build/arm64-apple-macosx/release/asr-server --model <model-dir> --port 9748
+/// Legacy compatibility also still accepts:
 ///   .build/arm64-apple-macosx/release/asr-server <model-dir> --port 9748
 ///
 /// Run with: ASR_TEST=1 swift test --filter "ASR Server"
@@ -78,10 +80,6 @@ struct ASRServerTests {
         append("Content-Type: audio/wav\r\n\r\n")
         body.append(fileData)
         append("\r\n")
-
-        append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
-        append("gpt-4o-mini-transcribe\r\n")
 
         if let responseFormat {
             append("--\(boundary)\r\n")
@@ -587,6 +585,94 @@ struct StreamingSessionUnitTests {
 
         // Both empty
         #expect(StreamingSession.appendSegment("", "") == "")
+    }
+
+    @Test func stopBatchStrategyDefaultsToTrailingSegmentOnly() {
+        let strategy = StreamingSession.stopBatchStrategy(
+            config: StreamConfig(),
+            sessionAudioSampleCount: ASRAudio.sampleRate * 6,
+            activeAudioSampleCount: ASRAudio.sampleRate * 2,
+            committedText: "already committed",
+            hasSpeechInActiveSegment: true
+        )
+
+        #expect(strategy == .activeSegmentOnly)
+    }
+
+    @Test func stopBatchStrategySkipsSilentTrailingSegmentAfterCommit() {
+        let strategy = StreamingSession.stopBatchStrategy(
+            config: StreamConfig(),
+            sessionAudioSampleCount: ASRAudio.sampleRate * 8,
+            activeAudioSampleCount: ASRAudio.sampleRate * 2,
+            committedText: "already committed",
+            hasSpeechInActiveSegment: false
+        )
+
+        #expect(strategy == .none)
+    }
+
+    @Test func stopBatchStrategyAllowsFirstSegmentBatchWithoutSpeechFlag() {
+        let strategy = StreamingSession.stopBatchStrategy(
+            config: StreamConfig(),
+            sessionAudioSampleCount: ASRAudio.sampleRate * 2,
+            activeAudioSampleCount: ASRAudio.sampleRate * 2,
+            committedText: "",
+            hasSpeechInActiveSegment: false
+        )
+
+        #expect(strategy == .activeSegmentOnly)
+    }
+
+    @Test func stopBatchStrategyUsesSessionContextForShortTrailingSpeech() {
+        let strategy = StreamingSession.stopBatchStrategy(
+            config: StreamConfig(),
+            sessionAudioSampleCount: ASRAudio.sampleRate * 5,
+            activeAudioSampleCount: ASRAudio.sampleRate / 2,
+            committedText: "already committed",
+            hasSpeechInActiveSegment: true
+        )
+
+        #expect(strategy == .activeSegmentOnly)
+    }
+
+    @Test func stopBatchStrategyCanOptIntoFullSessionRetranscribe() {
+        let strategy = StreamingSession.stopBatchStrategy(
+            config: StreamConfig(finalizationPass: .fullSessionRetranscribe),
+            sessionAudioSampleCount: ASRAudio.sampleRate * 5,
+            activeAudioSampleCount: ASRAudio.sampleRate / 2,
+            committedText: "already committed",
+            hasSpeechInActiveSegment: false
+        )
+
+        #expect(strategy == .fullSession)
+    }
+
+    @Test func deriveActiveTextReturnsTailForExactCommittedPrefix() {
+        let active = StreamingSession.deriveActiveText(
+            fromSessionText: "hello committed tail words",
+            committedText: "hello committed"
+        )
+
+        #expect(active == "tail words")
+    }
+
+    @Test func deriveActiveTextReturnsNilWhenSessionContextRewritesCommittedPrefix() {
+        let active = StreamingSession.deriveActiveText(
+            fromSessionText: "We shouldn't say spawning have additional cost. Actually, I'm interested in. In some cases, should we just spawn a fork agent?",
+            committedText: "We shouldn't say spawning have additional cost. Actually, I'm interested in. In some cases, should we just spawn a fourth agent?"
+        )
+
+        #expect(active == nil)
+    }
+
+    @Test func deriveActiveTextRefusesToDuplicateCommittedPrefix() {
+        let duplicated = "This is actually great. It works. This is actually great. It works. New tail"
+        let active = StreamingSession.deriveActiveText(
+            fromSessionText: duplicated,
+            committedText: "This is actually great. It works."
+        )
+
+        #expect(active == nil)
     }
 }
 

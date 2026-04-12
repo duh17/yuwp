@@ -1,9 +1,9 @@
 import Foundation
 
-public let asrServerUsage = "Usage: asr-server <streaming-model-dir> [--batch-model <dir>] [--aligner-model <dir>] [--disable-batch-retranscribe] [--port 9748] [--host 127.0.0.1] [--parent-pid <pid>] [--warmup]"
+public let asrServerUsage = "Usage: asr-server [--model <path-or-repo-id>] [--batch-model <dir>] [--aligner-model <dir>] [--disable-vad] [--disable-batch-retranscribe] [--port 9748] [--host 127.0.0.1] [--parent-pid <pid>] [--warmup]"
 
 public struct ASRServerCLIConfiguration: Equatable {
-    public let modelPath: String
+    public let modelSpec: String?
     public let port: UInt16
     public let host: String
     public let parentPID: Int32?
@@ -11,18 +11,20 @@ public struct ASRServerCLIConfiguration: Equatable {
     public let batchModelPath: String?
     public let alignerModelPath: String?
     public let batchRetranscribeEnabled: Bool
+    public let vadEnabled: Bool
 
     public init(
-        modelPath: String,
+        modelSpec: String? = nil,
         port: UInt16 = 9748,
         host: String = "127.0.0.1",
         parentPID: Int32? = nil,
         warmup: Bool = false,
         batchModelPath: String? = nil,
         alignerModelPath: String? = nil,
-        batchRetranscribeEnabled: Bool = true
+        batchRetranscribeEnabled: Bool = true,
+        vadEnabled: Bool = true
     ) {
-        self.modelPath = modelPath
+        self.modelSpec = modelSpec?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.port = port
         self.host = host
         self.parentPID = parentPID
@@ -30,11 +32,11 @@ public struct ASRServerCLIConfiguration: Equatable {
         self.batchModelPath = batchModelPath
         self.alignerModelPath = alignerModelPath
         self.batchRetranscribeEnabled = batchRetranscribeEnabled
+        self.vadEnabled = vadEnabled
     }
 }
 
 public enum ASRServerCLIError: Error, Equatable {
-    case missingModelPath
     case missingValue(flag: String)
     case invalidPort(String)
     case invalidParentPID(String)
@@ -44,8 +46,6 @@ public enum ASRServerCLIError: Error, Equatable {
 extension ASRServerCLIError: LocalizedError {
     public var errorDescription: String? {
         switch self {
-        case .missingModelPath:
-            return asrServerUsage
         case .missingValue(let flag):
             return "\(flag) requires a value"
         case .invalidPort:
@@ -60,11 +60,12 @@ extension ASRServerCLIError: LocalizedError {
 
 public func parseASRServerCLI(arguments: [String]) throws -> ASRServerCLIConfiguration {
     var args = arguments
-    guard !args.isEmpty else {
-        throw ASRServerCLIError.missingModelPath
+    var legacyPositionalModelSpec: String?
+    if let first = args.first, !first.hasPrefix("-") {
+        legacyPositionalModelSpec = args.removeFirst()
     }
 
-    let modelPath = args.removeFirst()
+    var explicitModelSpec: String?
     var port: UInt16 = 9748
     var host = "127.0.0.1"
     var parentPID: Int32?
@@ -72,9 +73,13 @@ public func parseASRServerCLI(arguments: [String]) throws -> ASRServerCLIConfigu
     var batchModelPath: String?
     var alignerModelPath: String?
     var batchRetranscribeEnabled = true
+    var vadEnabled = true
 
     while !args.isEmpty {
         switch args.removeFirst() {
+        case "--model":
+            guard !args.isEmpty else { throw ASRServerCLIError.missingValue(flag: "--model") }
+            explicitModelSpec = args.removeFirst()
         case "--port":
             guard !args.isEmpty else { throw ASRServerCLIError.missingValue(flag: "--port") }
             let raw = args.removeFirst()
@@ -98,19 +103,24 @@ public func parseASRServerCLI(arguments: [String]) throws -> ASRServerCLIConfigu
             alignerModelPath = args.removeFirst()
         case "--disable-batch-retranscribe":
             batchRetranscribeEnabled = false
-        case let flag:
+        case "--disable-vad":
+            vadEnabled = false
+        case let flag where flag.hasPrefix("-"):
             throw ASRServerCLIError.unknownOption(flag)
+        case let value:
+            throw ASRServerCLIError.unknownOption(value)
         }
     }
 
     return ASRServerCLIConfiguration(
-        modelPath: modelPath,
+        modelSpec: explicitModelSpec ?? legacyPositionalModelSpec,
         port: port,
         host: host,
         parentPID: parentPID,
         warmup: warmup,
         batchModelPath: batchModelPath,
         alignerModelPath: alignerModelPath,
-        batchRetranscribeEnabled: batchRetranscribeEnabled
+        batchRetranscribeEnabled: batchRetranscribeEnabled,
+        vadEnabled: vadEnabled
     )
 }

@@ -5,7 +5,7 @@ import NativeASR
 
 @Suite("ASR server support")
 struct ASRServerSupportTests {
-    @Test func cliParserHandlesDefaultsAndFlags() throws {
+    @Test func cliParserHandlesLegacyPositionalModelAndFlags() throws {
         let config = try parseASRServerCLI(arguments: [
             "/models/qwen",
             "--port", "9999",
@@ -15,9 +15,10 @@ struct ASRServerSupportTests {
             "--batch-model", "/models/batch",
             "--aligner-model", "/models/aligner",
             "--disable-batch-retranscribe",
+            "--disable-vad",
         ])
 
-        #expect(config.modelPath == "/models/qwen")
+        #expect(config.modelSpec == "/models/qwen")
         #expect(config.port == 9999)
         #expect(config.host == "0.0.0.0")
         #expect(config.parentPID == 123)
@@ -25,11 +26,40 @@ struct ASRServerSupportTests {
         #expect(config.batchModelPath == "/models/batch")
         #expect(config.alignerModelPath == "/models/aligner")
         #expect(config.batchRetranscribeEnabled == false)
+        #expect(config.vadEnabled == false)
+    }
+
+    @Test func cliParserPrefersExplicitModelOverLegacyPositionalModel() throws {
+        let config = try parseASRServerCLI(arguments: [
+            "/models/legacy",
+            "--model", "/models/explicit",
+        ])
+
+        #expect(config.modelSpec == "/models/explicit")
+    }
+
+    @Test func cliParserAllowsNoExplicitModelForFallbackResolution() throws {
+        let config = try parseASRServerCLI(arguments: [
+            "--port", "9999",
+        ])
+
+        #expect(config.modelSpec == nil)
+        #expect(config.port == 9999)
+    }
+
+    @Test func cliParserUsesCanonicalModelFlagWithoutPositionalModel() throws {
+        let config = try parseASRServerCLI(arguments: [
+            "--model", "mlx-community/Qwen3-ASR-1.7B-bf16",
+            "--host", "0.0.0.0",
+        ])
+
+        #expect(config.modelSpec == "mlx-community/Qwen3-ASR-1.7B-bf16")
+        #expect(config.host == "0.0.0.0")
     }
 
     @Test func cliParserRejectsInvalidPort() {
         #expect(throws: ASRServerCLIError.invalidPort("wat")) {
-            try parseASRServerCLI(arguments: ["/models/qwen", "--port", "wat"])
+            try parseASRServerCLI(arguments: ["--model", "/models/qwen", "--port", "wat"])
         }
     }
 
@@ -80,6 +110,7 @@ struct ASRServerSupportTests {
 
         #expect(formatSRT(subtitles).contains("00:00:00,000 --> 00:00:00,800"))
         #expect(formatVTT(subtitles).hasPrefix("WEBVTT"))
+        #expect(formatLRC(subtitles).contains("[00:00.00]hello world"))
         #expect(normalizeLanguageCode(" English ") == "en")
         #expect(normalizeLanguageCode("pt_br") == "pt-BR")
 
@@ -128,7 +159,7 @@ struct ASRServerSupportTests {
 
         let multipart = makeMultipartRequest(
             fields: [
-                "response_format": "verbose_json",
+                "response_format": "json",
                 "language": "English",
                 "temperature": "0.25",
             ],
@@ -148,6 +179,7 @@ struct ASRServerSupportTests {
             aligner: nil,
             vad: nil,
             streamingModelName: "stream",
+            activeModelID: "qwen3-asr-0.6b",
             batchModelName: nil,
             batchRetranscribeEnabled: true,
             loadAudio: { _ in Array(repeating: 0, count: 16_000) }
@@ -162,6 +194,40 @@ struct ASRServerSupportTests {
         #expect(manager.transcribeCallCount == 1)
         #expect(manager.lastTemperature == 0.25)
         #expect(manager.lastLanguage == "English")
+    }
+
+    @Test func batchRouteRejectsUnsupportedModel() throws {
+        let manager = FakeManager()
+        let multipart = makeMultipartRequest(
+            fields: [
+                "model": "whisper-1",
+            ],
+            fileName: "clip.wav",
+            fileContentType: "audio/wav",
+            fileData: Data([0x00])
+        )
+        let request = HTTPRequest(
+            method: "POST",
+            path: "/v1/audio/transcriptions",
+            headers: ["content-type": multipart.contentType],
+            body: multipart.body
+        )
+        let context = ASRRouteContext(
+            manager: manager,
+            aligner: nil,
+            vad: nil,
+            streamingModelName: "stream",
+            activeModelID: "qwen3-asr-0.6b",
+            batchModelName: nil,
+            batchRetranscribeEnabled: true,
+            loadAudio: { _ in [] }
+        )
+
+        let response = routeRequest(request, context: context)
+        let json = try #require(try JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        let error = try #require(json["error"] as? [String: Any])
+        #expect(response.status == 400)
+        #expect(error["param"] as? String == "model")
     }
 
     @Test func streamRoutesDelegateToManager() throws {
@@ -194,6 +260,46 @@ struct ASRServerSupportTests {
         #expect(stop.status == 200)
         #expect(stopJSON["text"] as? String == "final")
         #expect(manager.lastStoppedSessionID == "abc123")
+    }
+
+    @Test func batchRouteFallsBackToLowEnergyChunksWithoutVAD() throws {
+        let manager = FakeManager()
+        manager.transcribeResult = TranscriptionResult(
+            text: "chunk",
+            language: "English",
+            audioDuration: ASRServerLimits.maxChunkSec,
+            processingTime: 0.1
+        )
+
+        let multipart = makeMultipartRequest(
+            fields: [:],
+            fileName: "long.wav",
+            fileContentType: "audio/wav",
+            fileData: Data([0x00, 0x01])
+        )
+        let request = HTTPRequest(
+            method: "POST",
+            path: "/v1/audio/transcriptions",
+            headers: ["content-type": multipart.contentType],
+            body: multipart.body
+        )
+
+        let totalSamples = Int((ASRServerLimits.maxChunkSec * 2 + 1) * Double(ASRAudio.sampleRate))
+        let context = ASRRouteContext(
+            manager: manager,
+            aligner: nil,
+            vad: nil,
+            streamingModelName: "stream",
+            batchModelName: nil,
+            batchRetranscribeEnabled: true,
+            loadAudio: { _ in Array(repeating: 0, count: totalSamples) }
+        )
+
+        let response = routeRequest(request, context: context)
+        let json = try #require(try JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        #expect(response.status == 200)
+        #expect(json["text"] as? String == "chunk chunk chunk")
+        #expect(manager.transcribeCallCount == 3)
     }
 
     @Test func splitTextProportionallyProducesTrimmedBalancedChunks() {
@@ -233,6 +339,13 @@ private final class FakeManager: ASRServing, @unchecked Sendable {
     }
 
     func transcribeAudio(audio: [Float], language: String?, temperature: Float) throws -> TranscriptionResult {
+        transcribeCallCount += 1
+        lastLanguage = language
+        lastTemperature = temperature
+        return transcribeResult
+    }
+
+    func transcribeChunk(audio: [Float], language: String?, temperature: Float) throws -> TranscriptionResult {
         transcribeCallCount += 1
         lastLanguage = language
         lastTemperature = temperature

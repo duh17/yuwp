@@ -284,7 +284,7 @@ final class StreamingSessionManager: @unchecked Sendable {
         var response: [String: Any] = [
             "text": session.finalText(),
             "committed_text": session.committedSegmentText(),
-            "active_text": session.activeSegmentText(),
+            "active_text": isFinal ? "" : session.activeSegmentText(),
             "update_kind": kind,
             "is_final": isFinal,
         ]
@@ -303,7 +303,7 @@ final class StreamingSessionManager: @unchecked Sendable {
         inferenceLock.lock()
         defer { inferenceLock.unlock() }
 
-        if audioDuration <= ASRServerLimits.longAudioChunkThresholdSec {
+        if audioDuration <= ASRServerLimits.maxChunkSec {
             return try transcriber.transcribe(audio: audio, language: language, temperature: temperature)
         }
 
@@ -316,6 +316,17 @@ final class StreamingSessionManager: @unchecked Sendable {
         )
     }
 
+    func transcribeChunk(
+        audio: [Float],
+        language: String? = nil,
+        temperature: Float = 0.0
+    ) throws -> TranscriptionResult {
+        let transcriber = batchTranscriber ?? self.transcriber
+        inferenceLock.lock()
+        defer { inferenceLock.unlock() }
+        return try transcriber.transcribe(audio: audio, language: language, temperature: temperature)
+    }
+
     private func transcribeLongAudioLocked(
         audio: [Float],
         language: String?,
@@ -324,25 +335,24 @@ final class StreamingSessionManager: @unchecked Sendable {
         audioDuration: Double
     ) throws -> TranscriptionResult {
         let startedAt = Date()
-        let chunkSamples = Int(ASRServerLimits.longAudioChunkSec * Double(ASRAudio.sampleRate))
-        let totalChunks = (audio.count + chunkSamples - 1) / chunkSamples
+        let chunks = chunkAudioByEnergy(
+            audio,
+            sampleRate: ASRAudio.sampleRate,
+            config: EnergyChunkingConfig(maxChunkDuration: ASRServerLimits.maxChunkSec)
+        )
         var texts: [String] = []
         var detectedLanguage: String?
-        var offset = 0
 
         log(
             "Long batch transcription: \(String(format: "%.1f", audioDuration))s "
-                + "audio -> \(totalChunks) fixed chunks of \(Int(ASRServerLimits.longAudioChunkSec))s"
+                + "audio -> \(chunks.count) low-energy chunks"
         )
 
-        while offset < audio.count {
-            let end = min(offset + chunkSamples, audio.count)
-            let chunk = Array(audio[offset..<end])
-            let result = try transcriber.transcribe(audio: chunk, language: language, temperature: temperature)
+        for chunk in chunks {
+            let result = try transcriber.transcribe(audio: chunk.audio, language: language, temperature: temperature)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty { texts.append(text) }
             if detectedLanguage == nil { detectedLanguage = result.language }
-            offset = end
         }
 
         return TranscriptionResult(
@@ -512,6 +522,7 @@ func startServer(
     aligner: ForcedAligner?,
     vad: SileroVAD?,
     streamingModelName: String,
+    activeModelID: String?,
     batchModelName: String?,
     batchRetranscribeEnabled: Bool,
     parentPID: Int32?
@@ -546,6 +557,7 @@ func startServer(
         aligner: aligner,
         vad: vad,
         streamingModelName: streamingModelName,
+        activeModelID: activeModelID,
         batchModelName: batchModelName,
         batchRetranscribeEnabled: batchRetranscribeEnabled,
         loadAudio: loadAudioFile,

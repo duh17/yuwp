@@ -4,8 +4,14 @@ import PackageDescription
 let package = Package(
     name: "Yuwp",
     platforms: [.macOS(.v14)],
+    products: [
+        .executable(name: "yuwp-asr", targets: ["yuwp_asr"]),
+    ],
     dependencies: [
-        .package(url: "https://github.com/ml-explore/mlx-swift", branch: "main"),
+        .package(
+            url: "https://github.com/ml-explore/mlx-swift",
+            revision: "3b11207d4870fc2b703fc6c7931741aa196ec914"
+        ),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.8.0"),
     ],
     targets: [
@@ -15,7 +21,7 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources",
-            exclude: ["NativeASR", "ASRServerSupport", "asr-test", "asr-bench", "asr-stream-test", "asr-server", "align-test"]
+            exclude: ["NativeASR", "ASRServerSupport", "asr-test", "asr-bench", "asr-stream-test", "asr-server", "yuwp-asr", "yuwp-transcribe", "align-test"]
         ),
         .target(
             name: "NativeASR",
@@ -55,6 +61,16 @@ let package = Package(
             name: "asr-server",
             dependencies: ["NativeASR", "ASRServerSupport"],
             path: "Sources/asr-server"
+        ),
+        .executableTarget(
+            name: "yuwp_asr",
+            dependencies: ["NativeASR", "ASRServerSupport"],
+            path: "Sources/yuwp-asr"
+        ),
+        .executableTarget(
+            name: "yuwp-transcribe",
+            dependencies: ["NativeASR"],
+            path: "Sources/yuwp-transcribe"
         ),
         .executableTarget(
             name: "align-test",

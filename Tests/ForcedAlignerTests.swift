@@ -209,7 +209,7 @@ struct ForcedAlignerIntegrationTests {
 
 @Suite("Subtitle Endpoint", .tags(.integration),
        .enabled(if: ProcessInfo.processInfo.environment["ASR_TEST"] != nil,
-               "Set ASR_TEST=1 with asr-server running (with --aligner-model) on :9748"))
+               "Set ASR_TEST=1 with asr-server running (canonical: --model <dir>; optional --aligner-model) on :9748"))
 struct SubtitleEndpointTests {
     let host: String
     let port: String

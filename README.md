@@ -97,33 +97,123 @@ Both presets use the same model for streaming and the final accuracy pass.
 
 Models are only downloaded after explicit user action from Settings. Yuwp never starts a model download on launch by itself.
 
-## Standalone ASR Server
+## Standalone CLI Transcription
 
-The ASR server can run independently for streaming dictation, OpenAI-style batch transcription, and subtitle generation:
+Canonical CLI:
 
 ```bash
-swift build -c release --product asr-server
-.build/arm64-apple-macosx/release/asr-server <streaming-model-dir> \
+swift build -c release --product yuwp-asr
+bash scripts/build_mlx_metallib.sh release
+
+.build/arm64-apple-macosx/release/yuwp-asr transcribe sample.m4a \
+  [--model /path/to/model-dir] \
+  [--format text|json|srt|vtt] \
+  [--output out.txt]
+```
+
+Legacy compatibility:
+
+```bash
+swift build -c release --product yuwp-transcribe
+.build/arm64-apple-macosx/release/yuwp-transcribe sample.m4a [options]
+```
+
+Notes:
+- if `--model` is omitted, the CLI uses Yuwp's saved transcription model, then falls back to the built-in default model spec
+- `json` includes `text`, `language`, `duration`, and `segments` when the forced aligner is available locally
+- `srt` and `vtt` require the default forced aligner model to be present locally
+- the CLI accepts any audio format `AVAudioFile` can decode (`wav`, `m4a`, `mp3`, etc.) and resamples to 16kHz mono internally
+- if you move the binary out of `.build/.../release/`, move `mlx.metallib` with it too
+
+Examples:
+
+```bash
+# Plain transcript using Yuwp's saved model
+.build/arm64-apple-macosx/release/yuwp-asr transcribe note.m4a
+
+# Explicit model path
+.build/arm64-apple-macosx/release/yuwp-asr transcribe note.m4a \
+  --model ~/models/Qwen3-ASR-0.6B-4bit
+
+# Rich JSON
+.build/arm64-apple-macosx/release/yuwp-asr transcribe note.m4a \
+  --format json
+
+# Timed subtitles
+.build/arm64-apple-macosx/release/yuwp-asr transcribe note.m4a \
+  --format srt \
+  --output note.srt
+```
+
+### CLI benchmark comparison
+
+```bash
+uv run scripts/benchmark.py \
+  --audio ~/workspace/qwen-asr/samples/jfk.wav \
+  --audio /tmp/yuwp-subtitle-bench/video-4m.m4a \
+  --audio /tmp/yuwp-subtitle-bench/video-32k.m4a \
+  --tool yuwp \
+  --tool mlx-audio \
+  --tool qwen-asr \
+  --qwen-args '-S 30 -W 3'
+```
+
+Measured on an **Apple M3 Ultra**.
+
+- **Yuwp**: `asr-server` batch endpoint
+- **mlx-audio**: load-once Python batch reference
+- **qwen_asr**: normal mode for short audio, segmented mode (`-S 30 -W 3`) for medium and long audio
+
+### Offline Mode
+
+| Setup | Audio | Yuwp (`wall`, realtime) | mlx-audio (`wall`, realtime) | qwen_asr (`wall`, realtime) |
+|-------|-------|--------------------------|-------------------------------|------------------------------|
+| `jfk.wav` | `11.0s` | `0.181s`, `60.78x` | `0.643s`, `17.11x` | `1.089s`, `10.10x` |
+| `video-4m.m4a` | `240.0s` | `6.179s`, `38.84x` | `25.158s`, `9.54x` | `26.703s`, `8.99x` |
+| `video-32k.m4a` | `3526.0s` | `80.009s`, `44.07x` | `76.642s*`, `46.01x*` | `384.467s`, `9.17x` |
+| **weighted total** | **`3777.0s`** | **`86.369s`, `43.73x`** | **`102.443s*`, `36.87x*`** | **`412.260s`, `9.16x`** |
+
+`*` On `video-32k.m4a`, `mlx-audio` returned a much shorter transcript (`39,424` chars) than Yuwp (`68,315`) and `qwen_asr` (`68,411`). The tail also ended early instead of reaching the episode outro. Treat that row as incomplete output, not a clean full-transcript win.
+
+## Standalone ASR Server
+
+Canonical CLI:
+
+```bash
+swift build -c release --product yuwp-asr
+.build/arm64-apple-macosx/release/yuwp-asr serve \
+  [--model /path/to/model-dir-or-repo-id] \
   [--batch-model <dir>] \
   [--aligner-model <dir>] \
+  [--disable-vad] \
   [--disable-batch-retranscribe] \
   [--port 9748] \
   [--host 127.0.0.1] \
   [--warmup]
 ```
 
+Legacy compatibility:
+
+```bash
+swift build -c release --product asr-server
+.build/arm64-apple-macosx/release/asr-server [--model /path/to/model-dir-or-repo-id] [other options]
+.build/arm64-apple-macosx/release/asr-server <streaming-model-dir> [other options]
+```
+
+Treat the positional model arg as legacy compatibility only. `--model` is the canonical flag vocabulary across `yuwp-asr serve`, `yuwp-asr transcribe`, `asr-server`, and `yuwp-transcribe`.
+
 Use `--host 0.0.0.0` only when you explicitly want LAN clients to connect.
 
-Pass `--aligner-model` to enable `/v1/audio/subtitles`. In the menu bar app, Yuwp will also auto-load the default aligner model from the local Hugging Face cache when it is already present.
+If `--model` is omitted, local tooling should resolve the model from Yuwp's saved app config first, then the built-in default model spec. Timed `json` / `srt` / `vtt` output uses the default aligner model automatically when it is already present locally. Pass `--aligner-model` only to override it.
 
 ### HTTP API
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/v1/info` | Model info and server status (`aligner` / `vad` included) |
-| `POST` | `/v1/audio/transcriptions` | OpenAI-compatible batch transcription (multipart upload) |
+| `POST` | `/v1/audio/transcriptions` | OpenAI-style batch transcription (`text`, `json`, `srt`, `vtt`) |
 | `POST` | `/audio/transcriptions` | Alias for `/v1/audio/transcriptions` |
-| `POST` | `/v1/audio/subtitles` | Subtitle generation / forced alignment |
+| `POST` | `/v1/audio/subtitles` | Deprecated legacy subtitle alias |
 | `POST` | `/v1/audio/transcriptions/stream` | Create a new streaming session |
 | `POST` | `/v1/audio/transcriptions/stream/:id` | Feed audio chunk (raw 16kHz mono s16le PCM) |
 | `DELETE` | `/v1/audio/transcriptions/stream/:id` | Stop session, returns final transcription |
@@ -146,31 +236,15 @@ curl -s -X DELETE http://localhost:9748/v1/audio/transcriptions/stream/$ID
 ```bash
 curl http://localhost:9748/v1/audio/transcriptions \
   -F file=@audio.m4a \
-  -F model=qwen3-asr \
-  -F response_format=verbose_json
+  -F model=qwen3-asr-0.6b \
+  -F response_format=json
 ```
 
 Supported `response_format` values:
-- `json`
 - `text`
-- `verbose_json`
-
-#### Subtitles / forced alignment
-
-```bash
-curl http://localhost:9748/v1/audio/subtitles \
-  -F file=@audio.m4a \
-  -F response_format=srt
-```
-
-If you already have a transcript, pass it as `text` and the server will align that text instead of retranscribing.
-
-```bash
-curl http://localhost:9748/v1/audio/subtitles \
-  -F file=@audio.m4a \
-  -F text="existing transcript goes here" \
-  -F response_format=json
-```
+- `json`
+- `srt`
+- `vtt`
 
 Example JSON response:
 
@@ -185,31 +259,17 @@ Example JSON response:
 }
 ```
 
-Supported subtitle `response_format` values:
-- `srt`
-- `vtt`
-- `json` → object with `text`, `language`, `duration`, `segments`
-- `text` (transcript only)
-
-Tune subtitle grouping with:
-- `max_words_per_line` (default `8`)
-- `max_duration` (default `5.0` seconds)
-- `pause_threshold` (default `0.5` seconds)
+`json` includes `segments` when the aligner is loaded. `srt` and `vtt` require the aligner.
 
 #### Long-audio behavior
 
-The server keeps the streaming path unchanged. Long-file logic only applies to batch endpoints.
+The server keeps the streaming path unchanged. Batch endpoints share the same chunking behavior:
 
-- `/v1/audio/transcriptions`
-  - short files: single pass
-  - audio over `10 min`: chunked on the server
-  - when built-in Silero VAD is available, long audio is split on silence
-  - if VAD is unavailable, the server falls back to fixed `120s` chunks
-- `/v1/audio/subtitles`
-  - requires `--aligner-model`
-  - short files: single pass align/transcribe + align
-  - audio over `4 min`: chunked with built-in Silero VAD when available
-  - if VAD is unavailable, the simple non-chunked subtitle path is limited to `10 min`
+- when built-in Silero VAD is available, audio is chunked on speech/silence boundaries
+- otherwise, the server falls back to low-energy chunking, following the same basic strategy used by `mlx-audio`
+- chunking still targets roughly `120s` max chunks, but cuts move to local low-energy boundaries instead of hard time splits
+- short files naturally stay as a single chunk
+- timed `json` / `srt` / `vtt` output requires the aligner
 
 Other batch limits and notes:
 - request body limit: `100 MB`
@@ -219,18 +279,41 @@ Other batch limits and notes:
 
 ## Benchmarking
 
+Use one composable benchmark CLI:
+
 ```bash
-# Native server concurrency benchmark (requires asr-server to be built)
-uv run scripts/bench-native-asr.py --help
+# Show all flags
+uv run scripts/benchmark.py --help
 
-# Model comparison benchmark
-uv run scripts/bench-models.py --help
+# Compare Yuwp server vs mlx-audio on one long file
+uv run scripts/benchmark.py \
+  --audio /tmp/yuwp-subtitle-bench/video-32k.m4a \
+  --tool yuwp \
+  --tool mlx-audio \
+  --compare-text
 
-# Subtitle stress harness for a sample set
-uv run scripts/bench-subtitles.py --help
+# Compare Yuwp VAD vs low-energy fallback on the same audio
+uv run scripts/benchmark.py \
+  --audio /tmp/yuwp-subtitle-bench/video-32k.m4a \
+  --tool yuwp \
+  --yuwp-chunking vad \
+  --yuwp-chunking energy \
+  --compare-text
+
+# Compare several files and tools explicitly
+uv run scripts/benchmark.py \
+  --audio ~/workspace/qwen-asr/samples/jfk.wav \
+  --audio /tmp/yuwp-subtitle-bench/video-4m.m4a \
+  --audio /tmp/yuwp-subtitle-bench/video-32k.m4a \
+  --tool yuwp \
+  --tool mlx-audio \
+  --tool qwen-asr \
+  --qwen-args '-S 30 -W 3' \
+  --compare-text \
+  --json /tmp/asr-benchmark.json
 ```
 
-`scripts/bench-subtitles.py` runs `/v1/audio/subtitles` across a manifest of local sample files, saves raw subtitle JSON per sample, and writes a summary JSON with timing, subtitle counts, gap/overlap checks, and approximate realtime factor. Start from `scripts/bench-subtitles.example.json` and swap in your own files.
+The benchmark script is batch-transcription focused. It expands the explicit cross-product you ask for: audio files × tools × model variants × chunking modes × repeats.
 
 ## Silence Handling
 
@@ -262,7 +345,11 @@ Sources/
     SileroVAD.swift         # CoreML VAD chunking for long batch jobs
     Resources/              # Bundled Silero VAD CoreML model
   asr-server/
-    main.swift              # Native HTTP streaming + batch + subtitle server
+    main.swift              # Legacy compatibility server entrypoint
+  yuwp-asr/
+    main.swift              # Canonical CLI: `serve` + `transcribe`
+  yuwp-transcribe/
+    main.swift              # Legacy compatibility wrapper for `yuwp-asr transcribe`
   asr-stream-test/
     main.swift              # Replay WAVs through streaming + batch, emit quality metrics
   align-test/
@@ -278,9 +365,7 @@ Tests/
 scripts/
   build.sh                  # Build + stable codesign
   run.sh                    # Build + launch as .app bundle
-  bench-models.py           # ASR model benchmarking
-  bench-native-asr.py       # Native server concurrency benchmarking
-  bench-subtitles.py        # Subtitle stress harness for local samples
+  benchmark.py              # Composable batch transcription benchmark CLI
   validate-native-asr.py    # Golden transcript validation
 ```
 
@@ -302,7 +387,11 @@ See [AGENTS.md](AGENTS.md) for architecture details, protocol specs, and coding 
 - [mlx-swift](https://github.com/ml-explore/mlx-swift) — Swift bindings for MLX
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) — speech recognition model by the Qwen team at Alibaba
 - [qwen-asr](https://github.com/antirez/qwen-asr) — streaming ASR reference with sliding window KV cache optimizations
+- [Silero VAD](https://github.com/snakers4/silero-vad) — original VAD model by the Silero Team; the bundled CoreML model in this repo is derived from [FluidInference/silero-vad-coreml](https://huggingface.co/FluidInference/silero-vad-coreml)
 
 ## License
 
 [MIT](LICENSE)
+
+Third-party model/resource acknowledgments:
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
