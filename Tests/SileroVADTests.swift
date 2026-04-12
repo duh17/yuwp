@@ -73,4 +73,26 @@ struct SileroVADTests {
             #expect(abs(chunks[i].startTime - chunks[i - 1].endTime) < 0.001)
         }
     }
+
+    @Test func energyChunkingSplitsNearSilenceAroundTargetBoundary() throws {
+        let speech = Array(try loadFixtureAudio("jfk.wav").prefix(SileroVAD.sampleRate * 4))
+        let speechBed = Array(repeating: speech, count: 29).flatMap { $0 }
+        let silence = [Float](repeating: 0, count: SileroVAD.sampleRate * 4)
+        let tail = Array(try loadFixtureAudio("jfk.wav").prefix(SileroVAD.sampleRate * 10))
+        let audio = speechBed + silence + tail
+
+        let chunks = chunkAudioByEnergy(audio, sampleRate: SileroVAD.sampleRate, config: EnergyChunkingConfig(
+            maxChunkDuration: 120.0,
+            minChunkDuration: 1.0,
+            searchExpandDuration: 5.0,
+            energyWindowDuration: 0.1,
+            minProgressDuration: 1.0
+        ))
+
+        #expect(chunks.count == 2,
+                Comment(rawValue: "Expected two chunks from low-energy split, got \(chunks.count)"))
+        let boundary = try #require(chunks.first?.endTime)
+        #expect(boundary > 114.0 && boundary < 123.0,
+                Comment(rawValue: "Expected low-energy boundary near the silence gap, got \(boundary)"))
+    }
 }

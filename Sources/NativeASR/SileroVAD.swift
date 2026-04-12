@@ -3,8 +3,11 @@ import Foundation
 
 /// Tiny CoreML wrapper for the Silero VAD v6 model.
 ///
-/// Vendored and adapted from paean-ai/silero-vad-swift (MIT), trimmed to the
-/// minimum surface we need for server-side long-audio chunking.
+/// `SileroVAD.swift` is local Yuwp code. The bundled
+/// `Sources/NativeASR/Resources/silero_vad.mlmodelc` resource is derived from
+/// FluidInference's `silero-vad-coreml` CoreML conversion (MIT), which in turn
+/// is based on the original `snakers4/silero-vad` model (MIT).
+/// See `THIRD_PARTY_NOTICES.md` for the acknowledgement trail we keep in-repo.
 public final class SileroVAD: @unchecked Sendable {
     public static let sampleRate = 16_000
     public static let chunkSize = 576   // 36 ms at 16 kHz
@@ -90,7 +93,7 @@ public enum SileroVADError: LocalizedError {
     }
 }
 
-public struct VADAudioChunk: Sendable {
+public struct AudioChunk: Sendable {
     public let audio: [Float]
     public let startTime: Double
     public let endTime: Double
@@ -103,6 +106,8 @@ public struct VADAudioChunk: Sendable {
 
     public var duration: Double { endTime - startTime }
 }
+
+public typealias VADAudioChunk = AudioChunk
 
 public struct VADChunkingConfig: Sendable {
     public let threshold: Float
@@ -133,6 +138,100 @@ public struct VADChunkingConfig: Sendable {
         self.maxChunkDuration = maxChunkDuration
         self.minChunkDuration = minChunkDuration
     }
+}
+
+public struct EnergyChunkingConfig: Sendable {
+    public let maxChunkDuration: Double
+    public let minChunkDuration: Double
+    public let searchExpandDuration: Double
+    public let energyWindowDuration: Double
+    public let minProgressDuration: Double
+
+    public init(
+        maxChunkDuration: Double = 1200.0,
+        minChunkDuration: Double = 1.0,
+        searchExpandDuration: Double = 5.0,
+        energyWindowDuration: Double = 0.1,
+        minProgressDuration: Double = 1.0
+    ) {
+        self.maxChunkDuration = maxChunkDuration
+        self.minChunkDuration = minChunkDuration
+        self.searchExpandDuration = searchExpandDuration
+        self.energyWindowDuration = energyWindowDuration
+        self.minProgressDuration = minProgressDuration
+    }
+}
+
+public func chunkAudioByEnergy(
+    _ audio: [Float],
+    sampleRate: Int = SileroVAD.sampleRate,
+    config: EnergyChunkingConfig = EnergyChunkingConfig()
+) -> [AudioChunk] {
+    let audioDuration = Double(audio.count) / Double(sampleRate)
+    if audio.isEmpty || audioDuration <= config.maxChunkDuration {
+        return [AudioChunk(audio: audio, startTime: 0, endTime: audioDuration)]
+    }
+
+    let totalSamples = audio.count
+    let maxChunkSamples = Int(config.maxChunkDuration * Double(sampleRate))
+    let searchSamples = Int(config.searchExpandDuration * Double(sampleRate))
+    let energyWindowSamples = max(1, Int(config.energyWindowDuration * Double(sampleRate)))
+    let minProgressSamples = max(1, Int(config.minProgressDuration * Double(sampleRate)))
+
+    var chunks: [AudioChunk] = []
+    var startSample = 0
+
+    while startSample < totalSamples {
+        let endSample = min(startSample + maxChunkSamples, totalSamples)
+        if endSample >= totalSamples {
+            chunks.append(AudioChunk(
+                audio: Array(audio[startSample ..< totalSamples]),
+                startTime: Double(startSample) / Double(sampleRate),
+                endTime: Double(totalSamples) / Double(sampleRate)
+            ))
+            break
+        }
+
+        let searchStart = max(startSample, endSample - searchSamples)
+        let searchEnd = min(totalSamples, endSample + searchSamples)
+        let searchRegion = Array(audio[searchStart ..< searchEnd])
+
+        var cutSample = endSample
+        if searchRegion.count > energyWindowSamples {
+            var prefix = [Double](repeating: 0, count: searchRegion.count + 1)
+            for (index, sample) in searchRegion.enumerated() {
+                let value = Double(sample)
+                prefix[index + 1] = prefix[index] + value * value
+            }
+
+            var bestIndex = 0
+            var bestEnergy = Double.greatestFiniteMagnitude
+            let limit = searchRegion.count - energyWindowSamples
+            if limit >= 0 {
+                for windowStart in 0 ... limit {
+                    let windowEnd = windowStart + energyWindowSamples
+                    let energy = (prefix[windowEnd] - prefix[windowStart]) / Double(energyWindowSamples)
+                    if energy < bestEnergy {
+                        bestEnergy = energy
+                        bestIndex = windowStart
+                    }
+                }
+                cutSample = searchStart + bestIndex + energyWindowSamples / 2
+            }
+        }
+
+        cutSample = max(cutSample, startSample + minProgressSamples)
+        cutSample = min(cutSample, totalSamples)
+
+        chunks.append(AudioChunk(
+            audio: Array(audio[startSample ..< cutSample]),
+            startTime: Double(startSample) / Double(sampleRate),
+            endTime: Double(cutSample) / Double(sampleRate)
+        ))
+        startSample = cutSample
+    }
+
+    return chunks
 }
 
 private struct VADSpeechSpan {

@@ -11,6 +11,8 @@ cd "$(dirname "$0")/.."
 
 CONFIGURATION="release"
 : "${YUWP_INTERNAL_DIAGNOSTICS:=1}"
+: "${YUWP_ALLOW_STALE_METALLIB:=1}"
+export YUWP_INTERNAL_DIAGNOSTICS YUWP_ALLOW_STALE_METALLIB
 APP="/Applications/Yuwp.app"
 MACOS_DIR="$APP/Contents/MacOS"
 RES_DIR="$APP/Contents/Resources"
@@ -36,6 +38,7 @@ else
 fi
 
 echo "[yuwp] Internal diagnostics env: $YUWP_INTERNAL_DIAGNOSTICS"
+echo "[yuwp] Allow stale metallib: $YUWP_ALLOW_STALE_METALLIB"
 bash scripts/build.sh "$CONFIGURATION"
 
 # Kill old app binary if it is already running so we don't leave a stale copy alive.
