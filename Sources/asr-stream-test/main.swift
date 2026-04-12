@@ -19,6 +19,7 @@ private struct ToolConfig: Codable {
     let warmup: Bool
     let batchBaselineEnabled: Bool
     let batchRetranscribeEnabled: Bool
+    let finalizationPass: String
 }
 
 private struct TimingBreakdown: Codable {
@@ -60,6 +61,7 @@ private struct SpeechActivity {
 
 private struct StreamingReport: Codable {
     let elapsedSec: Double
+    let finalizationSec: Double
     let chunkCount: Int
     let segmentCommitCount: Int
     let firstSpeechChunk: Int?
@@ -130,6 +132,7 @@ private struct ParsedArgs {
     let warmup: Bool
     let doBatch: Bool
     let doBatchRetranscribe: Bool
+    let finalizationPass: FinalizationPass
     let emitJSON: Bool
     let compactJSON: Bool
     let jsonOutputPath: String?
@@ -164,6 +167,7 @@ private func printUsage() {
           --warmup                Warm up Metal shaders before streaming
           --no-batch              Skip batch baseline comparison
           --no-batch-retranscribe Disable the streaming segment batch-correction pass
+          --full-session-retranscribe Opt into full-session batch on stop (legacy A/B mode)
           --json                  Emit pretty JSON to stdout
           --compact               Emit compact JSON to stdout
           --json-output <path>    Write JSON report to a file
@@ -195,6 +199,7 @@ private func parseArgs() -> ParsedArgs {
     var warmup = false
     var doBatch = true
     var doBatchRetranscribe = true
+    var finalizationPass: FinalizationPass = .activeSegmentOnly
     var emitJSON = false
     var compactJSON = false
     var jsonOutputPath: String?
@@ -220,6 +225,8 @@ private func parseArgs() -> ParsedArgs {
             doBatch = false
         case "--no-batch-retranscribe":
             doBatchRetranscribe = false
+        case "--full-session-retranscribe":
+            finalizationPass = .fullSessionRetranscribe
         case "--json":
             emitJSON = true
         case "--compact":
@@ -261,6 +268,7 @@ private func parseArgs() -> ParsedArgs {
         warmup: warmup,
         doBatch: doBatch,
         doBatchRetranscribe: doBatchRetranscribe,
+        finalizationPass: finalizationPass,
         emitJSON: emitJSON,
         compactJSON: compactJSON,
         jsonOutputPath: jsonOutputPath
@@ -537,7 +545,11 @@ private func runMain() throws {
     let audioDurationText = fmt(audioDuration, "%.2f")
     fputs("[stream-test] Audio: \(audioDurationText)s, \(audio.count) samples\n", stderr)
 
-    let config = StreamConfig(chunkSec: parsed.chunkSec, batchRetranscribe: parsed.doBatchRetranscribe)
+    let config = StreamConfig(
+        chunkSec: parsed.chunkSec,
+        batchRetranscribe: parsed.doBatchRetranscribe,
+        finalizationPass: parsed.finalizationPass
+    )
     let session = StreamingSession(transcriber: transcriber, config: config)
     let memBefore = MLX.Memory.activeMemory
     let steadyChunkSize = Int(parsed.chunkSec * Double(ASRAudio.sampleRate))
@@ -684,7 +696,9 @@ private func runMain() throws {
     }
 
     let preFinalizeText = session.finalText()
+    let finalizeT0 = Date()
     let finalText = session.finalize()
+    let finalizationSec = Date().timeIntervalSince(finalizeT0)
     let streamTime = Date().timeIntervalSince(streamT0)
     let streamTimeText = fmt(streamTime, "%.2f")
     let memAfter = MLX.Memory.activeMemory
@@ -699,6 +713,7 @@ private func runMain() throws {
 
     let streaming = StreamingReport(
         elapsedSec: streamTime,
+        finalizationSec: finalizationSec,
         chunkCount: chunkNum,
         segmentCommitCount: segmentCommitCount,
         firstSpeechChunk: firstSpeechChunk,
@@ -726,6 +741,7 @@ private func runMain() throws {
         chunks: chunkTraces
     )
 
+    let finalizationText = fmt(finalizationSec, "%.2f")
     fputs("\n[stream-test] Streaming done in \(streamTimeText)s\n", stderr)
     fputs("[stream-test] Memory: active=\(streaming.memory.activeMB)MB peak=\(streaming.memory.peakMB)MB delta=\(streaming.memory.deltaMB)MB\n", stderr)
     fputs("[stream-test] Pre-finalize: \"\(preFinalizeText)\"\n", stderr)
@@ -817,7 +833,7 @@ private func runMain() throws {
         stderr
     )
     fputs(
-        "[stream-test] Finalization added: \(finalizationAddedChars) chars, \(finalizationAddedWords) words\n",
+        "[stream-test] Finalization added: \(finalizationAddedChars) chars, \(finalizationAddedWords) words in \(finalizationText)s\n",
         stderr
     )
 
@@ -828,7 +844,8 @@ private func runMain() throws {
             chunkSec: parsed.chunkSec,
             warmup: parsed.warmup,
             batchBaselineEnabled: parsed.doBatch,
-            batchRetranscribeEnabled: parsed.doBatchRetranscribe
+            batchRetranscribeEnabled: parsed.doBatchRetranscribe,
+            finalizationPass: parsed.finalizationPass.rawValue
         ),
         streaming: streaming,
         batch: batch,

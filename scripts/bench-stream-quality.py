@@ -94,6 +94,11 @@ def parse_args() -> argparse.Namespace:
         default="fast",
         help="Benchmark suite to run (default: fast)",
     )
+    parser.add_argument(
+        "--full-session-retranscribe",
+        action="store_true",
+        help="Opt into legacy full-session batch finalization on stop",
+    )
     return parser.parse_args()
 
 
@@ -212,6 +217,8 @@ def main() -> int:
         audio_path = materialize_audio(input_path, cache_dir)
         json_path = out_dir / f"{source}-{input_path.stem}.json"
         cmd = [str(bin_path), str(audio_path), "--compact", "--json-output", str(json_path)]
+        if args.full_session_retranscribe:
+            cmd.append("--full-session-retranscribe")
         print(f"[bench] ({idx}/{len(files)}) {source}:{rel_path}", file=sys.stderr)
         proc, timing = run_timed(cmd)
         if proc.returncode != 0:
@@ -237,6 +244,7 @@ def main() -> int:
     recovered_no_growth_chunks = [r["streaming"].get("recoveredSpeechNoGrowthChunks", 0) for r in reports]
     recovered_no_growth_seconds = [r["streaming"].get("recoveredSpeechNoGrowthSec", 0) for r in reports]
     final_added = [r["streaming"]["finalizationAddedWords"] for r in reports]
+    finalization_seconds = [r["streaming"].get("finalizationSec", 0.0) for r in reports]
     normalized_exact_rate = sum(1 for r in reports if r["accuracy"]["normalizedExactMatch"]) / len(reports)
     mean_wer = statistics.mean(wers)
     p90_wer = percentile(wers, 0.90)
@@ -315,6 +323,7 @@ def main() -> int:
             "mean_rss_mb": (statistics.mean(rss_bytes) / 1_048_576) if rss_bytes else None,
         },
         "suite": args.suite,
+        "full_session_retranscribe": args.full_session_retranscribe,
         "cases": [
             {"source": source, "path": rel_path}
             for source, rel_path in selected_cases
@@ -338,6 +347,8 @@ def main() -> int:
         "max_recovered_no_growth_seconds": max_recovered_no_growth_seconds,
         "mean_finalization_added_words": mean_final_added,
         "mean_segment_commits": statistics.mean(r["streaming"]["segmentCommitCount"] for r in reports),
+        "mean_finalization_s": statistics.mean(finalization_seconds),
+        "p90_finalization_s": percentile(finalization_seconds, 0.90),
         "worst_cases": [
             {
                 "file": r["_file"],
@@ -371,6 +382,8 @@ def main() -> int:
     metric("max_no_growth_seconds", f"{max_no_growth_seconds:.6f}")
     metric("max_recovered_no_growth_seconds", f"{max_recovered_no_growth_seconds:.6f}")
     metric("mean_finalization_added_words", f"{mean_final_added:.6f}")
+    metric("mean_finalization_s", f"{summary['mean_finalization_s']:.6f}")
+    metric("p90_finalization_s", f"{summary['p90_finalization_s']:.6f}")
     metric("mean_segment_commits", f"{summary['mean_segment_commits']:.6f}")
     if summary["execution"]["mean_user_cpu_s"] is not None:
         metric("mean_user_cpu_s", f"{summary['execution']['mean_user_cpu_s']:.6f}")

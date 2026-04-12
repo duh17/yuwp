@@ -4,19 +4,27 @@ import Foundation
 import MLX
 
 /// Streaming configuration.
+public enum FinalizationPass: String, Sendable {
+    case activeSegmentOnly
+    case fullSessionRetranscribe
+}
+
 public struct StreamConfig: Sendable {
     public var chunkSec: Double, rollback: Int, unfixedChunks: Int
     public var maxNewTokens: Int, maxEncWindows: Int, maxPrefixTokens: Int
     public var batchRetranscribe: Bool
+    public var finalizationPass: FinalizationPass
 
     public init(
         chunkSec: Double = 2.25, rollback: Int = 5, unfixedChunks: Int = 2,
         maxNewTokens: Int = 32, maxEncWindows: Int = 4, maxPrefixTokens: Int = 20,
-        batchRetranscribe: Bool = true
+        batchRetranscribe: Bool = true,
+        finalizationPass: FinalizationPass = .activeSegmentOnly
     ) {
         self.chunkSec = chunkSec; self.rollback = rollback; self.unfixedChunks = unfixedChunks
         self.maxNewTokens = maxNewTokens; self.maxEncWindows = maxEncWindows
         self.maxPrefixTokens = maxPrefixTokens; self.batchRetranscribe = batchRetranscribe
+        self.finalizationPass = finalizationPass
     }
 }
 
@@ -36,6 +44,12 @@ public struct ChunkResult: Sendable {
     public var batchCorrected: Bool = false
     public var encodeMs: Double = 0, prefillMs: Double = 0, decodeMs: Double = 0
     public var totalMs: Double = 0, reusePct: Double = 0
+}
+
+public enum StopBatchStrategy: Sendable, Equatable {
+    case none
+    case activeSegmentOnly
+    case fullSession
 }
 
 public final class StreamingSession: @unchecked Sendable {
@@ -281,44 +295,71 @@ public final class StreamingSession: @unchecked Sendable {
         return extractText(rawTokens).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Finalize the session on stop. Batch retranscribes the active segment
-    /// (if any), appends it to committed text, and returns the full transcript.
-    /// The committed prefix is never re-batched.
+    /// Finalize the session on stop. By default we batch only the trailing
+    /// active segment and preserve every previously committed segment verbatim.
+    /// Full-session retranscribe is available only as an explicit opt-in for
+    /// A/B comparisons.
     public func finalize() -> String {
-        if config.batchRetranscribe,
-           sessionAudioBuffer.count >= ASRAudio.sampleRate,
-           let fullText = batchRetranscribeFullSession()
-        {
-            committedText = fullText
-            rawTokens = []
-            lastText = committedText
-            return committedText
+        switch Self.stopBatchStrategy(
+            config: config,
+            sessionAudioSampleCount: sessionAudioBuffer.count,
+            activeAudioSampleCount: audioBuffer.count,
+            committedText: committedText,
+            hasSpeechInActiveSegment: hasSpeech
+        ) {
+        case .fullSession:
+            if let fullText = batchRetranscribeFullSession() {
+                committedText = fullText
+                rawTokens = []
+                lastText = committedText
+                return committedText
+            }
+
+        case .activeSegmentOnly:
+            if let segmentText = batchFinalizeSegmentText() {
+                committedText = Self.appendSegment(committedText, segmentText)
+                lastText = committedText
+                return committedText
+            }
+
+        case .none:
+            break
         }
 
-        // For the *first* segment of a session (no commits yet), match the old
-        // behavior: batch any audio >= 1s, no speech check. This preserves
-        // transcription of quiet speech that never crosses pauseRMS.
-        //
-        // For *post-commit* trailing segments, require `hasSpeech == true`.
-        // Pure-silence trailing audio after a commit can hallucinate ("None",
-        // "I guess", etc) — confirmed by offline experiments. The committed
-        // prefix is always preserved either way.
-        let isPostCommit = !committedText.isEmpty
-        let canBatch = config.batchRetranscribe
-            && audioBuffer.count >= ASRAudio.sampleRate
-            && (!isPostCommit || hasSpeech)
-
-        var activeText = ""
-        if canBatch, let segmentText = batchRetranscribe() {
-            activeText = segmentText
-        } else if !rawTokens.isEmpty {
-            // Batch disabled, audio too short, or batch failed — fall back to
-            // streaming output if any tokens were decoded
-            activeText = extractText(rawTokens)
-        }
+        let activeText = rawTokens.isEmpty ? "" : extractText(rawTokens)
         committedText = Self.appendSegment(committedText, activeText)
         lastText = committedText
         return committedText
+    }
+
+    static func stopBatchStrategy(
+        config: StreamConfig,
+        sessionAudioSampleCount: Int,
+        activeAudioSampleCount: Int,
+        committedText: String,
+        hasSpeechInActiveSegment: Bool
+    ) -> StopBatchStrategy {
+        guard config.batchRetranscribe else { return .none }
+
+        switch config.finalizationPass {
+        case .fullSessionRetranscribe:
+            return sessionAudioSampleCount >= ASRAudio.sampleRate ? .fullSession : .none
+
+        case .activeSegmentOnly:
+            guard sessionAudioSampleCount >= ASRAudio.sampleRate else { return .none }
+
+            // For the first segment of a session (no commits yet), match the old
+            // behavior: batch any audio >= 1s, no speech check. This preserves
+            // transcription of quiet speech that never crosses pauseRMS.
+            if committedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return .activeSegmentOnly
+            }
+
+            // For post-commit trailing segments, require speech in the active
+            // segment to avoid hallucinating over silence while preserving the
+            // committed prefix verbatim.
+            return hasSpeechInActiveSegment ? .activeSegmentOnly : .none
+        }
     }
 
     /// Concatenate two segment texts with a single space, handling empty inputs
@@ -330,7 +371,7 @@ public final class StreamingSession: @unchecked Sendable {
         return committed + " " + trimmedSegment
     }
 
-    private static func splitActiveText(from fullText: String, committedText: String) -> String? {
+    static func deriveActiveText(fromSessionText fullText: String, committedText: String) -> String? {
         let trimmedFull = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedCommitted = committedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedCommitted.isEmpty else { return trimmedFull }
@@ -338,7 +379,20 @@ public final class StreamingSession: @unchecked Sendable {
 
         let separator = trimmedCommitted + " "
         guard trimmedFull.hasPrefix(separator) else { return nil }
-        return String(trimmedFull.dropFirst(separator.count))
+
+        let candidate = String(trimmedFull.dropFirst(separator.count))
+        if looksLikeDuplicatedCommittedPrefix(candidate, committedText: trimmedCommitted) {
+            return nil
+        }
+        return candidate
+    }
+
+    private static func looksLikeDuplicatedCommittedPrefix(_ candidate: String, committedText: String) -> Bool {
+        let trimmedCandidate = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCandidate.isEmpty else { return false }
+        guard committedText.count >= 24 else { return false }
+        guard committedText.split(whereSeparator: \.isWhitespace).count >= 5 else { return false }
+        return trimmedCandidate == committedText || trimmedCandidate.hasPrefix(committedText + " ")
     }
 
     private func encodeSegment(_ audio: [Float]) -> MLXArray {
@@ -551,12 +605,27 @@ public final class StreamingSession: @unchecked Sendable {
         return batchRetranscribe()
     }
 
+    private func batchFinalizeSegmentText() -> String? {
+        if let activeText = sessionContextActiveText(), !activeText.isEmpty {
+            fputs("[StreamingSession] Session-context final segment: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s audio → \(activeText.count) chars\n", stderr)
+            return activeText
+        }
+        return batchRetranscribe()
+    }
+
     private func sessionContextActiveText() -> String? {
         do {
             let batcher = batchTranscriber ?? transcriber
             let result = try batcher.transcribe(audio: sessionAudioBuffer)
             let fullText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return Self.splitActiveText(from: fullText, committedText: committedText) ?? fullText
+            if let activeText = Self.deriveActiveText(fromSessionText: fullText, committedText: committedText) {
+                return activeText
+            }
+            if committedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return fullText
+            }
+            fputs("[StreamingSession] Session-context split failed; refusing to append full transcript to avoid duplication\n", stderr)
+            return nil
         } catch {
             fputs("[StreamingSession] Session-context batch error: \(error)\n", stderr)
             return nil
