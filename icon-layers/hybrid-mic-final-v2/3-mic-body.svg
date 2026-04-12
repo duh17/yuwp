@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Layer 3 — main microphone silhouette, shifted lower -->
+  <rect x="426.0" y="266.0" width="76.0" height="76.0" rx="18.2" fill="#d7d5d1" opacity="0.900" />
+  <rect x="522.0" y="266.0" width="76.0" height="76.0" rx="18.2" fill="#d7d5d1" opacity="0.900" />
+  <rect x="330.0" y="362.0" width="76.0" height="76.0" rx="18.2" fill="#e7e5e0" opacity="0.940" />
+  <rect x="426.0" y="362.0" width="76.0" height="76.0" rx="18.2" fill="#f4f3f0" opacity="0.980" />
+  <rect x="522.0" y="362.0" width="76.0" height="76.0" rx="18.2" fill="#f4f3f0" opacity="0.980" />
+  <rect x="618.0" y="362.0" width="76.0" height="76.0" rx="18.2" fill="#e7e5e0" opacity="0.940" />
+  <rect x="330.0" y="458.0" width="76.0" height="76.0" rx="18.2" fill="#e7e5e0" opacity="0.940" />
+  <rect x="426.0" y="458.0" width="76.0" height="76.0" rx="18.2" fill="#f4f3f0" opacity="0.990" />
+  <rect x="522.0" y="458.0" width="76.0" height="76.0" rx="18.2" fill="#f4f3f0" opacity="0.990" />
+  <rect x="618.0" y="458.0" width="76.0" height="76.0" rx="18.2" fill="#e7e5e0" opacity="0.940" />
+  <rect x="330.0" y="554.0" width="76.0" height="76.0" rx="18.2" fill="#e7e5e0" opacity="0.940" />
+  <rect x="426.0" y="554.0" width="76.0" height="76.0" rx="18.2" fill="#f4f3f0" opacity="0.990" />
+  <rect x="522.0" y="554.0" width="76.0" height="76.0" rx="18.2" fill="#f4f3f0" opacity="0.990" />
+  <rect x="618.0" y="554.0" width="76.0" height="76.0" rx="18.2" fill="#e7e5e0" opacity="0.940" />
+  <rect x="426.0" y="650.0" width="76.0" height="76.0" rx="18.2" fill="#e7e5e0" opacity="0.920" />
+  <rect x="522.0" y="650.0" width="76.0" height="76.0" rx="18.2" fill="#e7e5e0" opacity="0.920" />
+  <rect x="330.0" y="746.0" width="76.0" height="76.0" rx="18.2" fill="#d7d5d1" opacity="0.860" />
+  <rect x="426.0" y="746.0" width="76.0" height="76.0" rx="18.2" fill="#e7e5e0" opacity="0.950" />
+  <rect x="522.0" y="746.0" width="76.0" height="76.0" rx="18.2" fill="#e7e5e0" opacity="0.950" />
+  <rect x="618.0" y="746.0" width="76.0" height="76.0" rx="18.2" fill="#d7d5d1" opacity="0.860" />
+</svg>
