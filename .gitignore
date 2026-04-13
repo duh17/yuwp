@@ -5,6 +5,7 @@ DerivedData/
 .DS_Store
 .pi/
 .internal/
+internal/
 transcript.txt
 results/
 benchmarks/
