@@ -1,0 +1,354 @@
+import Combine
+import Foundation
+
+struct SettingsSnapshot: Sendable, Equatable {
+    var dictationBinding: KeyBinding
+    var audioInputSelection: AudioInputSelection
+    var availableAudioInputs: [AudioInputDeviceDescriptor]
+
+    var serverMode: ServerMode
+    var serverPort: UInt16
+
+    var transcriptionModel: String
+    var batchCommitEnabled: Bool
+    var modelDownloadStatus: String?
+
+    var saveRecordings: Bool
+    var recordingsDir: URL
+    var usingDefaultRecordingsDir: Bool
+
+    var micPanelAnimation: MicPanelAnimationConfig
+    var startChime: DictationChimeConfig
+    var stopChime: DictationChimeConfig
+}
+
+@MainActor
+final class SettingsStore: ObservableObject {
+    enum Alert: String, Identifiable, Equatable {
+        case invalidServerPort
+
+        var id: String { rawValue }
+    }
+
+    @Published private(set) var snapshot: SettingsSnapshot
+    @Published var serverPortDraft: String
+    @Published var transcriptionModelDraft: String
+    @Published var selectedDownloadModelRepoId: String
+    @Published var alert: Alert?
+
+    var onDictationBindingChange: ((KeyBinding) -> Void)?
+    var onDictationBindingRecordingChange: ((Bool) -> Void)?
+    var onAudioInputSelectionChange: ((AudioInputSelection) -> Void)?
+    var onServerModeChange: ((ServerMode) -> Void)?
+    var onServerPortChange: ((UInt16) -> Void)?
+    var onSaveRecordingsChange: ((Bool) -> Void)?
+    var onChooseRecordingsDirectory: (() -> Void)?
+    var onResetRecordingsDirectory: (() -> Void)?
+    var onRevealRecordingsDirectory: (() -> Void)?
+    var onModelPresetChange: ((Int) -> Void)?
+    var onBatchCommitChange: ((Bool) -> Void)?
+    var onApplyModelSpec: ((String) -> Void)?
+    var onDownloadModel: ((String) -> Void)?
+    var onMicPanelAnimationChange: ((MicPanelAnimationConfig) -> Void)?
+    var onStartChimeChange: ((DictationChimeConfig) -> Void)?
+    var onStopChimeChange: ((DictationChimeConfig) -> Void)?
+    var onChooseCustomChime: ((DictationChimeRole) -> Void)?
+    var onPreviewChime: ((DictationChimeRole, DictationChimeConfig) -> Void)?
+
+    init(snapshot: SettingsSnapshot) {
+        self.snapshot = snapshot
+        self.serverPortDraft = "\(snapshot.serverPort)"
+        self.transcriptionModelDraft = snapshot.transcriptionModel
+        self.selectedDownloadModelRepoId = DownloadableASRModel.supported.first?.repoId ?? ""
+    }
+
+    func sync(_ snapshot: SettingsSnapshot) {
+        let previous = self.snapshot
+        self.snapshot = snapshot
+
+        if serverPortDraft == "\(previous.serverPort)" {
+            serverPortDraft = "\(snapshot.serverPort)"
+        }
+        if transcriptionModelDraft == previous.transcriptionModel {
+            transcriptionModelDraft = snapshot.transcriptionModel
+        }
+    }
+
+    var audioInputSelections: [AudioInputSelection] {
+        var selections: [AudioInputSelection] = [.systemDefault] + snapshot.availableAudioInputs.map(\.selection)
+        if case .device = snapshot.audioInputSelection,
+           !snapshot.availableAudioInputs.contains(where: { $0.selection == snapshot.audioInputSelection }) {
+            selections.append(snapshot.audioInputSelection)
+        }
+        return selections
+    }
+
+    var currentModelPreset: ModelPreset? {
+        ModelPreset.presets.first { preset in
+            preset.transcriptionModel == snapshot.transcriptionModel
+                && preset.batchCommitEnabled == snapshot.batchCommitEnabled
+        }
+    }
+
+    var selectedModelPresetIndex: Int? {
+        guard let preset = currentModelPreset else { return nil }
+        return ModelPreset.presets.firstIndex(where: { $0.label == preset.label })
+    }
+
+    var audioInputDescriptionText: String {
+        switch snapshot.audioInputSelection {
+        case .systemDefault:
+            if let defaultDevice = snapshot.availableAudioInputs.first(where: \.isDefault) {
+                return "Follows the current macOS default input: \(defaultDevice.detailText). Best when you switch microphones often."
+            }
+            return "Follows the current macOS default input device."
+        case .device(let uid):
+            if let device = snapshot.availableAudioInputs.first(where: { $0.uid == uid }) {
+                return "Pinned to \(device.detailText). Yuwp will capture this device’s native format and convert it to 16 kHz mono for transcription."
+            }
+            return "The selected device is currently unavailable. Yuwp will fall back to the system default input until it reconnects."
+        }
+    }
+
+    var modelPresetDescriptionText: String {
+        guard let preset = currentModelPreset else {
+            return "Using a custom model configuration. The advanced model settings below control transcription."
+        }
+        switch preset.label {
+        case "Fast":
+            return "Lower latency with the smaller model. Best default for quick local dictation."
+        case "Best Accuracy":
+            return "Uses the larger model for better recognition quality, at the cost of more compute."
+        default:
+            return preset.summary
+        }
+    }
+
+    var serverModeDescriptionText: String {
+        switch snapshot.serverMode {
+        case .off:
+            return "Turns off Yuwp’s bundled transcription server. Dictation won’t work until you turn it back on."
+        case .localhost:
+            return "Only Yuwp and other apps on this Mac can connect to the server."
+        case .allInterfaces:
+            return "Makes the server available on your local network so other devices can connect to this Mac."
+        }
+    }
+
+    var recordingsPathText: String {
+        let home = NSHomeDirectory()
+        let path = snapshot.recordingsDir.path.hasPrefix(home)
+            ? "~" + String(snapshot.recordingsDir.path.dropFirst(home.count))
+            : snapshot.recordingsDir.path
+        return snapshot.usingDefaultRecordingsDir ? "Default location: \(path)" : path
+    }
+
+    var modelStatusText: String {
+        let name = ModelLocator.displayName(for: snapshot.transcriptionModel)
+        let installed = ModelLocator.resolve(snapshot.transcriptionModel) != nil
+        return installed ? "Installed: \(name)" : "Missing: \(name)"
+    }
+
+    var customModelPresetTitle: String {
+        "Custom configuration"
+    }
+
+    var availableModelPresetTitles: [String] {
+        ModelPreset.presets.map(\.label)
+    }
+
+    var downloadableModels: [DownloadableASRModel] {
+        DownloadableASRModel.supported
+    }
+
+    var modelDownloadStatusText: String? {
+        snapshot.modelDownloadStatus
+    }
+
+    var selectedDownloadModelIsManagedInstalled: Bool {
+        guard !selectedDownloadModelRepoId.isEmpty else { return false }
+        return ModelLocator.managedDirectoryIfExists(forRepoId: selectedDownloadModelRepoId) != nil
+    }
+
+    var selectedDownloadModelIsCurrent: Bool {
+        snapshot.transcriptionModel == selectedDownloadModelRepoId
+    }
+
+    var downloadRowStatusText: String {
+        if let status = modelDownloadStatusText {
+            return status
+        }
+        if selectedDownloadModelIsCurrent && selectedDownloadModelIsManagedInstalled {
+            return "Installed in Application Support and active now."
+        }
+        if selectedDownloadModelIsManagedInstalled {
+            return "Already downloaded in Application Support. Click to switch to this model without downloading again."
+        }
+        return "Downloads the selected model into Application Support so Yuwp can manage it directly."
+    }
+
+    var downloadButtonTitle: String {
+        if modelDownloadStatusText != nil {
+            return "Downloading…"
+        }
+        if selectedDownloadModelIsCurrent && selectedDownloadModelIsManagedInstalled {
+            return "Current"
+        }
+        if selectedDownloadModelIsManagedInstalled {
+            return "Use Downloaded"
+        }
+        return "Download"
+    }
+
+    var canDownloadSelectedModel: Bool {
+        !selectedDownloadModelRepoId.isEmpty
+            && modelDownloadStatusText == nil
+            && !(selectedDownloadModelIsCurrent && selectedDownloadModelIsManagedInstalled)
+    }
+
+    var micPanelAnimationSummaryText: String {
+        snapshot.micPanelAnimation.selection.summary
+    }
+
+    var micPanelAnimationSelection: MicPanelAnimationSelection {
+        snapshot.micPanelAnimation.selection
+    }
+
+    var micPanelAnimationCustom: MicPanelAnimationCustom {
+        snapshot.micPanelAnimation.customOrDefault
+    }
+
+    func chimeConfig(for role: DictationChimeRole) -> DictationChimeConfig {
+        switch role {
+        case .start: snapshot.startChime
+        case .stop: snapshot.stopChime
+        }
+    }
+
+    func chimeSummaryText(for role: DictationChimeRole) -> String {
+        chimeConfig(for: role).selection.summary
+    }
+
+    func customChimeDisplayName(for role: DictationChimeRole) -> String {
+        chimeConfig(for: role).customAsset?.displayName ?? "No file selected"
+    }
+
+    func setDictationBinding(_ binding: KeyBinding) {
+        snapshot.dictationBinding = binding
+        onDictationBindingChange?(binding)
+    }
+
+    func setDictationBindingRecording(_ isRecording: Bool) {
+        onDictationBindingRecordingChange?(isRecording)
+    }
+
+    func setAudioInputSelection(_ selection: AudioInputSelection) {
+        snapshot.audioInputSelection = selection
+        onAudioInputSelectionChange?(selection)
+    }
+
+    func setServerMode(_ mode: ServerMode) {
+        snapshot.serverMode = mode
+        onServerModeChange?(mode)
+    }
+
+    func applyServerPortDraft() {
+        let trimmed = serverPortDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Int(trimmed), (1...65_535).contains(value), let port = UInt16(exactly: value) else {
+            alert = .invalidServerPort
+            return
+        }
+        alert = nil
+        onServerPortChange?(port)
+        serverPortDraft = "\(port)"
+    }
+
+    func dismissAlert() {
+        alert = nil
+    }
+
+    func setSaveRecordings(_ enabled: Bool) {
+        snapshot.saveRecordings = enabled
+        onSaveRecordingsChange?(enabled)
+    }
+
+    func chooseRecordingsDirectory() {
+        onChooseRecordingsDirectory?()
+    }
+
+    func resetRecordingsDirectory() {
+        onResetRecordingsDirectory?()
+    }
+
+    func revealRecordingsDirectory() {
+        onRevealRecordingsDirectory?()
+    }
+
+    func setModelPreset(index: Int) {
+        guard index >= 0, index < ModelPreset.presets.count else { return }
+        let preset = ModelPreset.presets[index]
+        snapshot.transcriptionModel = preset.transcriptionModel
+        snapshot.batchCommitEnabled = preset.batchCommitEnabled
+        transcriptionModelDraft = preset.transcriptionModel
+        onModelPresetChange?(index)
+    }
+
+    func setBatchCommitEnabled(_ enabled: Bool) {
+        snapshot.batchCommitEnabled = enabled
+        onBatchCommitChange?(enabled)
+    }
+
+    func applyTranscriptionModelDraft() {
+        onApplyModelSpec?(transcriptionModelDraft)
+    }
+
+    func downloadModel(repoId: String) {
+        guard !repoId.isEmpty else { return }
+        onDownloadModel?(repoId)
+    }
+
+    func downloadSelectedModel() {
+        downloadModel(repoId: selectedDownloadModelRepoId)
+    }
+
+    func setMicPanelAnimationSelection(_ selection: MicPanelAnimationSelection) {
+        var config = snapshot.micPanelAnimation
+        config.selection = selection
+        if selection == .custom, config.custom == nil {
+            config.custom = .default
+        }
+        snapshot.micPanelAnimation = config
+        onMicPanelAnimationChange?(config)
+    }
+
+    func updateMicPanelAnimationCustom(_ update: (inout MicPanelAnimationCustom) -> Void) {
+        var config = snapshot.micPanelAnimation
+        config.selection = .custom
+        var custom = config.customOrDefault
+        update(&custom)
+        config.custom = custom.clamped
+        snapshot.micPanelAnimation = config
+        onMicPanelAnimationChange?(config)
+    }
+
+    func setChimeSelection(_ selection: DictationChimeSelection, for role: DictationChimeRole) {
+        var config = chimeConfig(for: role)
+        config.selection = selection
+        switch role {
+        case .start:
+            snapshot.startChime = config
+            onStartChimeChange?(config)
+        case .stop:
+            snapshot.stopChime = config
+            onStopChimeChange?(config)
+        }
+    }
+
+    func chooseCustomChime(for role: DictationChimeRole) {
+        onChooseCustomChime?(role)
+    }
+
+    func previewChime(_ role: DictationChimeRole) {
+        onPreviewChime?(role, chimeConfig(for: role))
+    }
+}

@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --python 3.14 --script
 """
-Stress-test the /v1/audio/subtitles endpoint against a set of local files.
+Stress-test timed `response_format=json` batch transcription against a set of local files.
 
 Examples:
   uv run scripts/bench-subtitles.py \
@@ -86,7 +86,7 @@ def run_subtitle_request(base_url: str, sample: dict[str, Any]) -> tuple[dict[st
         "-sS",
         "-X",
         "POST",
-        f"{base_url.rstrip('/')}/v1/audio/subtitles",
+        f"{base_url.rstrip('/')}/v1/audio/transcriptions",
         "-F",
         f"file=@{file_path}",
         "-F",
@@ -203,7 +203,7 @@ def summarize_metric(value: float | int | None) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Stress-test /v1/audio/subtitles")
+    parser = argparse.ArgumentParser(description="Stress-test timed batch transcription via /v1/audio/transcriptions")
     parser.add_argument("--manifest", help="JSON manifest with a top-level 'samples' array")
     parser.add_argument("--file", action="append", default=[], help="Local audio/video file to test (repeatable)")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help=f"Server base URL (default: {DEFAULT_BASE_URL})")

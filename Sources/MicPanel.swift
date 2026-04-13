@@ -9,6 +9,12 @@ import AppKit
 /// Draggable — remembers pinned position across sessions.
 @MainActor
 final class MicPanel: NSObject, NSWindowDelegate {
+    var animationConfig: MicPanelAnimationConfig = .default {
+        didSet {
+            applyAnimationStyle()
+        }
+    }
+
     private var panel: NSPanel?
     private var contentView: NSView?
     private var textView: NSTextView?
@@ -49,6 +55,10 @@ final class MicPanel: NSObject, NSWindowDelegate {
 
     // Glow
     private let glowColor = NSColor(calibratedRed: 0.4, green: 0.6, blue: 1.0, alpha: 1.0)
+
+    private var animationTuning: MicPanelAnimationTuning {
+        animationConfig.resolvedTuning(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    }
 
     // MARK: - Public API
 
@@ -232,37 +242,38 @@ final class MicPanel: NSObject, NSWindowDelegate {
     }
 
     private func tick() {
-        let attack: Float = 0.4
-        let decay: Float = 0.15
+        let tuning = animationTuning
+        let attack = Float(tuning.smoothingAttack)
+        let decay = Float(tuning.smoothingDecay)
         let factor = targetLevel > smoothLevel ? attack : decay
         smoothLevel += (targetLevel - smoothLevel) * factor
-        barPhase += 0.08
+        barPhase += Float(tuning.phaseStep)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 
         // Border glow (both modes)
         let level = CGFloat(smoothLevel)
-        let borderWidth = 0.5 + level * 1.5
-        let borderAlpha = 0.08 + level * 0.35
+        let borderWidth = tuning.glowWidthBase + Double(level) * tuning.glowWidthScale
+        let borderAlpha = tuning.glowAlphaBase + Double(level) * tuning.glowAlphaScale
         contentView?.layer?.borderWidth = borderWidth
         contentView?.layer?.borderColor = glowColor.withAlphaComponent(borderAlpha).cgColor
 
         // Bar animation (minimal mode)
         if isMinimal {
-            tickBars()
+            tickBars(tuning: tuning)
         }
 
         CATransaction.commit()
     }
 
-    private func tickBars() {
+    private func tickBars(tuning: MicPanelAnimationTuning) {
         let h = pillHeight
         for i in 0..<bars.count {
             let bar = bars[i]
-            let levelContrib = CGFloat(smoothLevel) * barScale[i] * (h * 0.5)
+            let levelContrib = CGFloat(smoothLevel) * barScale[i] * (h * 0.5) * tuning.levelBarScale
             let phase = barPhase + barPhaseOffset[i]
-            let idle = CGFloat(sin(phase) * 0.5 + 0.5) * 2.0
+            let idle = CGFloat(sin(phase) * 0.5 + 0.5) * tuning.idleBarAmplitude
             let barH = max(3, levelContrib + idle)
             let y = (h - barH) / 2
             bar.frame = CGRect(x: bar.frame.origin.x, y: y, width: barWidth, height: barH)
@@ -322,6 +333,16 @@ final class MicPanel: NSObject, NSWindowDelegate {
         )
     }
 
+    private func applyAnimationStyle() {
+        guard let contentView else { return }
+        let tuning = animationTuning
+        contentView.layer?.borderWidth = tuning.glowWidthBase
+        contentView.layer?.borderColor = glowColor.withAlphaComponent(tuning.glowAlphaBase).cgColor
+        if isMinimal {
+            layoutBars(in: minimalWidth)
+        }
+    }
+
     // MARK: - Panel Creation
 
     private func createPanel() {
@@ -347,8 +368,9 @@ final class MicPanel: NSObject, NSWindowDelegate {
         cv.layer?.cornerRadius = cornerRadius
         cv.layer?.masksToBounds = true
         cv.layer?.backgroundColor = NSColor(white: 0.10, alpha: 0.92).cgColor
-        cv.layer?.borderWidth = 0.5
-        cv.layer?.borderColor = NSColor(white: 1, alpha: 0.08).cgColor
+        let tuning = animationTuning
+        cv.layer?.borderWidth = tuning.glowWidthBase
+        cv.layer?.borderColor = glowColor.withAlphaComponent(tuning.glowAlphaBase).cgColor
 
         // Waveform bars (hidden in full mode)
         bars = []
@@ -383,5 +405,6 @@ final class MicPanel: NSObject, NSWindowDelegate {
         p.delegate = self
         contentView = cv
         panel = p
+        applyAnimationStyle()
     }
 }

@@ -12,6 +12,10 @@ cd "$(dirname "$0")/.."
 CONFIGURATION="release"
 : "${YUWP_INTERNAL_DIAGNOSTICS:=1}"
 : "${YUWP_ALLOW_STALE_METALLIB:=1}"
+DEFAULT_SPARKLE_FEED_URL="https://github.com/duh17/yuwp/releases/latest/download/appcast.xml"
+DEFAULT_SPARKLE_PUBLIC_ED_KEY="wnLCIfY048anOcj7/J/Iv6Lp9Fmba4zQ0EjCL7k/M+E=" # gitleaks:allow public Sparkle key
+SPARKLE_FEED_URL="${YUWP_SPARKLE_FEED_URL:-$DEFAULT_SPARKLE_FEED_URL}"
+SPARKLE_PUBLIC_ED_KEY="${YUWP_SPARKLE_PUBLIC_ED_KEY:-$DEFAULT_SPARKLE_PUBLIC_ED_KEY}"
 export YUWP_INTERNAL_DIAGNOSTICS YUWP_ALLOW_STALE_METALLIB
 APP="/Applications/Yuwp.app"
 MACOS_DIR="$APP/Contents/MacOS"
@@ -39,6 +43,8 @@ fi
 
 echo "[yuwp] Internal diagnostics env: $YUWP_INTERNAL_DIAGNOSTICS"
 echo "[yuwp] Allow stale metallib: $YUWP_ALLOW_STALE_METALLIB"
+echo "[yuwp] Sparkle feed URL: $SPARKLE_FEED_URL"
+echo "[yuwp] Sparkle public key: ${SPARKLE_PUBLIC_ED_KEY:0:12}…"
 bash scripts/build.sh "$CONFIGURATION"
 
 # Kill old app binary if it is already running so we don't leave a stale copy alive.
@@ -72,7 +78,7 @@ else
     echo "Warning: Sparkle.framework not found at $SPARKLE_FW — run 'swift package resolve' first"
 fi
 
-cat > "$APP/Contents/Info.plist" << 'EOF'
+cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -98,9 +104,9 @@ cat > "$APP/Contents/Info.plist" << 'EOF'
     <key>NSMicrophoneUsageDescription</key>
     <string>Yuwp needs microphone access to transcribe your speech into text.</string>
     <key>SUFeedURL</key>
-    <string>https://github.com/duh17/yuwp/releases/latest/download/appcast.xml</string>
+    <string>$SPARKLE_FEED_URL</string>
     <key>SUPublicEDKey</key>
-    <string></string>
+    <string>$SPARKLE_PUBLIC_ED_KEY</string>
 </dict>
 </plist>
 EOF

@@ -119,7 +119,7 @@ enum AudioInputTransport: Sendable, Equatable {
             self = .continuityWired
         case kAudioDeviceTransportTypeContinuityCaptureWireless:
             self = .continuityWireless
-        case 0x63636170: // 'ccap' — legacy Continuity Capture transport
+        case 0x63636170: // 'ccap' — older Continuity Capture transport
             self = .continuity
         default:
             self = .unknown

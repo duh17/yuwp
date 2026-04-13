@@ -5,14 +5,13 @@ import Testing
 @Suite("Config")
 struct ConfigMigrationTests {
 
-    @Test @MainActor func defaultsToCtrlBacktickToggleLocalhostAndDefaultPort() {
+    @Test @MainActor func defaultsToCtrlBacktickLocalhostAndDefaultPort() {
         let (defaults, suiteName) = makeDefaults()
         defer { UserDefaults().removePersistentDomain(forName: suiteName) }
 
         let config = Config(defaults: defaults)
 
         #expect(config.dictationBinding == .ctrlBacktick)
-        #expect(config.dictationInteractionMode == .toggle)
         #expect(config.audioInputSelection == .systemDefault)
         #expect(config.serverMode == .localhost)
         #expect(config.serverPort == 9748)
@@ -21,15 +20,17 @@ struct ConfigMigrationTests {
         #expect(!config.saveRecordings)
         #expect(config.usesDefaultRecordingsDir)
         #expect(config.recordingsDir == config.defaultRecordingsDir)
+        #expect(config.micPanelAnimation == .default)
+        #expect(config.startChime == .default)
+        #expect(config.stopChime == .default)
     }
 
-    @Test @MainActor func storesDictationBindingModeAndServerMode() {
+    @Test @MainActor func storesDictationBindingAndServerMode() {
         let (defaults, suiteName) = makeDefaults()
         defer { UserDefaults().removePersistentDomain(forName: suiteName) }
 
         let config = Config(defaults: defaults)
-        config.dictationBinding = .optionSpace
-        config.dictationInteractionMode = .pushToTalk
+        config.dictationBinding = KeyBinding(keyCode: 61, modifiers: 0, activation: .doubleTap)
         config.audioInputSelection = .device(uid: "test-mic")
         config.serverMode = .allInterfaces
         config.serverPort = 8899
@@ -38,8 +39,7 @@ struct ConfigMigrationTests {
         config.saveRecordings = true
         config.setRecordingsDir(FileManager.default.temporaryDirectory.appendingPathComponent("yuwp-tests-recordings", isDirectory: true))
 
-        #expect(config.dictationBinding == .optionSpace)
-        #expect(config.dictationInteractionMode == .pushToTalk)
+        #expect(config.dictationBinding == KeyBinding(keyCode: 61, modifiers: 0, activation: .doubleTap))
         #expect(config.audioInputSelection == .device(uid: "test-mic"))
         #expect(config.serverMode == .allInterfaces)
         #expect(config.serverPort == 8899)
@@ -49,21 +49,48 @@ struct ConfigMigrationTests {
         #expect(!config.usesDefaultRecordingsDir)
         #expect(config.recordingsDir == FileManager.default.temporaryDirectory.appendingPathComponent("yuwp-tests-recordings", isDirectory: true).standardizedFileURL)
 
+        let customAnimation = MicPanelAnimationConfig(
+            selection: .custom,
+            custom: MicPanelAnimationCustom.default
+        )
+        config.micPanelAnimation = customAnimation
+        #expect(config.micPanelAnimation == customAnimation)
+
+        let customAsset = ImportedSoundAsset(relativePath: "test.wav", displayName: "Test")
+        let customStartChime = DictationChimeConfig(selection: .custom, customAsset: customAsset)
+        let customStopChime = DictationChimeConfig(selection: .soft, customAsset: nil)
+        config.startChime = customStartChime
+        config.stopChime = customStopChime
+        #expect(config.startChime == customStartChime)
+        #expect(config.stopChime == customStopChime)
+
         config.resetRecordingsDir()
         #expect(config.usesDefaultRecordingsDir)
         #expect(config.recordingsDir == config.defaultRecordingsDir)
     }
 
-    @Test @MainActor func readsLegacyModelKeys() {
+    @Test @MainActor func invalidDoubleTapComboFallsBackToSinglePress() {
         let (defaults, suiteName) = makeDefaults()
         defer { UserDefaults().removePersistentDomain(forName: suiteName) }
 
-        defaults.set("legacy-streaming", forKey: "streamingModel")
-        defaults.set("legacy-batch", forKey: "batchModel")
+        defaults.set(50, forKey: "dictationBindingKeyCode")
+        defaults.set(0x40000, forKey: "dictationBindingModifiers")
+        defaults.set("doubleTap", forKey: "dictationBindingActivation")
+
+        let config = Config(defaults: defaults)
+        #expect(config.dictationBinding == .ctrlBacktick)
+    }
+
+    @Test @MainActor func readsPriorModelKeys() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+
+        defaults.set("saved-streaming", forKey: "streamingModel")
+        defaults.set("saved-batch", forKey: "batchModel")
         defaults.set(false, forKey: "batchRetranscribeEnabled")
 
         let config = Config(defaults: defaults)
-        #expect(config.transcriptionModel == "legacy-streaming")
+        #expect(config.transcriptionModel == "saved-streaming")
         #expect(!config.batchCommitEnabled)
     }
 
@@ -72,6 +99,7 @@ struct ConfigMigrationTests {
         #expect(KeyBinding.optionSpace.description == "⌥+Space")
         #expect(KeyBinding.commandShiftD.description == "⌘+⇧+D")
         #expect(KeyBinding(keyCode: 62, modifiers: 0).description == "Right Ctrl")
+        #expect(KeyBinding(keyCode: 61, modifiers: 0, activation: .doubleTap).description == "Right ⌥ (double tap)")
     }
 
     private func makeDefaults() -> (UserDefaults, String) {

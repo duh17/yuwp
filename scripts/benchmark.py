@@ -14,8 +14,7 @@ This script covers the benchmark use cases we have been using manually:
 - compare the standalone Yuwp CLI (`yuwp-asr transcribe`) against server or other tools
 
 Interface note:
-- canonical user-facing CLI is `yuwp-asr serve|transcribe`
-- legacy compatibility binaries `asr-server` and `yuwp-transcribe` remain supported
+- use `yuwp-asr serve|transcribe`
 
 Examples:
   # Yuwp server vs mlx-audio on one long file, with transcript diffs
@@ -497,7 +496,7 @@ def validate_args(args: argparse.Namespace) -> tuple[list[Path], list[Variant]]:
                 require_path(Path(variant.params["model_dir"]), "Yuwp model")
 
     if any(v.tool == "yuwp-cli" for v in variants):
-        require_path(resolve_yuwp_cli_bin(), "yuwp-asr or yuwp-transcribe binary")
+        require_path(resolve_yuwp_cli_bin(), "yuwp-asr binary")
         require_path(YUWP_METALLIB, "mlx.metallib")
         for variant in variants:
             if variant.tool == "yuwp-cli":

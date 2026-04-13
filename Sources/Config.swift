@@ -1,16 +1,19 @@
 import Foundation
 
-/// How the dictation shortcut behaves.
-enum DictationInteractionMode: String, Sendable, CaseIterable {
-    case toggle
-    case pushToTalk
+enum KeyBindingActivation: String, Sendable, Codable {
+    case singlePress
+    case doubleTap
 
-    var description: String {
+    var descriptionSuffix: String {
         switch self {
-        case .toggle: "Toggle"
-        case .pushToTalk: "Push to Talk"
+        case .singlePress: ""
+        case .doubleTap: " (double tap)"
         }
     }
+}
+
+enum KeyBindingTiming {
+    static let doubleTapTimeout: TimeInterval = 0.4
 }
 
 /// Whether the bundled ASR server is disabled, local-only, or LAN-visible.
@@ -44,9 +47,21 @@ enum ServerMode: String, Sendable, CaseIterable {
 struct KeyBinding: Sendable, Codable, Equatable {
     let keyCode: UInt16
     let modifiers: UInt64
+    let activation: KeyBindingActivation
+
+    init(keyCode: UInt16, modifiers: UInt64, activation: KeyBindingActivation = .singlePress) {
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+        self.activation = activation
+    }
 
     var isModifierOnly: Bool {
         modifiers == 0 && Self.isModifierKeyCode(keyCode)
+    }
+
+    var normalized: KeyBinding {
+        guard activation == .doubleTap, !isModifierOnly else { return self }
+        return KeyBinding(keyCode: keyCode, modifiers: modifiers)
     }
 
     var description: String {
@@ -56,7 +71,7 @@ struct KeyBinding: Sendable, Codable, Equatable {
         if modifiers & 0x100000 != 0 { parts.append("⌘") }
         if modifiers & 0x20000 != 0 { parts.append("⇧") }
         parts.append(Self.keyName(for: keyCode))
-        return parts.joined(separator: "+")
+        return parts.joined(separator: "+") + activation.descriptionSuffix
     }
 
     static func isModifierKeyCode(_ keyCode: UInt16) -> Bool {
@@ -100,6 +115,205 @@ extension KeyBinding {
     ]
 }
 
+enum MicPanelAnimationSelection: String, Codable, Sendable, CaseIterable {
+    case system
+    case standard
+    case calm
+    case lively
+    case still
+    case custom
+
+    var title: String {
+        switch self {
+        case .system: "System Default"
+        case .standard: "Standard"
+        case .calm: "Calm"
+        case .lively: "Lively"
+        case .still: "Still"
+        case .custom: "Custom"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .system: "Follows macOS Reduce Motion and uses Yuwp’s recommended default."
+        case .standard: "Matches the current default mic panel behavior."
+        case .calm: "Softer motion and gentler glow for lower visual noise."
+        case .lively: "Faster response and stronger motion for a more animated feel."
+        case .still: "Minimal movement with subdued glow."
+        case .custom: "Use custom tuning values for motion and glow."
+        }
+    }
+}
+
+struct MicPanelAnimationCustom: Codable, Equatable, Sendable {
+    var smoothingAttack: Double
+    var smoothingDecay: Double
+    var phaseStep: Double
+    var idleBarAmplitude: Double
+    var levelBarScale: Double
+    var glowWidthBase: Double
+    var glowWidthScale: Double
+    var glowAlphaBase: Double
+    var glowAlphaScale: Double
+
+    static let `default` = MicPanelAnimationCustom(
+        smoothingAttack: 0.4,
+        smoothingDecay: 0.15,
+        phaseStep: 0.08,
+        idleBarAmplitude: 2.0,
+        levelBarScale: 1.0,
+        glowWidthBase: 0.5,
+        glowWidthScale: 1.5,
+        glowAlphaBase: 0.08,
+        glowAlphaScale: 0.35
+    )
+
+    var clamped: MicPanelAnimationCustom {
+        MicPanelAnimationCustom(
+            smoothingAttack: smoothingAttack.clamped(to: 0.05...1.0),
+            smoothingDecay: smoothingDecay.clamped(to: 0.02...1.0),
+            phaseStep: phaseStep.clamped(to: 0.0...0.3),
+            idleBarAmplitude: idleBarAmplitude.clamped(to: 0.0...6.0),
+            levelBarScale: levelBarScale.clamped(to: 0.2...1.8),
+            glowWidthBase: glowWidthBase.clamped(to: 0.0...3.0),
+            glowWidthScale: glowWidthScale.clamped(to: 0.0...4.0),
+            glowAlphaBase: glowAlphaBase.clamped(to: 0.0...0.4),
+            glowAlphaScale: glowAlphaScale.clamped(to: 0.0...0.8)
+        )
+    }
+}
+
+struct MicPanelAnimationTuning: Equatable, Sendable {
+    let smoothingAttack: Double
+    let smoothingDecay: Double
+    let phaseStep: Double
+    let idleBarAmplitude: Double
+    let levelBarScale: Double
+    let glowWidthBase: Double
+    let glowWidthScale: Double
+    let glowAlphaBase: Double
+    let glowAlphaScale: Double
+
+    init(_ custom: MicPanelAnimationCustom) {
+        let value = custom.clamped
+        self.smoothingAttack = value.smoothingAttack
+        self.smoothingDecay = value.smoothingDecay
+        self.phaseStep = value.phaseStep
+        self.idleBarAmplitude = value.idleBarAmplitude
+        self.levelBarScale = value.levelBarScale
+        self.glowWidthBase = value.glowWidthBase
+        self.glowWidthScale = value.glowWidthScale
+        self.glowAlphaBase = value.glowAlphaBase
+        self.glowAlphaScale = value.glowAlphaScale
+    }
+}
+
+struct MicPanelAnimationConfig: Codable, Equatable, Sendable {
+    var selection: MicPanelAnimationSelection
+    var custom: MicPanelAnimationCustom?
+
+    static let `default` = MicPanelAnimationConfig(selection: .system, custom: nil)
+
+    var customOrDefault: MicPanelAnimationCustom {
+        (custom ?? .default).clamped
+    }
+
+    func resolvedSelection(reduceMotion: Bool) -> MicPanelAnimationSelection {
+        switch selection {
+        case .system:
+            reduceMotion ? .calm : .standard
+        default:
+            selection
+        }
+    }
+
+    func resolvedTuning(reduceMotion: Bool) -> MicPanelAnimationTuning {
+        switch resolvedSelection(reduceMotion: reduceMotion) {
+        case .system, .standard:
+            MicPanelAnimationTuning(.default)
+        case .calm:
+            MicPanelAnimationTuning(MicPanelAnimationCustom(
+                smoothingAttack: 0.28,
+                smoothingDecay: 0.10,
+                phaseStep: 0.04,
+                idleBarAmplitude: 0.8,
+                levelBarScale: 0.9,
+                glowWidthBase: 0.4,
+                glowWidthScale: 0.9,
+                glowAlphaBase: 0.05,
+                glowAlphaScale: 0.18
+            ))
+        case .lively:
+            MicPanelAnimationTuning(MicPanelAnimationCustom(
+                smoothingAttack: 0.55,
+                smoothingDecay: 0.22,
+                phaseStep: 0.12,
+                idleBarAmplitude: 3.0,
+                levelBarScale: 1.15,
+                glowWidthBase: 0.65,
+                glowWidthScale: 2.0,
+                glowAlphaBase: 0.10,
+                glowAlphaScale: 0.5
+            ))
+        case .still:
+            MicPanelAnimationTuning(MicPanelAnimationCustom(
+                smoothingAttack: 0.20,
+                smoothingDecay: 0.08,
+                phaseStep: 0.0,
+                idleBarAmplitude: 0.0,
+                levelBarScale: 0.65,
+                glowWidthBase: 0.4,
+                glowWidthScale: 0.5,
+                glowAlphaBase: 0.04,
+                glowAlphaScale: 0.12
+            ))
+        case .custom:
+            MicPanelAnimationTuning(customOrDefault)
+        }
+    }
+}
+
+enum DictationChimeSelection: String, Codable, Sendable, CaseIterable {
+    case systemDefault
+    case soft
+    case mechanical
+    case none
+    case custom
+
+    var title: String {
+        switch self {
+        case .systemDefault: "System Default"
+        case .soft: "Soft"
+        case .mechanical: "Mechanical"
+        case .none: "Muted"
+        case .custom: "Custom"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .systemDefault: "Use Yuwp’s built-in start and stop sounds."
+        case .soft: "Quieter built-in sounds with a gentler feel."
+        case .mechanical: "Sharper built-in sounds with a more tactile feel."
+        case .none: "Disable this sound."
+        case .custom: "Use an imported audio file from Application Support."
+        }
+    }
+}
+
+struct ImportedSoundAsset: Codable, Equatable, Sendable {
+    var relativePath: String
+    var displayName: String
+}
+
+struct DictationChimeConfig: Codable, Equatable, Sendable {
+    var selection: DictationChimeSelection
+    var customAsset: ImportedSoundAsset?
+
+    static let `default` = DictationChimeConfig(selection: .systemDefault, customAsset: nil)
+}
+
 /// Central configuration for Yuwp.
 @MainActor
 final class Config {
@@ -113,27 +327,21 @@ final class Config {
 
     // MARK: - Dictation
 
-    var dictationInteractionMode: DictationInteractionMode {
-        get {
-            let raw = defaults.string(forKey: "dictationInteractionMode") ?? DictationInteractionMode.toggle.rawValue
-            return DictationInteractionMode(rawValue: raw) ?? .toggle
-        }
-        set {
-            defaults.set(newValue.rawValue, forKey: "dictationInteractionMode")
-        }
-    }
-
     var dictationBinding: KeyBinding {
         get {
             let keyCode = UInt16(defaults.integer(forKey: "dictationBindingKeyCode")).nonZero ?? KeyBinding.ctrlBacktick.keyCode
             let modifiers = defaults.object(forKey: "dictationBindingModifiers") != nil
                 ? UInt64(defaults.integer(forKey: "dictationBindingModifiers"))
                 : KeyBinding.ctrlBacktick.modifiers
-            return KeyBinding(keyCode: keyCode, modifiers: modifiers)
+            let activationRaw = defaults.string(forKey: "dictationBindingActivation") ?? KeyBindingActivation.singlePress.rawValue
+            let activation = KeyBindingActivation(rawValue: activationRaw) ?? .singlePress
+            return KeyBinding(keyCode: keyCode, modifiers: modifiers, activation: activation).normalized
         }
         set {
-            defaults.set(Int(newValue.keyCode), forKey: "dictationBindingKeyCode")
-            defaults.set(Int(newValue.modifiers), forKey: "dictationBindingModifiers")
+            let binding = newValue.normalized
+            defaults.set(Int(binding.keyCode), forKey: "dictationBindingKeyCode")
+            defaults.set(Int(binding.modifiers), forKey: "dictationBindingModifiers")
+            defaults.set(binding.activation.rawValue, forKey: "dictationBindingActivation")
         }
     }
 
@@ -143,6 +351,42 @@ final class Config {
         }
         set {
             defaults.set(newValue.persistenceString, forKey: "audioInputSelection")
+        }
+    }
+
+    var micPanelAnimation: MicPanelAnimationConfig {
+        get {
+            let selection = MicPanelAnimationSelection(rawValue: defaults.string(forKey: "micPanelAnimationSelection") ?? "") ?? .system
+            let custom: MicPanelAnimationCustom? = decode(MicPanelAnimationCustom.self, forKey: "micPanelAnimationCustom")
+            return MicPanelAnimationConfig(selection: selection, custom: custom)
+        }
+        set {
+            defaults.set(newValue.selection.rawValue, forKey: "micPanelAnimationSelection")
+            encode(newValue.custom?.clamped, forKey: "micPanelAnimationCustom")
+        }
+    }
+
+    var startChime: DictationChimeConfig {
+        get {
+            let selection = DictationChimeSelection(rawValue: defaults.string(forKey: "startChimeSelection") ?? "") ?? .systemDefault
+            let customAsset: ImportedSoundAsset? = decode(ImportedSoundAsset.self, forKey: "startChimeCustomAsset")
+            return DictationChimeConfig(selection: selection, customAsset: customAsset)
+        }
+        set {
+            defaults.set(newValue.selection.rawValue, forKey: "startChimeSelection")
+            encode(newValue.customAsset, forKey: "startChimeCustomAsset")
+        }
+    }
+
+    var stopChime: DictationChimeConfig {
+        get {
+            let selection = DictationChimeSelection(rawValue: defaults.string(forKey: "stopChimeSelection") ?? "") ?? .systemDefault
+            let customAsset: ImportedSoundAsset? = decode(ImportedSoundAsset.self, forKey: "stopChimeCustomAsset")
+            return DictationChimeConfig(selection: selection, customAsset: customAsset)
+        }
+        set {
+            defaults.set(newValue.selection.rawValue, forKey: "stopChimeSelection")
+            encode(newValue.customAsset, forKey: "stopChimeCustomAsset")
         }
     }
 
@@ -236,6 +480,19 @@ final class Config {
     func resetRecordingsDir() {
         defaults.removeObject(forKey: "recordingsDirPath")
     }
+
+    private func decode<T: Decodable>(_ type: T.Type, forKey key: String) -> T? {
+        guard let data = defaults.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    private func encode<T: Encodable>(_ value: T?, forKey key: String) {
+        guard let value else {
+            defaults.removeObject(forKey: key)
+            return
+        }
+        defaults.set(try? JSONEncoder().encode(value), forKey: key)
+    }
 }
 
 // MARK: - Model Presets
@@ -288,4 +545,10 @@ struct ModelPreset {
 
 private extension UInt16 {
     var nonZero: UInt16? { self == 0 ? nil : self }
+}
+
+private extension Double {
+    func clamped(to range: ClosedRange<Double>) -> Double {
+        min(max(self, range.lowerBound), range.upperBound)
+    }
 }

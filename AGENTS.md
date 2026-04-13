@@ -47,11 +47,14 @@ to build and launch as a proper .app bundle with TCC-compatible Info.plist.
 
 ```bash
 scripts/release.sh <version>
-# Requires: YUWP_SIGN_IDENTITY, YUWP_TEAM_ID, YUWP_APPLE_ID, YUWP_APP_PASSWORD
+# Requires: YUWP_SIGN_IDENTITY and either:
+#   - YUWP_NOTARY_PROFILE, or
+#   - YUWP_TEAM_ID + YUWP_APPLE_ID + YUWP_APP_PASSWORD
 ```
 
-Sparkle remains disabled until you set a real `SUPublicEDKey` in the generated
-Info.plist content used by the run/release scripts.
+Sparkle is wired through the generated Info.plist by default. Override the
+appcast URL or public key with `YUWP_SPARKLE_FEED_URL` or
+`YUWP_SPARKLE_PUBLIC_ED_KEY` when needed.
 
 ### Standalone ASR server (no GUI)
 

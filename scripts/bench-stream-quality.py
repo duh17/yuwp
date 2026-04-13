@@ -97,7 +97,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--full-session-retranscribe",
         action="store_true",
-        help="Opt into legacy full-session batch finalization on stop",
+        help="Opt into full-session batch finalization on stop",
     )
     return parser.parse_args()
 

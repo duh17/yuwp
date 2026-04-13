@@ -32,7 +32,7 @@ scripts/run.sh
 
 This builds the app and asr-server, creates a proper .app bundle with stable code signing, and launches it. Stable signing means Accessibility and Microphone permissions persist across rebuilds.
 
-`scripts/run.sh` embeds Sparkle when available, but automatic updates stay disabled until you provide a real `SUPublicEDKey` in the generated Info.plist.
+`scripts/run.sh` embeds Sparkle when available and now includes the configured Sparkle `SUPublicEDKey` by default. Override the feed or key with `YUWP_SPARKLE_FEED_URL` or `YUWP_SPARKLE_PUBLIC_ED_KEY` if needed.
 
 Grant **Accessibility** and **Microphone** permissions when prompted.
 
@@ -55,8 +55,7 @@ Note: without `scripts/run.sh`, macOS ties permissions to the binary hash — ev
 
 Open **Settings…** from the menu bar to configure:
 - **General**
-  - **Dictation Mode** — Toggle or Push to Talk
-  - **Shortcut** — recorded directly in the settings window
+  - **Shortcut** — recorded directly in the settings window, including double-tap modifier keys
   - current presets: Ctrl+`, ⌥+Space, ⌘+⇧+D
 - **Models**
   - pick a preset (**Small**, **Large**, or **Custom**)
@@ -99,51 +98,44 @@ Models are only downloaded after explicit user action from Settings. Yuwp never 
 
 ## Standalone CLI Transcription
 
-Canonical CLI:
+Build the CLI:
 
 ```bash
 swift build -c release --product yuwp-asr
 bash scripts/build_mlx_metallib.sh release
-
-.build/arm64-apple-macosx/release/yuwp-asr transcribe sample.m4a \
-  [--model /path/to/model-dir] \
-  [--format text|json|srt|vtt] \
-  [--output out.txt]
 ```
 
-Legacy compatibility:
+Working examples:
 
 ```bash
-swift build -c release --product yuwp-transcribe
-.build/arm64-apple-macosx/release/yuwp-transcribe sample.m4a [options]
-```
+# Plain text
+.build/arm64-apple-macosx/release/yuwp-asr transcribe Tests/fixtures/jfk.wav
 
-Notes:
-- if `--model` is omitted, the CLI uses Yuwp's saved transcription model, then falls back to the built-in default model spec
-- `json` includes `text`, `language`, `duration`, and `segments` when the forced aligner is available locally
-- `srt` and `vtt` require the default forced aligner model to be present locally
-- the CLI accepts any audio format `AVAudioFile` can decode (`wav`, `m4a`, `mp3`, etc.) and resamples to 16kHz mono internally
-- if you move the binary out of `.build/.../release/`, move `mlx.metallib` with it too
-
-Examples:
-
-```bash
-# Plain transcript using Yuwp's saved model
-.build/arm64-apple-macosx/release/yuwp-asr transcribe note.m4a
-
-# Explicit model path
-.build/arm64-apple-macosx/release/yuwp-asr transcribe note.m4a \
-  --model ~/models/Qwen3-ASR-0.6B-4bit
-
-# Rich JSON
-.build/arm64-apple-macosx/release/yuwp-asr transcribe note.m4a \
+# JSON
+.build/arm64-apple-macosx/release/yuwp-asr transcribe Tests/fixtures/jfk.wav \
   --format json
 
-# Timed subtitles
-.build/arm64-apple-macosx/release/yuwp-asr transcribe note.m4a \
+# JSON with chunk/alignment debug
+.build/arm64-apple-macosx/release/yuwp-asr transcribe Tests/fixtures/jfk.wav \
+  --format json \
+  --debug | jq .debug
+
+# SRT
+.build/arm64-apple-macosx/release/yuwp-asr transcribe Tests/fixtures/jfk.wav \
   --format srt \
-  --output note.srt
+  --output /tmp/jfk.srt
+
+# Explicit model
+.build/arm64-apple-macosx/release/yuwp-asr transcribe Tests/fixtures/jfk.wav \
+  --model ~/models/Qwen3-ASR-0.6B-4bit
 ```
+
+Rules:
+- `--model` is optional; Yuwp falls back to the saved app model, then the built-in default model spec
+- `--format` supports `text`, `json`, `srt`, `vtt`
+- `json` includes `segments` when the aligner is available locally
+- `srt` and `vtt` require the default aligner to be available locally
+- if you move the binary out of `.build/.../release/`, move `mlx.metallib` with it too
 
 ### CLI benchmark comparison
 
@@ -160,7 +152,7 @@ uv run scripts/benchmark.py \
 
 Measured on an **Apple M3 Ultra**.
 
-- **Yuwp**: `asr-server` batch endpoint
+- **Yuwp**: `yuwp-asr serve` batch endpoint
 - **mlx-audio**: load-once Python batch reference
 - **qwen_asr**: normal mode for short audio, segmented mode (`-S 30 -W 3`) for medium and long audio
 
@@ -177,105 +169,69 @@ Measured on an **Apple M3 Ultra**.
 
 ## Standalone ASR Server
 
-Canonical CLI:
+Build the server:
 
 ```bash
 swift build -c release --product yuwp-asr
-.build/arm64-apple-macosx/release/yuwp-asr serve \
-  [--model /path/to/model-dir-or-repo-id] \
-  [--batch-model <dir>] \
-  [--aligner-model <dir>] \
-  [--disable-vad] \
-  [--disable-batch-retranscribe] \
-  [--port 9748] \
-  [--host 127.0.0.1] \
-  [--warmup]
+bash scripts/build_mlx_metallib.sh release
 ```
 
-Legacy compatibility:
+Start the server:
 
 ```bash
-swift build -c release --product asr-server
-.build/arm64-apple-macosx/release/asr-server [--model /path/to/model-dir-or-repo-id] [other options]
-.build/arm64-apple-macosx/release/asr-server <streaming-model-dir> [other options]
+.build/arm64-apple-macosx/release/yuwp-asr serve
 ```
 
-Treat the positional model arg as legacy compatibility only. `--model` is the canonical flag vocabulary across `yuwp-asr serve`, `yuwp-asr transcribe`, `asr-server`, and `yuwp-transcribe`.
-
-Use `--host 0.0.0.0` only when you explicitly want LAN clients to connect.
-
-If `--model` is omitted, local tooling should resolve the model from Yuwp's saved app config first, then the built-in default model spec. Timed `json` / `srt` / `vtt` output uses the default aligner model automatically when it is already present locally. Pass `--aligner-model` only to override it.
-
-### HTTP API
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/v1/info` | Model info and server status (`aligner` / `vad` included) |
-| `POST` | `/v1/audio/transcriptions` | OpenAI-style batch transcription (`text`, `json`, `srt`, `vtt`) |
-| `POST` | `/audio/transcriptions` | Alias for `/v1/audio/transcriptions` |
-| `POST` | `/v1/audio/subtitles` | Deprecated legacy subtitle alias |
-| `POST` | `/v1/audio/transcriptions/stream` | Create a new streaming session |
-| `POST` | `/v1/audio/transcriptions/stream/:id` | Feed audio chunk (raw 16kHz mono s16le PCM) |
-| `DELETE` | `/v1/audio/transcriptions/stream/:id` | Stop session, returns final transcription |
-
-#### Streaming
+Working examples:
 
 ```bash
-# Create session
-ID=$(curl -s -X POST http://localhost:9748/v1/audio/transcriptions/stream | jq -r .session_id)
+# Health
+curl -sf http://127.0.0.1:9748/v1/info | jq .
 
-# Feed audio (raw 16kHz mono s16le PCM)
-curl -X POST --data-binary @audio.pcm http://localhost:9748/v1/audio/transcriptions/stream/$ID
+# Plain text
+curl -sf http://127.0.0.1:9748/v1/audio/transcriptions \
+  -F file=@Tests/fixtures/jfk.wav \
+  -F response_format=text
 
-# Stop and get final text
-curl -s -X DELETE http://localhost:9748/v1/audio/transcriptions/stream/$ID
+# JSON
+curl -sf http://127.0.0.1:9748/v1/audio/transcriptions \
+  -F file=@Tests/fixtures/jfk.wav \
+  -F response_format=json | jq .
+
+# JSON with chunk/alignment debug
+curl -sf http://127.0.0.1:9748/v1/audio/transcriptions \
+  -F file=@Tests/fixtures/jfk.wav \
+  -F response_format=json \
+  -F debug=true | jq .debug
+
+# SRT
+curl -sf http://127.0.0.1:9748/v1/audio/transcriptions \
+  -F file=@Tests/fixtures/jfk.wav \
+  -F response_format=srt
+
+# VTT
+curl -sf http://127.0.0.1:9748/v1/audio/transcriptions \
+  -F file=@Tests/fixtures/jfk.wav \
+  -F response_format=vtt
 ```
 
-#### Batch transcription
-
-```bash
-curl http://localhost:9748/v1/audio/transcriptions \
-  -F file=@audio.m4a \
-  -F model=qwen3-asr-0.6b \
-  -F response_format=json
-```
-
-Supported `response_format` values:
-- `text`
-- `json`
-- `srt`
-- `vtt`
-
-Example JSON response:
-
-```json
-{
-  "text": "full transcript",
-  "language": "English",
-  "duration": 123.45,
-  "segments": [
-    { "start": 0.88, "end": 5.28, "text": "first subtitle" }
-  ]
-}
-```
-
-`json` includes `segments` when the aligner is loaded. `srt` and `vtt` require the aligner.
-
-#### Long-audio behavior
-
-The server keeps the streaming path unchanged. Batch endpoints share the same chunking behavior:
-
-- when built-in Silero VAD is available, audio is chunked on speech/silence boundaries
-- otherwise, the server falls back to low-energy chunking, following the same basic strategy used by `mlx-audio`
-- chunking still targets roughly `120s` max chunks, but cuts move to local low-energy boundaries instead of hard time splits
-- short files naturally stay as a single chunk
-- timed `json` / `srt` / `vtt` output requires the aligner
-
-Other batch limits and notes:
-- request body limit: `100 MB`
-- oversized uploads return JSON `413` instead of a dropped connection
-- use compressed uploads (`m4a`, `flac`, etc.) for long recordings instead of giant WAV files
+Rules:
+- `POST /v1/audio/transcriptions` is the canonical batch endpoint
+- `/audio/transcriptions` is an alias
+- `response_format` supports `text`, `json`, `srt`, `vtt`
+- `json` includes `segments` when the aligner is loaded
+- `srt` and `vtt` require the aligner
+- request body limit is `100 MB`
+- batch chunking targets roughly `120s` max chunks
 - `GET /v1/info` reports whether `aligner` and `vad` are active
+
+Streaming:
+
+```bash
+ID=$(curl -s -X POST http://127.0.0.1:9748/v1/audio/transcriptions/stream | jq -r .session_id)
+curl -X POST --data-binary @audio.pcm http://127.0.0.1:9748/v1/audio/transcriptions/stream/$ID
+curl -s -X DELETE http://127.0.0.1:9748/v1/audio/transcriptions/stream/$ID
+```
 
 ## Benchmarking
 
@@ -329,7 +285,7 @@ Three layers prevent hallucinated text during silence:
 Sources/
   App.swift                 # NSApplication entry, menu bar, orchestration
   DictationSession.swift    # Session state machine and protocol abstractions
-  NativeASRProvider.swift   # asr-server process management, HTTP STT sessions
+  NativeASRProvider.swift   # local ASR server process management, HTTP STT sessions
   ModelManager.swift        # HF model resolution from cache or local paths
   HotkeyManager.swift       # Global hotkey via CGEvent tap
   AudioCapture.swift        # AVAudioEngine → 16kHz mono PCM
@@ -341,15 +297,13 @@ Sources/
   TypewriterAnimator.swift  # Character-by-character text reveal
   Config.swift              # UserDefaults preferences
   NativeASR/                # MLX model loading, inference, streaming session
-    ForcedAligner.swift     # Subtitle alignment model wrapper
+    ForcedAligner.swift     # Subtitle alignment model
     SileroVAD.swift         # CoreML VAD chunking for long batch jobs
     Resources/              # Bundled Silero VAD CoreML model
   asr-server/
-    main.swift              # Legacy compatibility server entrypoint
+    main.swift              # Native HTTP server entrypoint
   yuwp-asr/
     main.swift              # Canonical CLI: `serve` + `transcribe`
-  yuwp-transcribe/
-    main.swift              # Legacy compatibility wrapper for `yuwp-asr transcribe`
   asr-stream-test/
     main.swift              # Replay WAVs through streaming + batch, emit quality metrics
   align-test/

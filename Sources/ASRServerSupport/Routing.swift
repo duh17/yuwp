@@ -7,38 +7,11 @@ let internalDiagnosticsEnabled = true
 let internalDiagnosticsEnabled = false
 #endif
 
-private let vadLock = NSLock()
-private let batchVADConfig = VADChunkingConfig(
-    threshold: 0.6,
-    minSpeechDuration: 0.25,
-    minSilenceDuration: 0.08,
-    speechPad: 0.02,
-    splitMinSilenceDuration: 0.5,
-    maxChunkDuration: ASRServerLimits.maxChunkSec,
-    minChunkDuration: 30.0
-)
-
-private let batchEnergyConfig = EnergyChunkingConfig(
-    maxChunkDuration: ASRServerLimits.maxChunkSec,
-    minChunkDuration: 1.0,
-    searchExpandDuration: 5.0,
-    energyWindowDuration: 0.1,
-    minProgressDuration: 1.0
-)
-
-public protocol ASRServing: AnyObject, Sendable {
+public protocol ASRServing: BatchTranscriptionServing, AnyObject, Sendable {
     func create() -> String
     func feed(_ sid: String, pcmData: Data) -> [String: Any]?
     func stop(_ sid: String) -> [String: Any]?
     func transcribeAudio(audio: [Float], language: String?, temperature: Float) throws -> TranscriptionResult
-    func transcribeChunk(audio: [Float], language: String?, temperature: Float) throws -> TranscriptionResult
-    func subtitleItems(
-        audio: [Float],
-        transcript: String?,
-        language: String?,
-        temperature: Float,
-        aligner: ForcedAligner
-    ) throws -> (transcript: String, language: String, items: [ForcedAlignItem])
 }
 
 public struct ASRRouteContext: Sendable {
@@ -91,10 +64,6 @@ public func routeRequest(_ req: HTTPRequest, context: ASRRouteContext) -> HTTPRe
 
     if batchRoutePaths.contains(path) {
         return handleBatchTranscriptionRequest(req, context: context)
-    }
-
-    if path == "/v1/audio/subtitles" {
-        return handleSubtitleRequest(req, context: context)
     }
 
     if path == streamRoutePrefix || path.hasPrefix(streamRoutePrefix + "/") {
@@ -195,15 +164,15 @@ private func handleBatchTranscriptionRequest(_ req: HTTPRequest, context: ASRRou
 
     let language = fields["language"].flatMap { $0.isEmpty ? nil : $0 }
     let temperature = Float(fields["temperature"] ?? "0") ?? 0
+    let includeDebug = parseDebugFlag(fields["debug"])
 
     do {
         let audio = try loadAudio(filePart: filePart, using: context.loadAudio)
-        let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
 
         switch requestedFormat {
         case "text":
-            let result = try transcribeChunked(
-                manager: context.manager,
+            let result = try BatchTranscriptionPipeline.transcribe(
+                using: context.manager,
                 audio: audio,
                 language: language,
                 temperature: temperature,
@@ -215,8 +184,8 @@ private func handleBatchTranscriptionRequest(_ req: HTTPRequest, context: ASRRou
             guard let aligner = context.aligner else {
                 return jsonResponse(status: 501, ["error": "aligner model not loaded"])
             }
-            let subtitleResult = try subtitleChunked(
-                manager: context.manager,
+            let subtitleResult = try BatchTranscriptionPipeline.subtitle(
+                using: context.manager,
                 audio: audio,
                 transcript: nil,
                 language: language,
@@ -228,15 +197,12 @@ private func handleBatchTranscriptionRequest(_ req: HTTPRequest, context: ASRRou
             return makeSubtitleResponse(
                 result: subtitleResult,
                 format: requestedFormat,
-                audioDuration: audioDuration,
-                maxWordsPerLine: 8,
-                maxDuration: 5.0,
-                pauseThreshold: 0.5
+                includeDebug: includeDebug
             )
         default:
             if let aligner = context.aligner {
-                let subtitleResult = try subtitleChunked(
-                    manager: context.manager,
+                let subtitleResult = try BatchTranscriptionPipeline.subtitle(
+                    using: context.manager,
                     audio: audio,
                     transcript: nil,
                     language: language,
@@ -248,15 +214,12 @@ private func handleBatchTranscriptionRequest(_ req: HTTPRequest, context: ASRRou
                 return makeSubtitleResponse(
                     result: subtitleResult,
                     format: "json",
-                    audioDuration: audioDuration,
-                    maxWordsPerLine: 8,
-                    maxDuration: 5.0,
-                    pauseThreshold: 0.5
+                    includeDebug: includeDebug
                 )
             }
 
-            let result = try transcribeChunked(
-                manager: context.manager,
+            let result = try BatchTranscriptionPipeline.transcribe(
+                using: context.manager,
                 audio: audio,
                 language: language,
                 temperature: temperature,
@@ -272,60 +235,6 @@ private func handleBatchTranscriptionRequest(_ req: HTTPRequest, context: ASRRou
             }
             return jsonResponse(status: 200, payload)
         }
-    } catch {
-        return jsonResponse(status: 422, ["error": error.localizedDescription])
-    }
-}
-
-private func handleSubtitleRequest(_ req: HTTPRequest, context: ASRRouteContext) -> HTTPResponse {
-    guard req.method == "POST" else { return jsonResponse(status: 405, ["error": "method not allowed"]) }
-    guard let aligner = context.aligner else {
-        return jsonResponse(status: 501, ["error": "aligner model not loaded"])
-    }
-
-    let fields: [String: String]
-    let filePart: MultipartPart
-    switch parseMultipartUpload(req) {
-    case .success(let parsedFields, let parsedFilePart):
-        fields = parsedFields
-        filePart = parsedFilePart
-    case .failure(let response):
-        return response
-    }
-
-    let requestedLanguage = fields["language"].flatMap { $0.isEmpty ? nil : $0 }
-    let responseFormat = (fields["response_format"] ?? "srt").lowercased()
-    guard ["srt", "vtt", "json", "text"].contains(responseFormat) else {
-        return jsonResponse(status: 400, ["error": "unsupported response_format: \(responseFormat). Use srt, vtt, json, or text"])
-    }
-
-    let maxWordsPerLine = Int(fields["max_words_per_line"] ?? "8") ?? 8
-    let maxDuration = Double(fields["max_duration"] ?? "5.0") ?? 5.0
-    let pauseThreshold = Double(fields["pause_threshold"] ?? "0.5") ?? 0.5
-    let temperature = Float(fields["temperature"] ?? "0") ?? 0
-
-    do {
-        let audio = try loadAudio(filePart: filePart, using: context.loadAudio)
-        let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
-        let subtitleResult = try subtitleChunked(
-            manager: context.manager,
-            audio: audio,
-            transcript: fields["text"],
-            language: requestedLanguage,
-            temperature: temperature,
-            aligner: aligner,
-            vad: context.vad,
-            log: context.log
-        )
-
-        return makeSubtitleResponse(
-            result: subtitleResult,
-            format: responseFormat,
-            audioDuration: audioDuration,
-            maxWordsPerLine: maxWordsPerLine,
-            maxDuration: maxDuration,
-            pauseThreshold: pauseThreshold
-        )
     } catch {
         return jsonResponse(status: 422, ["error": error.localizedDescription])
     }
@@ -371,32 +280,35 @@ private func invalidRequestResponse(_ message: String, param: String? = nil, sta
     return jsonResponse(status: status, ["error": error])
 }
 
+private func parseDebugFlag(_ raw: String?) -> Bool {
+    guard let raw else { return false }
+    switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "1", "true", "yes", "on":
+        return true
+    default:
+        return false
+    }
+}
+
 private func makeSubtitleResponse(
-    result: (transcript: String, language: String, items: [ForcedAlignItem]),
+    result: BatchSubtitleResult,
     format: String,
-    audioDuration: Double,
-    maxWordsPerLine: Int,
-    maxDuration: Double,
-    pauseThreshold: Double
+    includeDebug: Bool = false
 ) -> HTTPResponse {
     if format == "text" {
         return textResponse(status: 200, result.transcript)
     }
 
-    let subtitles = groupSubtitles(
-        result.items,
-        maxWordsPerLine: maxWordsPerLine,
-        maxDuration: maxDuration,
-        pauseThreshold: pauseThreshold
-    )
+    let subtitles = groupSubtitles(result.items, language: result.language)
 
     switch format {
     case "json":
         let body = formatSubtitleJSON(
             transcript: result.transcript,
             language: result.language,
-            duration: audioDuration,
-            subtitles: subtitles
+            duration: result.audioDuration,
+            subtitles: subtitles,
+            debug: includeDebug ? result.debug : nil
         )
         return HTTPResponse(status: 200, contentType: "application/json", body: body)
     case "vtt":
@@ -419,152 +331,3 @@ private func loadAudio(
     return try loader(tempURL)
 }
 
-private func formatVADChunkRanges(_ chunks: [VADAudioChunk]) -> String {
-    chunks.enumerated().map { index, chunk in
-        String(format: "%d:%.3f-%.3f", index + 1, chunk.startTime, chunk.endTime)
-    }.joined(separator: ",")
-}
-
-private func chunkAudio(_ audio: [Float], vad: SileroVAD?) throws -> [AudioChunk] {
-    if let vad {
-        vadLock.lock()
-        defer { vadLock.unlock() }
-        return try vad.chunk(audio: audio, config: batchVADConfig)
-    }
-
-    return chunkAudioByEnergy(audio, sampleRate: ASRAudio.sampleRate, config: batchEnergyConfig)
-}
-
-private func transcribeChunked(
-    manager: any ASRServing,
-    audio: [Float],
-    language: String?,
-    temperature: Float,
-    vad: SileroVAD?,
-    log: @Sendable (String) -> Void
-) throws -> TranscriptionResult {
-    let startedAt = Date()
-    let chunks = try chunkAudio(audio, vad: vad)
-    let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
-    let chunkMode = vad == nil ? "energy" : "VAD"
-    log("\(chunkMode) chunking transcription: \(chunks.count) chunks from \(String(format: "%.1f", audioDuration))s")
-    log("\(chunkMode) chunk ranges transcription: \(formatVADChunkRanges(chunks))")
-
-    var texts: [String] = []
-    var resolvedLanguage = language
-    for chunk in chunks {
-        let chunkResult = try manager.transcribeChunk(audio: chunk.audio, language: language, temperature: temperature)
-        let trimmed = chunkResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { texts.append(trimmed) }
-        if resolvedLanguage == nil { resolvedLanguage = chunkResult.language }
-    }
-
-    return TranscriptionResult(
-        text: AlignedTextRenderer.render(segments: texts),
-        language: resolvedLanguage,
-        audioDuration: audioDuration,
-        processingTime: Date().timeIntervalSince(startedAt)
-    )
-}
-
-private func subtitleChunked(
-    manager: any ASRServing,
-    audio: [Float],
-    transcript: String?,
-    language: String?,
-    temperature: Float,
-    aligner: ForcedAligner,
-    vad: SileroVAD?,
-    log: @Sendable (String) -> Void
-) throws -> (transcript: String, language: String, items: [ForcedAlignItem]) {
-    let chunks = try chunkAudio(audio, vad: vad)
-    let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
-    let chunkMode = vad == nil ? "energy" : "VAD"
-    log("\(chunkMode) chunking subtitles: \(chunks.count) chunks from \(String(format: "%.1f", audioDuration))s")
-    log("\(chunkMode) chunk ranges subtitles: \(formatVADChunkRanges(chunks))")
-
-    var allItems: [ForcedAlignItem] = []
-    var transcriptParts: [String] = []
-    var resolvedLanguage = language ?? "English"
-
-    if let transcript, !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        let textParts = splitTextProportionally(transcript, chunkDurations: chunks.map(\.duration))
-        for (chunk, textPart) in zip(chunks, textParts) {
-            let part = try manager.subtitleItems(
-                audio: chunk.audio,
-                transcript: textPart,
-                language: language,
-                temperature: temperature,
-                aligner: aligner
-            )
-            transcriptParts.append(part.transcript)
-            resolvedLanguage = language ?? part.language
-            allItems.append(contentsOf: offsetAlignmentItems(part.items, by: chunk.startTime))
-        }
-    } else {
-        for chunk in chunks {
-            let part = try manager.subtitleItems(
-                audio: chunk.audio,
-                transcript: nil,
-                language: language,
-                temperature: temperature,
-                aligner: aligner
-            )
-            let trimmed = part.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { transcriptParts.append(trimmed) }
-            resolvedLanguage = language ?? part.language
-            allItems.append(contentsOf: offsetAlignmentItems(part.items, by: chunk.startTime))
-        }
-    }
-
-    return (AlignedTextRenderer.render(segments: transcriptParts), resolvedLanguage, allItems)
-}
-
-func splitTextProportionally(_ text: String, chunkDurations: [Double]) -> [String] {
-    guard !chunkDurations.isEmpty else { return [text] }
-    let totalDuration = chunkDurations.reduce(0, +)
-    guard totalDuration > 0 else { return [text] }
-
-    let characters = Array(text)
-    let totalCount = characters.count
-    var parts: [String] = []
-    var textPosition = 0
-
-    for (index, duration) in chunkDurations.enumerated() {
-        if index == chunkDurations.count - 1 {
-            parts.append(String(characters[textPosition...]).trimmingCharacters(in: .whitespacesAndNewlines))
-            break
-        }
-
-        let proportion = duration / totalDuration
-        let charsForChunk = Int(Double(totalCount) * proportion)
-        let endPosition = min(totalCount, textPosition + charsForChunk)
-        let searchRange = max(20, Int(Double(charsForChunk) * 0.1))
-        var bestPosition = endPosition
-        let separators = Set(" 。．！？、，.!?,\n")
-
-        outer: for offset in 0 ..< searchRange {
-            for checkPosition in [endPosition + offset, endPosition - offset] {
-                guard checkPosition >= 0, checkPosition < totalCount else { continue }
-                if separators.contains(characters[checkPosition]) {
-                    bestPosition = min(totalCount, checkPosition + 1)
-                    break outer
-                }
-            }
-        }
-
-        if bestPosition <= textPosition {
-            bestPosition = min(totalCount, endPosition)
-        }
-        parts.append(String(characters[textPosition ..< bestPosition]).trimmingCharacters(in: .whitespacesAndNewlines))
-        textPosition = bestPosition
-    }
-
-    return parts
-}
-
-private func offsetAlignmentItems(_ items: [ForcedAlignItem], by offset: Double) -> [ForcedAlignItem] {
-    items.map { item in
-        ForcedAlignItem(text: item.text, startTime: item.startTime + offset, endTime: item.endTime + offset)
-    }
-}

@@ -36,6 +36,7 @@ private struct CLIConfig {
     let format: OutputFormat
     let outputPath: String?
     let language: String?
+    let debug: Bool
 }
 
 private struct JSONSegment: Codable {
@@ -52,6 +53,7 @@ private struct JSONOutput: Codable {
     let rtf: Double
     let speedMultiplier: Double
     let segments: [JSONSegment]?
+    let debug: BatchSubtitleDebug?
 }
 
 private enum CLIError: LocalizedError {
@@ -62,6 +64,7 @@ private enum CLIError: LocalizedError {
     case invalidFormat
     case unknownOption(String)
     case alignerRequired(format: String)
+    case debugRequiresJSON
 
     var errorDescription: String? {
         switch self {
@@ -77,6 +80,8 @@ private enum CLIError: LocalizedError {
             return "Unknown option: \(flag)"
         case .alignerRequired(let format):
             return "\(format) output requires the Qwen3 forced aligner model to be installed locally."
+        case .debugRequiresJSON:
+            return "--debug currently requires --format json"
         }
     }
 }
@@ -90,6 +95,7 @@ private func printUsage(programName: String) {
       --format <text|json|srt|vtt>  Output format (default: text)
       --output <path>               Write output to a file instead of stdout
       --language <lang>             Force language hint
+      --debug                       Include chunk/alignment debug metadata in JSON output
 
     Examples:
       \(programName) sample.m4a
@@ -114,6 +120,7 @@ private func parseCLI(arguments: [String]) throws -> CLIConfig {
     var format: OutputFormat = .text
     var outputPath: String?
     var language: String?
+    var debug = false
 
     while !args.isEmpty {
         let flag = args.removeFirst()
@@ -133,9 +140,15 @@ private func parseCLI(arguments: [String]) throws -> CLIConfig {
         case "--language":
             guard !args.isEmpty else { throw CLIError.missingValue(flag) }
             language = args.removeFirst()
+        case "--debug":
+            debug = true
         default:
             throw CLIError.unknownOption(flag)
         }
+    }
+
+    if debug, format != .json {
+        throw CLIError.debugRequiresJSON
     }
 
     return CLIConfig(
@@ -143,7 +156,8 @@ private func parseCLI(arguments: [String]) throws -> CLIConfig {
         modelSpec: modelSpec,
         format: format,
         outputPath: outputPath,
-        language: language
+        language: language,
+        debug: debug
     )
 }
 
@@ -172,7 +186,8 @@ private func makeJSONOutput(
     language: String?,
     duration: Double,
     processingTime: Double,
-    subtitles: [Subtitle]? = nil
+    subtitles: [Subtitle]? = nil,
+    debug: BatchSubtitleDebug? = nil
 ) -> JSONOutput {
     JSONOutput(
         text: transcript,
@@ -181,7 +196,8 @@ private func makeJSONOutput(
         processingTime: processingTime,
         rtf: processingTime / max(duration, 1e-6),
         speedMultiplier: duration / max(processingTime, 1e-6),
-        segments: subtitles?.map { JSONSegment(start: $0.start, end: $0.end, text: $0.text) }
+        segments: subtitles?.map { JSONSegment(start: $0.start, end: $0.end, text: $0.text) },
+        debug: debug
     )
 }
 
@@ -198,6 +214,56 @@ private func loadDefaultAligner() throws -> ForcedAligner? {
     return try ForcedAligner.load(from: alignerURL)
 }
 
+private func loadDefaultVAD() -> SileroVAD? {
+    try? SileroVAD()
+}
+
+private final class LocalBatchTranscriptionService: BatchTranscriptionServing, @unchecked Sendable {
+    private let transcriber: Qwen3ASRTranscriber
+    private let inferenceLock = NSLock()
+
+    init(transcriber: Qwen3ASRTranscriber) {
+        self.transcriber = transcriber
+    }
+
+    func transcribeChunk(audio: [Float], language: String?, temperature: Float) throws -> TranscriptionResult {
+        inferenceLock.lock()
+        defer { inferenceLock.unlock() }
+        return try transcriber.transcribe(audio: audio, language: language, temperature: temperature)
+    }
+
+    func subtitleItems(
+        audio: [Float],
+        transcript: String?,
+        language: String?,
+        temperature: Float,
+        aligner: ForcedAligner
+    ) throws -> (transcript: String, language: String, items: [ForcedAlignItem]) {
+        let trimmedTranscript = transcript?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        inferenceLock.lock()
+        defer { inferenceLock.unlock() }
+
+        let resolvedTranscript: String
+        let resolvedLanguage: String
+        if let trimmedTranscript, !trimmedTranscript.isEmpty {
+            resolvedTranscript = trimmedTranscript
+            resolvedLanguage = language ?? "English"
+        } else {
+            let result = try transcriber.transcribe(audio: audio, language: language, temperature: temperature)
+            resolvedTranscript = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            resolvedLanguage = language ?? result.language ?? "English"
+        }
+
+        guard !resolvedTranscript.isEmpty else {
+            return (resolvedTranscript, resolvedLanguage, [])
+        }
+
+        let items = aligner.align(audio: audio, text: resolvedTranscript, language: resolvedLanguage)
+        return (resolvedTranscript, resolvedLanguage, items)
+    }
+}
+
 private func run(config: CLIConfig) throws {
     let audioURL = try validatePathExists(config.audioPath, label: "Audio file")
     guard let modelURL = YuwpModelSupport.resolveConfiguredModelURL(explicitSpec: config.modelSpec) else {
@@ -206,42 +272,75 @@ private func run(config: CLIConfig) throws {
 
     let transcriber = try Qwen3ASRTranscriber.load(from: modelURL)
     let aligner = try loadDefaultAligner()
+    let vad = loadDefaultVAD()
+    let service = LocalBatchTranscriptionService(transcriber: transcriber)
 
     let audio = try loadAudioFile(audioURL)
     let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
-    let result = try transcriber.transcribe(audio: audio, language: config.language)
 
     switch config.format {
     case .text:
+        let result = try BatchTranscriptionPipeline.transcribe(
+            using: service,
+            audio: audio,
+            language: config.language,
+            temperature: 0.0,
+            vad: vad
+        )
         try writeOutput(result.text, to: config.outputPath)
     case .json:
-        let subtitles: [Subtitle]?
-        let processingTime: Double
         if let aligner {
-            let startedAt = Date()
-            let resolvedLanguage = config.language ?? result.language ?? "English"
-            let items = aligner.align(audio: audio, text: result.text, language: resolvedLanguage)
-            subtitles = groupSubtitles(items, maxWordsPerLine: 8, maxDuration: 5.0, pauseThreshold: 0.5)
-            processingTime = result.processingTime + Date().timeIntervalSince(startedAt)
+            let result = try BatchTranscriptionPipeline.subtitle(
+                using: service,
+                audio: audio,
+                transcript: nil,
+                language: config.language,
+                temperature: 0.0,
+                aligner: aligner,
+                vad: vad
+            )
+            let subtitles = groupSubtitles(result.items, language: config.language ?? result.language)
+            let payload = makeJSONOutput(
+                transcript: result.transcript,
+                language: config.language ?? result.language,
+                duration: audioDuration,
+                processingTime: result.processingTime,
+                subtitles: subtitles,
+                debug: config.debug ? result.debug : nil
+            )
+            try writeOutput(try encodeJSON(payload), to: config.outputPath)
         } else {
-            subtitles = nil
-            processingTime = result.processingTime
+            let result = try BatchTranscriptionPipeline.transcribe(
+                using: service,
+                audio: audio,
+                language: config.language,
+                temperature: 0.0,
+                vad: vad
+            )
+            let payload = makeJSONOutput(
+                transcript: result.text,
+                language: config.language ?? result.language,
+                duration: audioDuration,
+                processingTime: result.processingTime,
+                subtitles: nil,
+                debug: nil
+            )
+            try writeOutput(try encodeJSON(payload), to: config.outputPath)
         }
-        let payload = makeJSONOutput(
-            transcript: result.text,
-            language: config.language ?? result.language,
-            duration: audioDuration,
-            processingTime: processingTime,
-            subtitles: subtitles
-        )
-        try writeOutput(try encodeJSON(payload), to: config.outputPath)
     case .srt, .vtt:
         guard let aligner else {
             throw CLIError.alignerRequired(format: config.format.rawValue)
         }
-        let resolvedLanguage = config.language ?? result.language ?? "English"
-        let items = aligner.align(audio: audio, text: result.text, language: resolvedLanguage)
-        let subtitles = groupSubtitles(items, maxWordsPerLine: 8, maxDuration: 5.0, pauseThreshold: 0.5)
+        let result = try BatchTranscriptionPipeline.subtitle(
+            using: service,
+            audio: audio,
+            transcript: nil,
+            language: config.language,
+            temperature: 0.0,
+            aligner: aligner,
+            vad: vad
+        )
+        let subtitles = groupSubtitles(result.items, language: config.language ?? result.language)
         switch config.format {
         case .srt:
             try writeOutput(formatSRT(subtitles), to: config.outputPath)

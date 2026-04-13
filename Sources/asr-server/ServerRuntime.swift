@@ -297,22 +297,13 @@ final class StreamingSessionManager: @unchecked Sendable {
         language: String? = nil,
         temperature: Float = 0.0
     ) throws -> TranscriptionResult {
-        let transcriber = batchTranscriber ?? self.transcriber
-        let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
-
-        inferenceLock.lock()
-        defer { inferenceLock.unlock() }
-
-        if audioDuration <= ASRServerLimits.maxChunkSec {
-            return try transcriber.transcribe(audio: audio, language: language, temperature: temperature)
-        }
-
-        return try transcribeLongAudioLocked(
+        try BatchTranscriptionPipeline.transcribe(
+            using: self,
             audio: audio,
             language: language,
             temperature: temperature,
-            transcriber: transcriber,
-            audioDuration: audioDuration
+            vad: vad,
+            log: log
         )
     }
 
@@ -325,42 +316,6 @@ final class StreamingSessionManager: @unchecked Sendable {
         inferenceLock.lock()
         defer { inferenceLock.unlock() }
         return try transcriber.transcribe(audio: audio, language: language, temperature: temperature)
-    }
-
-    private func transcribeLongAudioLocked(
-        audio: [Float],
-        language: String?,
-        temperature: Float,
-        transcriber: Qwen3ASRTranscriber,
-        audioDuration: Double
-    ) throws -> TranscriptionResult {
-        let startedAt = Date()
-        let chunks = chunkAudioByEnergy(
-            audio,
-            sampleRate: ASRAudio.sampleRate,
-            config: EnergyChunkingConfig(maxChunkDuration: ASRServerLimits.maxChunkSec)
-        )
-        var texts: [String] = []
-        var detectedLanguage: String?
-
-        log(
-            "Long batch transcription: \(String(format: "%.1f", audioDuration))s "
-                + "audio -> \(chunks.count) low-energy chunks"
-        )
-
-        for chunk in chunks {
-            let result = try transcriber.transcribe(audio: chunk.audio, language: language, temperature: temperature)
-            let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty { texts.append(text) }
-            if detectedLanguage == nil { detectedLanguage = result.language }
-        }
-
-        return TranscriptionResult(
-            text: AlignedTextRenderer.render(segments: texts),
-            language: language ?? detectedLanguage,
-            audioDuration: audioDuration,
-            processingTime: Date().timeIntervalSince(startedAt)
-        )
     }
 
     func subtitleItems(

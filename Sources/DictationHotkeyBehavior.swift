@@ -20,38 +20,16 @@ enum DictationHotkeyAction: Equatable {
     case none
 }
 
-/// Small reducer that maps shortcut press/release events to dictation actions.
+/// Small reducer that maps shortcut press events to dictation actions.
 /// Keeps the hotkey interaction policy testable and out of AppDelegate branches.
 struct DictationHotkeyBehavior: Equatable {
-    private(set) var sessionStartedByPushToTalk = false
-
     mutating func handle(
         phase: ShortcutPhase,
-        mode: DictationInteractionMode,
         isSessionActive: Bool
     ) -> DictationHotkeyAction {
-        switch mode {
-        case .toggle:
-            guard phase == .pressed else { return .none }
-            sessionStartedByPushToTalk = false
-            return isSessionActive ? .stop : .start
-
-        case .pushToTalk:
-            switch phase {
-            case .pressed:
-                guard !isSessionActive else { return .none }
-                sessionStartedByPushToTalk = true
-                return .start
-
-            case .released:
-                guard isSessionActive, sessionStartedByPushToTalk else { return .none }
-                sessionStartedByPushToTalk = false
-                return .stop
-            }
-        }
+        guard phase == .pressed else { return .none }
+        return isSessionActive ? .stop : .start
     }
 
-    mutating func sessionDidEnd() {
-        sessionStartedByPushToTalk = false
-    }
+    mutating func sessionDidEnd() {}
 }

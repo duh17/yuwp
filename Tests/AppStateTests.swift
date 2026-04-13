@@ -6,7 +6,7 @@ import Testing
 struct AppStateTests {
     @Test func shortcutStartsListeningWhenProviderIsReady() {
         var state = AppState(
-            settings: AppSettingsState(dictationMode: .toggle, serverMode: .localhost),
+            settings: AppSettingsState(serverMode: .localhost),
             hasAccessibilityPermission: true,
             providerState: .ready
         )
@@ -19,7 +19,7 @@ struct AppStateTests {
 
     @Test func shortcutWhileStoppingDoesNotStartAnotherSession() {
         var state = AppState(
-            settings: AppSettingsState(dictationMode: .toggle, serverMode: .localhost),
+            settings: AppSettingsState(serverMode: .localhost),
             hasAccessibilityPermission: true,
             providerState: .ready,
             sessionPhase: .stopping
@@ -33,7 +33,7 @@ struct AppStateTests {
 
     @Test func enterInterceptedStopsThenFinishedReplaysEnter() {
         var state = AppState(
-            settings: AppSettingsState(dictationMode: .toggle, serverMode: .localhost),
+            settings: AppSettingsState(serverMode: .localhost),
             hasAccessibilityPermission: true,
             providerState: .ready,
             sessionPhase: .listening
@@ -58,7 +58,7 @@ struct AppStateTests {
 
     @Test func shortcutLogsMissingModelWhileProviderIsUnavailable() {
         var state = AppState(
-            settings: AppSettingsState(dictationMode: .toggle, serverMode: .localhost),
+            settings: AppSettingsState(serverMode: .localhost),
             hasAccessibilityPermission: true,
             providerState: .starting,
             missingConfiguredModelLabels: ["Transcription"]
@@ -83,7 +83,7 @@ struct AppStateTests {
 
     @Test func statusDisplayUsesReducerState() {
         let state = AppState(
-            settings: AppSettingsState(dictationMode: .toggle, serverMode: .allInterfaces),
+            settings: AppSettingsState(serverMode: .allInterfaces),
             hasAccessibilityPermission: true,
             providerState: .ready,
             sessionPhase: .idle,

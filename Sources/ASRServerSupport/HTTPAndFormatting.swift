@@ -3,7 +3,7 @@ import NativeASR
 
 public enum ASRServerLimits {
     public static let maxBodySize = 100 * 1024 * 1024
-    public static let maxChunkSec = 120.0
+    public static let maxChunkSec = BatchTranscriptionDefaults.maxChunkDurationSec
 }
 
 public struct HTTPRequest {

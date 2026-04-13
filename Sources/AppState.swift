@@ -11,7 +11,6 @@ enum AppSessionPhase: String, Sendable, Equatable {
 }
 
 struct AppSettingsState: Sendable, Equatable {
-    var dictationMode: DictationInteractionMode = .toggle
     var serverMode: ServerMode = .localhost
 }
 
@@ -194,7 +193,6 @@ struct AppState: Sendable, Equatable {
 
         let action = hotkeyBehavior.handle(
             phase: event.phase,
-            mode: settings.dictationMode,
             isSessionActive: sessionPhase.isCapturingAudio
         )
 

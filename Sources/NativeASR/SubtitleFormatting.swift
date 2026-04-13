@@ -14,17 +14,173 @@ public struct Subtitle: Equatable, Sendable, Codable {
     }
 }
 
+public enum SubtitleFormattingDefaults {
+    public static let maxWordsPerLine = 8
+    public static let maxDuration = 5.0
+    public static let pauseThreshold = 0.5
+    public static let compactScriptMaxUnitsPerSubtitle = 12
+    public static let compactScriptPauseThreshold = 0.6
+    public static let sentenceEndChars: Set<Character> = [".", "!", "?", "。", "！", "？"]
+    public static let compactScriptSentenceEndChars: Set<Character> = [".", "!", "?", "。", "！", "？", "；", "：", "…"]
+}
+
+public protocol SubtitleStitchingStrategy: Sendable {
+    var id: String { get }
+    var maxUnitsPerSubtitle: Int { get }
+    var maxDuration: Double { get }
+    var pauseThreshold: Double { get }
+    var sentenceEndChars: Set<Character> { get }
+    func unitCount(for item: ForcedAlignItem) -> Int
+}
+
+public struct WordSubtitleStitchingStrategy: SubtitleStitchingStrategy {
+    public let id = "word"
+    public let maxUnitsPerSubtitle: Int
+    public let maxDuration: Double
+    public let pauseThreshold: Double
+    public let sentenceEndChars: Set<Character>
+
+    public init(
+        maxUnitsPerSubtitle: Int = SubtitleFormattingDefaults.maxWordsPerLine,
+        maxDuration: Double = SubtitleFormattingDefaults.maxDuration,
+        pauseThreshold: Double = SubtitleFormattingDefaults.pauseThreshold,
+        sentenceEndChars: Set<Character> = SubtitleFormattingDefaults.sentenceEndChars
+    ) {
+        self.maxUnitsPerSubtitle = maxUnitsPerSubtitle
+        self.maxDuration = maxDuration
+        self.pauseThreshold = pauseThreshold
+        self.sentenceEndChars = sentenceEndChars
+    }
+
+    public func unitCount(for item: ForcedAlignItem) -> Int { 1 }
+}
+
+public struct CompactScriptSubtitleStitchingStrategy: SubtitleStitchingStrategy {
+    public let id = "compact-script"
+    public let maxUnitsPerSubtitle: Int
+    public let maxDuration: Double
+    public let pauseThreshold: Double
+    public let sentenceEndChars: Set<Character>
+
+    public init(
+        maxUnitsPerSubtitle: Int = SubtitleFormattingDefaults.compactScriptMaxUnitsPerSubtitle,
+        maxDuration: Double = SubtitleFormattingDefaults.maxDuration,
+        pauseThreshold: Double = SubtitleFormattingDefaults.compactScriptPauseThreshold,
+        sentenceEndChars: Set<Character> = SubtitleFormattingDefaults.compactScriptSentenceEndChars
+    ) {
+        self.maxUnitsPerSubtitle = maxUnitsPerSubtitle
+        self.maxDuration = maxDuration
+        self.pauseThreshold = pauseThreshold
+        self.sentenceEndChars = sentenceEndChars
+    }
+
+    public func unitCount(for item: ForcedAlignItem) -> Int { 1 }
+}
+
+public struct SubtitleStitchingRegistry: Sendable {
+    public let fallbackStrategy: any SubtitleStitchingStrategy
+    public let exactStrategies: [String: any SubtitleStitchingStrategy]
+
+    public init(
+        fallbackStrategy: any SubtitleStitchingStrategy = WordSubtitleStitchingStrategy(),
+        exactStrategies: [String: any SubtitleStitchingStrategy] = [
+            "zh": CompactScriptSubtitleStitchingStrategy(),
+            "yue": CompactScriptSubtitleStitchingStrategy(),
+            "ja": CompactScriptSubtitleStitchingStrategy(),
+        ]
+    ) {
+        self.fallbackStrategy = fallbackStrategy
+        self.exactStrategies = exactStrategies
+    }
+
+    public func strategy(for language: String?) -> any SubtitleStitchingStrategy {
+        guard let normalized = normalizeLanguageCode(language)?.lowercased() else {
+            return fallbackStrategy
+        }
+        return exactStrategies[normalized] ?? fallbackStrategy
+    }
+
+    public static let `default` = SubtitleStitchingRegistry()
+}
+
+public struct SubtitleJSONSegment: Sendable, Codable {
+    public let start: Double
+    public let end: Double
+    public let text: String
+
+    public init(start: Double, end: Double, text: String) {
+        self.start = start
+        self.end = end
+        self.text = text
+    }
+}
+
+public struct SubtitleDebugPayload: Sendable, Codable {
+    public let text: String
+    public let language: String?
+    public let duration: Double
+    public let segments: [SubtitleJSONSegment]?
+    public let debug: BatchSubtitleDebug?
+    public let processingTime: Double?
+    public let rtf: Double?
+    public let speedMultiplier: Double?
+
+    public init(
+        text: String,
+        language: String?,
+        duration: Double,
+        segments: [SubtitleJSONSegment]? = nil,
+        debug: BatchSubtitleDebug? = nil,
+        processingTime: Double? = nil,
+        rtf: Double? = nil,
+        speedMultiplier: Double? = nil
+    ) {
+        self.text = text
+        self.language = language
+        self.duration = duration
+        self.segments = segments
+        self.debug = debug
+        self.processingTime = processingTime
+        self.rtf = rtf
+        self.speedMultiplier = speedMultiplier
+    }
+}
+
 public func groupSubtitles(
     _ items: [ForcedAlignItem],
-    maxWordsPerLine: Int = 8,
-    maxDuration: Double = 5.0,
-    pauseThreshold: Double = 0.5,
-    sentenceEndChars: Set<Character> = [".", "!", "?", "。", "！", "？"]
+    language: String?,
+    registry: SubtitleStitchingRegistry = .default
+) -> [Subtitle] {
+    groupSubtitles(items, strategy: registry.strategy(for: language))
+}
+
+public func groupSubtitles(
+    _ items: [ForcedAlignItem],
+    maxWordsPerLine: Int = SubtitleFormattingDefaults.maxWordsPerLine,
+    maxDuration: Double = SubtitleFormattingDefaults.maxDuration,
+    pauseThreshold: Double = SubtitleFormattingDefaults.pauseThreshold,
+    sentenceEndChars: Set<Character> = SubtitleFormattingDefaults.sentenceEndChars
+) -> [Subtitle] {
+    groupSubtitles(
+        items,
+        strategy: WordSubtitleStitchingStrategy(
+            maxUnitsPerSubtitle: maxWordsPerLine,
+            maxDuration: maxDuration,
+            pauseThreshold: pauseThreshold,
+            sentenceEndChars: sentenceEndChars
+        )
+    )
+}
+
+public func groupSubtitles(
+    _ items: [ForcedAlignItem],
+    strategy: any SubtitleStitchingStrategy
 ) -> [Subtitle] {
     guard !items.isEmpty else { return [] }
 
     var subtitles: [Subtitle] = []
     var currentWords: [ForcedAlignItem] = []
+    var currentUnits = 0
     var subtitleIndex = 1
 
     func flush() {
@@ -38,23 +194,46 @@ public func groupSubtitles(
         ))
         subtitleIndex += 1
         currentWords.removeAll()
+        currentUnits = 0
     }
 
     for (index, item) in items.enumerated() {
         currentWords.append(item)
+        currentUnits += max(1, strategy.unitCount(for: item))
 
         let duration = item.endTime - (currentWords.first?.startTime ?? item.startTime)
-        let atWordLimit = currentWords.count >= maxWordsPerLine
-        let atDurationLimit = duration >= maxDuration
-        let atSentenceEnd = item.text.last.map { sentenceEndChars.contains($0) } ?? false
-        let hasPause = index + 1 < items.count && (items[index + 1].startTime - item.endTime) >= pauseThreshold
+        let atUnitLimit = currentUnits >= strategy.maxUnitsPerSubtitle
+        let atDurationLimit = duration >= strategy.maxDuration
+        let atSentenceEnd = item.text.last.map { strategy.sentenceEndChars.contains($0) } ?? false
+        let hasPause = index + 1 < items.count && (items[index + 1].startTime - item.endTime) >= strategy.pauseThreshold
 
-        if atWordLimit || atDurationLimit || atSentenceEnd || hasPause {
+        if atUnitLimit || atDurationLimit || atSentenceEnd || hasPause {
             flush()
         }
     }
     flush()
     return subtitles
+}
+
+public func subtitleItems(from debug: BatchSubtitleDebug) -> [ForcedAlignItem] {
+    debug.chunks.flatMap { chunk in
+        chunk.items.map { item in
+            ForcedAlignItem(text: item.text, startTime: item.start, endTime: item.end, alignText: item.alignText)
+        }
+    }
+}
+
+public func restitchSubtitles(
+    from payload: SubtitleDebugPayload,
+    language: String? = nil,
+    registry: SubtitleStitchingRegistry = .default
+) -> [Subtitle] {
+    guard let debug = payload.debug else {
+        return (payload.segments ?? []).enumerated().map { index, segment in
+            Subtitle(index: index + 1, start: segment.start, end: segment.end, text: segment.text)
+        }
+    }
+    return groupSubtitles(subtitleItems(from: debug), language: language ?? payload.language, registry: registry)
 }
 
 private func formatTime(_ seconds: Double, separator: String = ",") -> String {
@@ -153,16 +332,20 @@ public func formatSubtitleJSON(
     transcript: String,
     language: String,
     duration: Double,
-    subtitles: [Subtitle]
+    subtitles: [Subtitle],
+    debug: BatchSubtitleDebug? = nil
 ) -> Data {
     let segments: [[String: Any]] = subtitles.map { sub in
         ["start": sub.start, "end": sub.end, "text": sub.text]
     }
-    let payload: [String: Any] = [
+    var payload: [String: Any] = [
         "text": transcript,
         "language": normalizeLanguageCode(language) ?? language,
         "duration": duration,
         "segments": segments,
     ]
+    if let debug, let debugData = try? JSONEncoder().encode(debug), let debugJSON = try? JSONSerialization.jsonObject(with: debugData) {
+        payload["debug"] = debugJSON
+    }
     return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
 }

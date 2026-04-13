@@ -3,7 +3,7 @@
 # requires-python = ">=3.14"
 # ///
 
-"""Get a YouTube transcript with yt-dlp captions first, then Yuwp fallback."""
+"""Get a YouTube transcript with yt-dlp captions first, then Yuwp ASR fallback."""
 
 from __future__ import annotations
 
@@ -15,15 +15,21 @@ import mimetypes
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = Path("/tmp/yuwp-video-transcripts")
+DEFAULT_SERVER_URL = "http://127.0.0.1:9748"
 TRANSCRIBE_TIMEOUT_SECONDS = 60 * 60
+BUILD_TIMEOUT_SECONDS = 30 * 60
+SERVER_READY_TIMEOUT_SECONDS = 120
 SUBTITLE_TIMESTAMP_RE = re.compile(r"^(\d{2}:\d{2}:\d{2})[,\.]\d{3}\s+-->\s+")
 
 
@@ -47,20 +53,38 @@ def tail(text: str, max_lines: int = 30) -> str:
     return "\n".join(lines[-max_lines:])
 
 
-def run_command(command: list[str], *, label: str) -> str:
-    result = subprocess.run(command, capture_output=True, text=True, errors="ignore")
+def run_command(
+    command: list[str],
+    *,
+    label: str,
+    cwd: Path | None = None,
+    timeout: int | None = None,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            errors="ignore",
+            cwd=str(cwd) if cwd else None,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SkillError(f"{label} timed out after {timeout}s") from exc
+
     if result.returncode != 0:
         details = tail(result.stderr or result.stdout)
         message = f"{label} failed"
         if details:
             message += f":\n{details}"
         raise SkillError(message)
-    return (result.stdout or "") + (result.stderr or "")
+
+    return result
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fetch a YouTube transcript with yt-dlp captions first, then Yuwp fallback.",
+        description="Fetch a YouTube transcript with yt-dlp captions first, then Yuwp ASR fallback.",
     )
     parser.add_argument("video_url", help="YouTube video URL")
     parser.add_argument(
@@ -68,17 +92,17 @@ def parse_args() -> argparse.Namespace:
         "--high-quality",
         action="store_true",
         dest="force_hq",
-        help="Skip captions and force Yuwp audio transcription",
+        help="Skip captions and force local Yuwp audio transcription",
     )
     parser.add_argument(
         "--srt",
         action="store_true",
-        help="Generate SRT subtitles with Yuwp /v1/audio/subtitles",
+        help="Generate SRT subtitles through Yuwp's batch endpoint (auto-starts `yuwp-asr serve` if needed)",
     )
     parser.add_argument(
-        "--server",
+        "--model",
         default=None,
-        help="Override Yuwp server URL (default: $YUWP_SERVER_URL or http://localhost:9748)",
+        help="Optional model path or repo id passed through to `yuwp-asr serve --model` when starting a local server",
     )
     return parser.parse_args()
 
@@ -105,6 +129,14 @@ def cache_key_for_url(video_url: str) -> str:
 
     digest = hashlib.sha256(video_url.encode("utf-8")).hexdigest()[:16]
     return f"video_{digest}"
+
+
+def cache_stem(video_url: str, model_spec: str | None) -> str:
+    base = cache_key_for_url(video_url)
+    if not model_spec:
+        return base
+    digest = hashlib.sha256(model_spec.encode("utf-8")).hexdigest()[:8]
+    return f"{base}_{digest}"
 
 
 def normalize_srt_to_text(content: str) -> str:
@@ -280,6 +312,92 @@ def ensure_audio_downloaded(video_url: str, audio_path: Path) -> Path:
     raise SkillError("Audio download did not produce a usable file")
 
 
+def built_cli_candidates() -> list[Path]:
+    return [
+        REPO_ROOT / ".build" / "arm64-apple-macosx" / "release" / "yuwp-asr",
+        REPO_ROOT / ".build" / "release" / "yuwp-asr",
+        REPO_ROOT / ".build" / "arm64-apple-macosx" / "debug" / "yuwp-asr",
+        REPO_ROOT / ".build" / "debug" / "yuwp-asr",
+    ]
+
+
+def build_yuwp_asr() -> None:
+    require_tool("swift")
+
+    eprint("Building yuwp-asr...")
+    run_command(
+        ["swift", "build", "-c", "release", "--product", "yuwp-asr"],
+        label="swift build yuwp-asr",
+        cwd=REPO_ROOT,
+        timeout=BUILD_TIMEOUT_SECONDS,
+    )
+
+    release_metallib = REPO_ROOT / ".build" / "arm64-apple-macosx" / "release" / "mlx.metallib"
+    if release_metallib.exists():
+        return
+
+    require_tool("bash")
+    run_command(
+        ["bash", "scripts/build_mlx_metallib.sh", "release"],
+        label="build mlx.metallib",
+        cwd=REPO_ROOT,
+        timeout=BUILD_TIMEOUT_SECONDS,
+    )
+
+
+def candidate_has_runtime_assets(cli_path: Path) -> bool:
+    return cli_path.with_name("mlx.metallib").exists()
+
+
+def ensure_mlx_metallib(cli_path: Path) -> None:
+    metallib_path = cli_path.with_name("mlx.metallib")
+    if metallib_path.exists():
+        return
+
+    if cli_path.is_relative_to(REPO_ROOT / ".build"):
+        configuration = cli_path.parent.name
+        eprint(f"Missing {metallib_path.name}; building {configuration} Metal library...")
+        run_command(
+            ["bash", "scripts/build_mlx_metallib.sh", configuration],
+            label=f"build mlx.metallib ({configuration})",
+            cwd=REPO_ROOT,
+            timeout=BUILD_TIMEOUT_SECONDS,
+        )
+        if metallib_path.exists():
+            return
+
+    raise SkillError(f"Missing required runtime asset: {metallib_path}")
+
+
+def ensure_yuwp_asr_binary() -> Path:
+    override = os.environ.get("YUWP_ASR_BIN")
+    if override:
+        cli_path = Path(override).expanduser().resolve()
+        if not cli_path.exists():
+            raise SkillError(f"YUWP_ASR_BIN points to a missing file: {cli_path}")
+        ensure_mlx_metallib(cli_path)
+        return cli_path
+
+    existing_candidates = [candidate for candidate in built_cli_candidates() if candidate.exists() and os.access(candidate, os.X_OK)]
+    for candidate in existing_candidates:
+        if candidate_has_runtime_assets(candidate):
+            return candidate
+
+    build_yuwp_asr()
+
+    existing_candidates = [candidate for candidate in built_cli_candidates() if candidate.exists() and os.access(candidate, os.X_OK)]
+    for candidate in existing_candidates:
+        if candidate_has_runtime_assets(candidate):
+            return candidate
+
+    for candidate in existing_candidates:
+        ensure_mlx_metallib(candidate)
+        return candidate
+
+    expected = "\n".join(f"- {candidate}" for candidate in built_cli_candidates())
+    raise SkillError(f"Could not find yuwp-asr after build. Checked:\n{expected}")
+
+
 def open_connection(server_url: str, timeout: int) -> tuple[http.client.HTTPConnection, str]:
     parsed = urlparse(server_url.rstrip("/"))
     if parsed.scheme not in {"http", "https"}:
@@ -385,50 +503,130 @@ def multipart_post_file(
         connection.close()
 
 
-def transcribe_text(server_url: str, audio_path: Path) -> str:
-    ensure_server_ready(server_url)
-    eprint("Transcribing with Yuwp...")
-    return multipart_post_file(
-        server_url,
-        "/v1/audio/transcriptions",
-        file_path=audio_path,
-        fields={
-            "model": "qwen3-asr",
-            "response_format": "text",
-        },
-    )
+def pick_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
-def transcribe_srt(server_url: str, audio_path: Path) -> str:
-    ensure_server_ready(server_url)
-    eprint("Generating SRT with Yuwp...")
-    return multipart_post_file(
-        server_url,
-        "/v1/audio/subtitles",
-        file_path=audio_path,
-        fields={
-            "response_format": "srt",
-        },
-    )
+def stop_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def wait_for_server_ready(
+    server_url: str,
+    *,
+    process: subprocess.Popen[str],
+    log_path: Path,
+    timeout: int = SERVER_READY_TIMEOUT_SECONDS,
+) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if process.poll() is not None:
+            log_tail = tail(log_path.read_text(errors="ignore")) if log_path.exists() else ""
+            message = f"yuwp-asr serve exited before becoming ready"
+            if log_tail:
+                message += f":\n{log_tail}"
+            raise SkillError(message)
+
+        try:
+            ensure_server_ready(server_url)
+            return
+        except SkillError:
+            time.sleep(0.5)
+
+    log_tail = tail(log_path.read_text(errors="ignore")) if log_path.exists() else ""
+    message = f"Timed out waiting for yuwp-asr serve at {server_url}"
+    if log_tail:
+        message += f":\n{log_tail}"
+    raise SkillError(message)
+
+
+def maybe_reuse_server(model_spec: str | None) -> str | None:
+    override = os.environ.get("YUWP_SERVER_URL")
+    if override:
+        ensure_server_ready(override)
+        return override
+
+    if model_spec is not None:
+        return None
+
+    try:
+        ensure_server_ready(DEFAULT_SERVER_URL)
+        return DEFAULT_SERVER_URL
+    except SkillError:
+        return None
+
+
+def transcribe_with_yuwp(audio_path: Path, *, output_format: str, model_spec: str | None) -> str:
+    server_url = maybe_reuse_server(model_spec)
+    if server_url:
+        eprint(f"Uploading audio to {server_url}...")
+        return multipart_post_file(
+            server_url,
+            "/v1/audio/transcriptions",
+            file_path=audio_path,
+            fields={"response_format": output_format},
+        )
+
+    cli_path = ensure_yuwp_asr_binary()
+    port = pick_free_port()
+    server_url = f"http://127.0.0.1:{port}"
+    log_path = OUTPUT_DIR / f"yuwp-asr-serve-{port}.log"
+    command = [str(cli_path), "serve", "--host", "127.0.0.1", "--port", str(port)]
+    if model_spec:
+        command += ["--model", model_spec]
+
+    eprint(f"Starting {cli_path.name} serve on {server_url}...")
+    with log_path.open("w", encoding="utf-8") as log_handle:
+        process = subprocess.Popen(
+            command,
+            cwd=str(REPO_ROOT),
+            stdout=log_handle,
+            stderr=log_handle,
+            text=True,
+        )
+        try:
+            wait_for_server_ready(server_url, process=process, log_path=log_path)
+            eprint(f"Uploading audio to {server_url}...")
+            return multipart_post_file(
+                server_url,
+                "/v1/audio/transcriptions",
+                file_path=audio_path,
+                fields={"response_format": output_format},
+            )
+        finally:
+            stop_process(process)
 
 
 def main() -> int:
     args = parse_args()
-    server_url = args.server or os.environ.get("YUWP_SERVER_URL", "http://localhost:9748")
 
-    video_key = cache_key_for_url(args.video_url)
+    cache_key = cache_stem(args.video_url, args.model)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    transcript_path = OUTPUT_DIR / f"{video_key}_transcript.txt"
-    srt_path = OUTPUT_DIR / f"{video_key}_transcript.srt"
-    audio_path = OUTPUT_DIR / f"{video_key}_audio.m4a"
+    transcript_path = OUTPUT_DIR / f"{cache_key}_transcript.txt"
+    srt_path = OUTPUT_DIR / f"{cache_key}_transcript.srt"
+    audio_path = OUTPUT_DIR / f"{cache_key}_audio.m4a"
 
     if args.srt:
         if srt_path.exists() and srt_path.stat().st_size > 0:
             sys.stdout.write(srt_path.read_text(errors="ignore"))
             return 0
 
-        srt_text = transcribe_srt(server_url, ensure_audio_downloaded(args.video_url, audio_path))
+        srt_text = transcribe_with_yuwp(
+            ensure_audio_downloaded(args.video_url, audio_path),
+            output_format="srt",
+            model_spec=args.model,
+        )
         srt_path.write_text(srt_text)
         sys.stdout.write(srt_text)
         return 0
@@ -438,15 +636,19 @@ def main() -> int:
         return 0
 
     if not args.force_hq:
-        subtitles_text = fetch_subtitles(args.video_url, video_key)
+        subtitles_text = fetch_subtitles(args.video_url, cache_key)
         if subtitles_text:
             transcript_path.write_text(subtitles_text)
             sys.stdout.write(subtitles_text)
             return 0
 
-        eprint("Subtitles unavailable, using Yuwp audio transcription...")
+        eprint("Subtitles unavailable, using yuwp-asr audio transcription...")
 
-    transcript_text = transcribe_text(server_url, ensure_audio_downloaded(args.video_url, audio_path))
+    transcript_text = transcribe_with_yuwp(
+        ensure_audio_downloaded(args.video_url, audio_path),
+        output_format="text",
+        model_spec=args.model,
+    )
     transcript_path.write_text(transcript_text)
     sys.stdout.write(transcript_text)
     return 0

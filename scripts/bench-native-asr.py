@@ -11,8 +11,7 @@ It can compare the small/large single-model presets, capture final transcripts,
 and measure how latency and memory behave as concurrency increases.
 
 Interface note:
-- canonical user-facing server CLI is `yuwp-asr serve --model <path-or-repo-id>`
-- legacy compatibility binary `asr-server` remains supported
+- use `yuwp-asr serve --model <path-or-repo-id>`
 
 Examples:
   # Compare the two built-in single-model presets on a balanced corpus.

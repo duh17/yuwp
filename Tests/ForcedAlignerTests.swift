@@ -29,6 +29,12 @@ struct AlignmentProcessorTests {
         #expect(words == ["说", "hello", "世", "界"])
     }
 
+    @Test func chinesePreparationPreservesPunctuationOnDisplayText() {
+        let words = AlignmentProcessor.prepareWords("甚至出现交易；几乎停滞的情况。", language: "Chinese")
+        #expect(words.map(\.alignText) == ["甚", "至", "出", "现", "交", "易", "几", "乎", "停", "滞", "的", "情", "况"])
+        #expect(AlignedTextRenderer.render(tokens: words.map(\.text)) == "甚至出现交易；几乎停滞的情况。")
+    }
+
     @Test func englishWithEmbeddedCJK() {
         // CJK characters embedded in English text get split out
         let words = AlignmentProcessor.tokenizeWords("test你好end", language: "English")
@@ -68,6 +74,16 @@ struct AlignmentProcessorTests {
     @Test func numbersAreKept() {
         let words = AlignmentProcessor.tokenizeWords("test123 456", language: "English")
         #expect(words == ["test123", "456"])
+    }
+
+    @Test func englishPreparationPreservesDisplayTextForPunctuation() {
+        let words = AlignmentProcessor.prepareWords("Hello, co-founded workos.com 99.9th", language: "English")
+        #expect(words == [
+            .init(text: "Hello,", alignText: "Hello"),
+            .init(text: "co-founded", alignText: "cofounded"),
+            .init(text: "workos.com", alignText: "workoscom"),
+            .init(text: "99.9th", alignText: "999th"),
+        ])
     }
 
     // MARK: - Timestamp Fixing (LIS)
@@ -205,16 +221,16 @@ struct ForcedAlignerIntegrationTests {
     }
 }
 
-// MARK: - Subtitle server endpoint integration tests
+// MARK: - Timed batch output integration tests
 
-@Suite("Subtitle Endpoint", .tags(.integration),
+@Suite("Timed Batch Output", .tags(.integration),
        .enabled(if: ProcessInfo.processInfo.environment["ASR_TEST"] != nil,
-               "Set ASR_TEST=1 with asr-server running (canonical: --model <dir>; optional --aligner-model) on :9748"))
+               "Set ASR_TEST=1 with `yuwp-asr serve --model <dir> [--aligner-model <dir>] --port 9748` running"))
 struct SubtitleEndpointTests {
     let host: String
     let port: String
 
-    var subtitleURL: String { "http://\(host):\(port)/v1/audio/subtitles" }
+    var subtitleURL: String { "http://\(host):\(port)/v1/audio/transcriptions" }
 
     init() {
         self.host = ProcessInfo.processInfo.environment["ASR_TEST_HOST"] ?? "127.0.0.1"

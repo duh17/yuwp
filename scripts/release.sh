@@ -5,10 +5,13 @@
 #   e.g.: release.sh 0.2.0
 #
 # Required environment variables:
-#   YUWP_SIGN_IDENTITY  — Developer ID Application identity
-#   YUWP_TEAM_ID        — Apple Team ID
-#   YUWP_APPLE_ID       — Apple ID email for notarytool
-#   YUWP_APP_PASSWORD   — App-specific password for notarytool
+#   YUWP_SIGN_IDENTITY      — Developer ID Application identity
+#   YUWP_NOTARY_PROFILE     — optional notarytool keychain profile name
+#   YUWP_TEAM_ID            — Apple Team ID (required when not using YUWP_NOTARY_PROFILE)
+#   YUWP_APPLE_ID           — Apple ID email for notarytool (required when not using YUWP_NOTARY_PROFILE)
+#   YUWP_APP_PASSWORD       — App-specific password for notarytool (required when not using YUWP_NOTARY_PROFILE)
+#   YUWP_SPARKLE_FEED_URL   — optional Sparkle appcast URL override
+#   YUWP_SPARKLE_PUBLIC_ED_KEY — optional Sparkle public key override
 #
 # Output:
 #   release/Yuwp-<version>.dmg  — notarized, stapled disk image
@@ -19,9 +22,17 @@ cd "$(dirname "$0")/.."
 
 VERSION="${1:?Usage: release.sh <version>}"
 SIGN_IDENTITY="${YUWP_SIGN_IDENTITY:?Set YUWP_SIGN_IDENTITY}"
-TEAM_ID="${YUWP_TEAM_ID:?Set YUWP_TEAM_ID}"
-APPLE_ID="${YUWP_APPLE_ID:?Set YUWP_APPLE_ID}"
-APP_PASSWORD="${YUWP_APP_PASSWORD:?Set YUWP_APP_PASSWORD}"
+NOTARY_PROFILE="${YUWP_NOTARY_PROFILE:-}"
+DEFAULT_SPARKLE_FEED_URL="https://github.com/duh17/yuwp/releases/latest/download/appcast.xml"
+DEFAULT_SPARKLE_PUBLIC_ED_KEY="wnLCIfY048anOcj7/J/Iv6Lp9Fmba4zQ0EjCL7k/M+E=" # gitleaks:allow public Sparkle key
+SPARKLE_FEED_URL="${YUWP_SPARKLE_FEED_URL:-$DEFAULT_SPARKLE_FEED_URL}"
+SPARKLE_PUBLIC_ED_KEY="${YUWP_SPARKLE_PUBLIC_ED_KEY:-$DEFAULT_SPARKLE_PUBLIC_ED_KEY}"
+
+if [ -z "$NOTARY_PROFILE" ]; then
+    TEAM_ID="${YUWP_TEAM_ID:?Set YUWP_TEAM_ID or YUWP_NOTARY_PROFILE}"
+    APPLE_ID="${YUWP_APPLE_ID:?Set YUWP_APPLE_ID or YUWP_NOTARY_PROFILE}"
+    APP_PASSWORD="${YUWP_APP_PASSWORD:?Set YUWP_APP_PASSWORD or YUWP_NOTARY_PROFILE}"
+fi
 
 CONFIGURATION="release"
 export YUWP_INTERNAL_DIAGNOSTICS=0
@@ -87,9 +98,9 @@ cat > "$APP/Contents/Info.plist" << PLIST
     <key>NSMicrophoneUsageDescription</key>
     <string>Yuwp needs microphone access to transcribe your speech into text.</string>
     <key>SUFeedURL</key>
-    <string>https://github.com/duh17/yuwp/releases/latest/download/appcast.xml</string>
+    <string>$SPARKLE_FEED_URL</string>
     <key>SUPublicEDKey</key>
-    <string></string>
+    <string>$SPARKLE_PUBLIC_ED_KEY</string>
 </dict>
 </plist>
 PLIST
@@ -145,11 +156,17 @@ codesign --force --sign "$SIGN_IDENTITY" "$DMG"
 
 # ── Notarize ───────────────────────────────────────────────────────────
 echo "=== Notarizing (this may take several minutes) ==="
-xcrun notarytool submit "$DMG" \
-    --apple-id "$APPLE_ID" \
-    --team-id "$TEAM_ID" \
-    --password "$APP_PASSWORD" \
-    --wait
+if [ -n "$NOTARY_PROFILE" ]; then
+    xcrun notarytool submit "$DMG" \
+        --keychain-profile "$NOTARY_PROFILE" \
+        --wait
+else
+    xcrun notarytool submit "$DMG" \
+        --apple-id "$APPLE_ID" \
+        --team-id "$TEAM_ID" \
+        --password "$APP_PASSWORD" \
+        --wait
+fi
 
 echo "=== Stapling ==="
 xcrun stapler staple "$DMG"

@@ -5,7 +5,7 @@ import NativeASR
 
 @Suite("ASR server support")
 struct ASRServerSupportTests {
-    @Test func cliParserHandlesLegacyPositionalModelAndFlags() throws {
+    @Test func cliParserHandlesPositionalModelAndFlags() throws {
         let config = try parseASRServerCLI(arguments: [
             "/models/qwen",
             "--port", "9999",
@@ -29,9 +29,9 @@ struct ASRServerSupportTests {
         #expect(config.vadEnabled == false)
     }
 
-    @Test func cliParserPrefersExplicitModelOverLegacyPositionalModel() throws {
+    @Test func cliParserPrefersExplicitModelOverPositionalModel() throws {
         let config = try parseASRServerCLI(arguments: [
-            "/models/legacy",
+            "/models/from-position",
             "--model", "/models/explicit",
         ])
 
@@ -108,21 +108,112 @@ struct ASRServerSupportTests {
             Subtitle(index: 2, start: 1.6, end: 2.0, text: "again."),
         ])
 
+        let stitchedBoundaryItems = [
+            ForcedAlignItem(text: "technology.", startTime: 362.70, endTime: 363.70),
+            ForcedAlignItem(text: "Ultimately,", startTime: 364.05, endTime: 364.40),
+            ForcedAlignItem(text: "it's", startTime: 364.40, endTime: 364.60),
+        ]
+        #expect(groupSubtitles(stitchedBoundaryItems, maxWordsPerLine: 10, maxDuration: 5.0, pauseThreshold: 0.5) == [
+            Subtitle(index: 1, start: 362.70, end: 363.70, text: "technology."),
+            Subtitle(index: 2, start: 364.05, end: 364.60, text: "Ultimately, it's"),
+        ])
+
+        let chineseItems = [
+            ForcedAlignItem(text: "交", startTime: 0.0, endTime: 0.1),
+            ForcedAlignItem(text: "易；", startTime: 0.1, endTime: 0.2),
+            ForcedAlignItem(text: "几", startTime: 0.21, endTime: 0.3),
+            ForcedAlignItem(text: "乎", startTime: 0.3, endTime: 0.4),
+        ]
+        #expect(groupSubtitles(chineseItems, language: "Chinese") == [
+            Subtitle(index: 1, start: 0.0, end: 0.2, text: "交易；"),
+            Subtitle(index: 2, start: 0.21, end: 0.4, text: "几乎"),
+        ])
+
         #expect(formatSRT(subtitles).contains("00:00:00,000 --> 00:00:00,800"))
         #expect(formatVTT(subtitles).hasPrefix("WEBVTT"))
         #expect(formatLRC(subtitles).contains("[00:00.00]hello world"))
         #expect(normalizeLanguageCode(" English ") == "en")
         #expect(normalizeLanguageCode("pt_br") == "pt-BR")
 
+        let debug = BatchSubtitleDebug(
+            chunkingMode: "VAD",
+            chunkCount: 1,
+            chunks: [
+                BatchSubtitleChunkDebug(
+                    index: 1,
+                    start: 0.0,
+                    end: 2.0,
+                    duration: 2.0,
+                    transcript: "hello world again",
+                    items: [BatchAlignmentItemDebug(text: "hello,", alignText: "hello", start: 0.0, end: 0.4)]
+                )
+            ]
+        )
         let payload = formatSubtitleJSON(
             transcript: "hello world again",
             language: "English",
             duration: 2.0,
-            subtitles: subtitles
+            subtitles: subtitles,
+            debug: debug
         )
         let json = try #require(try JSONSerialization.jsonObject(with: payload) as? [String: Any])
         #expect(json["language"] as? String == "en")
         #expect((json["segments"] as? [[String: Any]])?.count == 2)
+        let debugJSON = try #require(json["debug"] as? [String: Any])
+        #expect(debugJSON["chunkingMode"] as? String == "VAD")
+        #expect(debugJSON["chunkCount"] as? Int == 1)
+        let debugChunk = try #require((debugJSON["chunks"] as? [[String: Any]])?.first)
+        let debugItem = try #require((debugChunk["items"] as? [[String: Any]])?.first)
+        #expect(debugItem["text"] as? String == "hello,")
+        #expect(debugItem["alignText"] as? String == "hello")
+    }
+
+    @Test func debugPayloadCanBeRestitchedWithoutRetranscribing() {
+        let payload = SubtitleDebugPayload(
+            text: "technology. Ultimately, it's the team.",
+            language: "English",
+            duration: 2.0,
+            debug: BatchSubtitleDebug(
+                chunkingMode: "VAD",
+                chunkCount: 2,
+                chunks: [
+                    BatchSubtitleChunkDebug(
+                        index: 1,
+                        start: 0.0,
+                        end: 1.0,
+                        duration: 1.0,
+                        transcript: "technology.",
+                        items: [BatchAlignmentItemDebug(text: "technology.", start: 0.0, end: 0.8)]
+                    ),
+                    BatchSubtitleChunkDebug(
+                        index: 2,
+                        start: 1.0,
+                        end: 2.0,
+                        duration: 1.0,
+                        transcript: "Ultimately, it's the team.",
+                        items: [
+                            BatchAlignmentItemDebug(text: "Ultimately,", alignText: "Ultimately", start: 1.05, end: 1.30),
+                            BatchAlignmentItemDebug(text: "it's", start: 1.30, end: 1.45),
+                            BatchAlignmentItemDebug(text: "the", start: 1.45, end: 1.60),
+                            BatchAlignmentItemDebug(text: "team.", start: 1.60, end: 1.90),
+                        ]
+                    ),
+                ]
+            )
+        )
+
+        #expect(restitchSubtitles(from: payload) == [
+            Subtitle(index: 1, start: 0.0, end: 0.8, text: "technology."),
+            Subtitle(index: 2, start: 1.05, end: 1.90, text: "Ultimately, it's the team."),
+        ])
+    }
+
+    @Test func subtitleRegistrySelectsCompactScriptStrategyForChinese() {
+        let registry = SubtitleStitchingRegistry.default
+        #expect(registry.strategy(for: "English").id == "word")
+        #expect(registry.strategy(for: "Chinese").id == "compact-script")
+        #expect(registry.strategy(for: "yue").id == "compact-script")
+        #expect(registry.strategy(for: "ja").id == "compact-script")
     }
 
     @Test func routeInfoReportsCapabilities() throws {
@@ -299,6 +390,31 @@ struct ASRServerSupportTests {
         let json = try #require(try JSONSerialization.jsonObject(with: response.body) as? [String: Any])
         #expect(response.status == 200)
         #expect(json["text"] as? String == "chunk chunk chunk")
+        #expect(manager.transcribeCallCount == 3)
+    }
+
+    @Test func sharedBatchPipelineChunksLongAudioWithoutVAD() throws {
+        let manager = FakeManager()
+        manager.transcribeResult = TranscriptionResult(
+            text: "chunk",
+            language: "English",
+            audioDuration: ASRServerLimits.maxChunkSec,
+            processingTime: 0.1
+        )
+
+        let totalSamples = Int((ASRServerLimits.maxChunkSec * 2 + 1) * Double(ASRAudio.sampleRate))
+        let audio = Array(repeating: Float(0), count: totalSamples)
+        let result = try BatchTranscriptionPipeline.transcribe(
+            using: manager,
+            audio: audio,
+            language: nil,
+            temperature: 0.0,
+            vad: nil
+        )
+
+        #expect(result.text == "chunk chunk chunk")
+        #expect(result.language == "English")
+        #expect(result.audioDuration == Double(totalSamples) / Double(ASRAudio.sampleRate))
         #expect(manager.transcribeCallCount == 3)
     }
 

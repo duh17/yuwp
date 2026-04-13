@@ -167,7 +167,7 @@ private func printUsage() {
           --warmup                Warm up Metal shaders before streaming
           --no-batch              Skip batch baseline comparison
           --no-batch-retranscribe Disable the streaming segment batch-correction pass
-          --full-session-retranscribe Opt into full-session batch on stop (legacy A/B mode)
+          --full-session-retranscribe Opt into full-session batch on stop
           --json                  Emit pretty JSON to stdout
           --compact               Emit compact JSON to stdout
           --json-output <path>    Write JSON report to a file

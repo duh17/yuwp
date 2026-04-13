@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Sparkle
+import UniformTypeIdentifiers
 
 // Yuwp — system-wide voice dictation for macOS
 // Press hotkey → speak → text streams into any focused text field
@@ -29,7 +30,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hotkeyManager = HotkeyManager()
     private let audioInputCatalog = SystemAudioInputCatalog()
     private let asrProvider: NativeASRProvider = {
-        let p = NativeASRProvider(port: Config.shared.serverPort)
+        let env = ProcessInfo.processInfo.environment
+        let snapshotRequested = env["YUWP_SETTINGS_SNAPSHOT_PATH"]?.isEmpty == false
+        let snapshotPort = env["YUWP_SETTINGS_SNAPSHOT_PORT"].flatMap(UInt16.init)
+        let runtimePort = snapshotRequested ? (snapshotPort ?? 29_748) : Config.shared.serverPort
+
+        let p = NativeASRProvider(port: runtimePort)
         p.serverMode = Config.shared.serverMode
         p.transcriptionModel = Config.shared.transcriptionModel
         p.batchCommitEnabled = Config.shared.batchCommitEnabled
@@ -59,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         normalizeModelSelection()
         syncAppStateFromConfig()
         audioCapture.inputSelection = Config.shared.audioInputSelection
+        micPanel.animationConfig = Config.shared.micPanelAnimation
         setupMenuBar()
         syncRuntimeUI()
         updateStatus()
@@ -72,8 +79,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if shouldOpenSettings {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
                 self?.openSettings()
+                self?.triggerAutoDownloadIfRequested()
                 self?.captureSettingsSnapshotIfRequested()
             }
+        } else {
+            triggerAutoDownloadIfRequested()
         }
     }
 
@@ -82,10 +92,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func captureSettingsSnapshotIfRequested() {
-        guard let path = ProcessInfo.processInfo.environment["YUWP_SETTINGS_SNAPSHOT_PATH"], !path.isEmpty else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        let env = ProcessInfo.processInfo.environment
+        guard let path = env["YUWP_SETTINGS_SNAPSHOT_PATH"], !path.isEmpty else { return }
+        let delay = env["YUWP_SETTINGS_SNAPSHOT_DELAY"].flatMap(Double.init) ?? 0.5
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.captureSettingsSnapshot(to: path)
         }
+    }
+
+    private func triggerAutoDownloadIfRequested() {
+        let env = ProcessInfo.processInfo.environment
+        guard let repoId = env["YUWP_AUTO_DOWNLOAD_MODEL_REPO_ID"]?.trimmingCharacters(in: .whitespacesAndNewlines), !repoId.isEmpty else {
+            return
+        }
+        Task { await downloadModel(repoId: repoId) }
     }
 
     private func captureSettingsSnapshot(to path: String) {
@@ -132,7 +152,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func syncAppStateFromConfig() {
         appState.settings = AppSettingsState(
-            dictationMode: Config.shared.dictationInteractionMode,
             serverMode: Config.shared.serverMode
         )
         appState.missingConfiguredModelLabels = missingConfiguredModelLabels()
@@ -142,6 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let effects = appState.send(action, dictationBindingDescription: Config.shared.dictationBinding.description)
         syncRuntimeUI()
         updateStatus()
+        syncSettingsWindow()
         run(effects)
     }
 
@@ -405,50 +425,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openSettings() {
-        let controller = settingsWindowController ?? SettingsWindowController()
+        let controller = settingsWindowController ?? SettingsWindowController(store: SettingsStore(snapshot: makeSettingsSnapshot()))
         if settingsWindowController == nil {
-            controller.onDictationModeChange = { [weak self] mode in
-                self?.applyDictationMode(mode)
-            }
-            controller.onDictationBindingChange = { [weak self] binding in
+            let store = controller.store
+            store.onDictationBindingChange = { [weak self] binding in
                 self?.applyDictationBinding(binding)
             }
-            controller.onDictationBindingRecordingChange = { [weak self] isRecording in
+            store.onDictationBindingRecordingChange = { [weak self] isRecording in
                 self?.setHotkeyRecordingActive(isRecording)
             }
-            controller.onAudioInputSelectionChange = { [weak self] selection in
+            store.onAudioInputSelectionChange = { [weak self] selection in
                 self?.applyAudioInputSelection(selection)
             }
-            controller.onServerModeChange = { [weak self] mode in
+            store.onServerModeChange = { [weak self] mode in
                 self?.applyServerMode(mode)
             }
-            controller.onServerPortChange = { [weak self] port in
+            store.onServerPortChange = { [weak self] port in
                 self?.applyServerPort(port)
             }
-            controller.onSaveRecordingsChange = { [weak self] enabled in
+            store.onSaveRecordingsChange = { [weak self] enabled in
                 self?.applySaveRecordings(enabled)
             }
-            controller.onChooseRecordingsDirectory = { [weak self] in
+            store.onChooseRecordingsDirectory = { [weak self] in
                 self?.chooseRecordingsDirectory()
             }
-            controller.onResetRecordingsDirectory = { [weak self] in
+            store.onResetRecordingsDirectory = { [weak self] in
                 self?.resetRecordingsDirectory()
             }
-            controller.onRevealRecordingsDirectory = { [weak self] in
+            store.onRevealRecordingsDirectory = { [weak self] in
                 self?.revealRecordingsDirectory()
             }
-            controller.onModelPresetChange = { [weak self] index in
+            store.onModelPresetChange = { [weak self] index in
                 self?.applyModelPreset(index: index)
             }
-            controller.onBatchCommitChange = { [weak self] enabled in
+            store.onBatchCommitChange = { [weak self] enabled in
                 self?.setBatchCommitEnabled(enabled)
             }
-            controller.onApplyModelSpec = { [weak self] spec in
+            store.onApplyModelSpec = { [weak self] spec in
                 self?.applyModelSpec(spec)
             }
-            controller.onDownloadModel = { [weak self] repoId in
+            store.onDownloadModel = { [weak self] repoId in
                 guard let self else { return }
                 Task { await self.downloadModel(repoId: repoId) }
+            }
+            store.onMicPanelAnimationChange = { [weak self] config in
+                self?.applyMicPanelAnimation(config)
+            }
+            store.onStartChimeChange = { [weak self] config in
+                self?.applyChimeConfig(config, role: .start)
+            }
+            store.onStopChimeChange = { [weak self] config in
+                self?.applyChimeConfig(config, role: .stop)
+            }
+            store.onChooseCustomChime = { [weak self] role in
+                self?.chooseCustomChime(for: role)
+            }
+            store.onPreviewChime = { [weak self] role, config in
+                self?.previewChime(role: role, config: config)
             }
             settingsWindowController = controller
         }
@@ -459,17 +492,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func applyDictationMode(_ mode: DictationInteractionMode) {
-        guard Config.shared.dictationInteractionMode != mode else { return }
-        Config.shared.dictationInteractionMode = mode
-        syncAppStateFromConfig()
-        updateStatus()
-        yuwpLog("Dictation mode changed to: \(mode.description)")
-    }
-
     private func applyDictationBinding(_ binding: KeyBinding) {
         guard Config.shared.dictationBinding != binding else { return }
         Config.shared.dictationBinding = binding
+        defer { syncSettingsWindow() }
 
         if hotkeyRecordingActive {
             yuwpLog("Dictation shortcut changed to: \(binding.description)")
@@ -541,24 +567,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         syncSettingsWindow()
     }
 
+    private func applyMicPanelAnimation(_ config: MicPanelAnimationConfig) {
+        guard Config.shared.micPanelAnimation != config else {
+            syncSettingsWindow()
+            return
+        }
+        Config.shared.micPanelAnimation = config
+        micPanel.animationConfig = config
+        syncSettingsWindow()
+        yuwpLog("Mic panel animation changed to: \(config.selection.title)")
+    }
+
+    private func applyChimeConfig(_ config: DictationChimeConfig, role: DictationChimeRole) {
+        let current = switch role {
+        case .start: Config.shared.startChime
+        case .stop: Config.shared.stopChime
+        }
+        guard current != config else {
+            syncSettingsWindow()
+            return
+        }
+
+        switch role {
+        case .start:
+            Config.shared.startChime = config
+        case .stop:
+            Config.shared.stopChime = config
+        }
+
+        syncSettingsWindow()
+        yuwpLog("\(role.title) changed to: \(config.selection.title)")
+    }
+
+    private func chooseCustomChime(for role: DictationChimeRole) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.audio]
+        panel.message = "Choose an audio file for \(role.title.lowercased())."
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            syncSettingsWindow()
+            return
+        }
+
+        do {
+            let asset = try DictationChimeAssetManager.importSound(from: url)
+            var config = switch role {
+            case .start: Config.shared.startChime
+            case .stop: Config.shared.stopChime
+            }
+            config.selection = .custom
+            config.customAsset = asset
+            applyChimeConfig(config, role: role)
+        } catch {
+            showAlert(title: "Sound import failed", message: error.localizedDescription)
+            syncSettingsWindow()
+        }
+    }
+
+    private func previewChime(role: DictationChimeRole, config: DictationChimeConfig) {
+        chimePlayer.play(role, config: config)
+    }
+
     private func syncSettingsWindow(_ controller: SettingsWindowController? = nil) {
-        let target = controller ?? settingsWindowController
         let availableAudioInputs = audioInputCatalog.availableInputDevices()
-        target?.sync(
-            dictationMode: Config.shared.dictationInteractionMode,
+        let target = controller ?? settingsWindowController
+        target?.sync(makeSettingsSnapshot(availableAudioInputs: availableAudioInputs))
+        updateSaveRecordingsMenuItem()
+        rebuildAudioInputMenu(with: availableAudioInputs)
+    }
+
+    private func makeSettingsSnapshot(availableAudioInputs: [AudioInputDeviceDescriptor]? = nil) -> SettingsSnapshot {
+        let inputs = availableAudioInputs ?? audioInputCatalog.availableInputDevices()
+        return SettingsSnapshot(
             dictationBinding: Config.shared.dictationBinding,
             audioInputSelection: Config.shared.audioInputSelection,
-            availableAudioInputs: availableAudioInputs,
+            availableAudioInputs: inputs,
             serverMode: Config.shared.serverMode,
             serverPort: Config.shared.serverPort,
             transcriptionModel: Config.shared.transcriptionModel,
             batchCommitEnabled: Config.shared.batchCommitEnabled,
+            modelDownloadStatus: appState.modelDownloadStatus,
             saveRecordings: Config.shared.saveRecordings,
             recordingsDir: Config.shared.recordingsDir,
-            usingDefaultRecordingsDir: Config.shared.usesDefaultRecordingsDir
+            usingDefaultRecordingsDir: Config.shared.usesDefaultRecordingsDir,
+            micPanelAnimation: Config.shared.micPanelAnimation,
+            startChime: Config.shared.startChime,
+            stopChime: Config.shared.stopChime
         )
-        updateSaveRecordingsMenuItem()
-        rebuildAudioInputMenu(with: availableAudioInputs)
     }
 
     private func rebuildAudioInputMenu(with devices: [AudioInputDeviceDescriptor]? = nil) {
@@ -738,7 +836,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     let pct = Int(progress * 100)
-                    self.send(.modelDownloadStatusChanged("\(ModelLocator.shortRepoName(repoId)) \(pct)% — \(status)"))
+                    let message = "\(ModelLocator.shortRepoName(repoId)) \(pct)% — \(status)"
+                    yuwpLog("Model download progress: \(message)")
+                    self.send(.modelDownloadStatusChanged(message))
                 }
             }
 
@@ -829,31 +929,3 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 }
 
-private enum DictationChime {
-    case start
-    case stop
-}
-
-@MainActor
-private final class DictationChimePlayer {
-    private let startSound = NSSound(named: NSSound.Name("Glass"))
-    private let stopSound = NSSound(named: NSSound.Name("Pop"))
-
-    func play(_ chime: DictationChime) {
-        let sound = switch chime {
-        case .start:
-            startSound
-        case .stop:
-            stopSound
-        }
-
-        if let sound {
-            if sound.isPlaying {
-                sound.stop()
-            }
-            sound.play()
-        } else {
-            NSSound.beep()
-        }
-    }
-}

@@ -187,54 +187,87 @@ public struct ForcedAlignItem: Sendable {
     public let text: String
     public let startTime: Double   // seconds
     public let endTime: Double     // seconds
+    public let alignText: String?
 
-    public init(text: String, startTime: Double, endTime: Double) {
+    public init(text: String, startTime: Double, endTime: Double, alignText: String? = nil) {
         self.text = text
         self.startTime = startTime
         self.endTime = endTime
+        self.alignText = alignText
     }
 }
 
 // MARK: - Text Preprocessing & Timestamp Logic
 
 enum AlignmentProcessor {
+    struct AlignmentWord: Equatable {
+        var text: String
+        let alignText: String
+    }
 
     // MARK: Word Tokenization
 
     /// Split text into alignment words based on language.
     static func tokenizeWords(_ text: String, language: String) -> [String] {
+        prepareWords(text, language: language).map(\.alignText)
+    }
+
+    static func prepareWords(_ text: String, language: String) -> [AlignmentWord] {
         switch language.lowercased() {
         case "chinese", "cantonese":
-            return tokenizeChineseMixed(text)
+            return tokenizeChineseMixedWords(text)
         case "japanese":
             // Character-level for CJK, grouped for Latin (no nagisa dependency)
-            return tokenizeChineseMixed(text)
+            return tokenizeChineseMixedWords(text)
         default:
-            return tokenizeSpaceLang(text)
+            return tokenizeSpaceLangWords(text)
         }
     }
 
-    /// Space-separated languages: split by whitespace, clean, split embedded CJK.
-    static func tokenizeSpaceLang(_ text: String) -> [String] {
-        var tokens: [String] = []
+    /// Space-separated languages: preserve display text, but align on cleaned tokens.
+    static func tokenizeSpaceLangWords(_ text: String) -> [AlignmentWord] {
+        var words: [AlignmentWord] = []
+
+        func appendWord(displayText: String, alignText: String) {
+            guard !alignText.isEmpty else { return }
+            words.append(AlignmentWord(text: displayText, alignText: alignText))
+        }
+
+        func appendDisplayOnly(_ rawText: String) {
+            guard !rawText.isEmpty, !words.isEmpty else { return }
+            words[words.count - 1].text.append(rawText)
+        }
+
         for segment in text.split(omittingEmptySubsequences: true, whereSeparator: { $0.isWhitespace }) {
-            let cleaned = cleanToken(String(segment))
-            if !cleaned.isEmpty {
-                tokens.append(contentsOf: splitCJK(cleaned))
+            let rawSegment = String(segment)
+            for piece in splitCJKDisplay(rawSegment) {
+                let cleaned = cleanToken(piece)
+                if cleaned.isEmpty {
+                    appendDisplayOnly(piece)
+                } else {
+                    appendWord(displayText: piece, alignText: cleaned)
+                }
             }
         }
-        return tokens
+
+        return words
     }
 
     /// Chinese mixed: each CJK character is its own token, Latin characters are grouped.
-    static func tokenizeChineseMixed(_ text: String) -> [String] {
-        var tokens: [String] = []
+    static func tokenizeChineseMixedWords(_ text: String) -> [AlignmentWord] {
+        var tokens: [AlignmentWord] = []
         var latinBuf: [Character] = []
+
+        func appendDisplayOnly(_ rawText: String) {
+            guard !rawText.isEmpty, !tokens.isEmpty else { return }
+            tokens[tokens.count - 1].text.append(rawText)
+        }
 
         func flushLatin() {
             if !latinBuf.isEmpty {
-                let cleaned = cleanToken(String(latinBuf))
-                if !cleaned.isEmpty { tokens.append(cleaned) }
+                let raw = String(latinBuf)
+                let cleaned = cleanToken(raw)
+                if !cleaned.isEmpty { tokens.append(AlignmentWord(text: raw, alignText: cleaned)) }
                 latinBuf.removeAll()
             }
         }
@@ -242,11 +275,12 @@ enum AlignmentProcessor {
         for ch in text {
             if ch.unicodeScalars.contains(where: isCJK) {
                 flushLatin()
-                tokens.append(String(ch))
+                tokens.append(AlignmentWord(text: String(ch), alignText: String(ch)))
             } else if isKeptChar(ch) {
                 latinBuf.append(ch)
             } else {
                 flushLatin()
+                appendDisplayOnly(String(ch))
             }
         }
         flushLatin()
@@ -266,8 +300,8 @@ enum AlignmentProcessor {
         ScriptClassifier.isCJK(scalar)
     }
 
-    /// Split a segment at CJK character boundaries.
-    static func splitCJK(_ text: String) -> [String] {
+    /// Split a segment at CJK character boundaries, preserving original punctuation inside each piece.
+    static func splitCJKDisplay(_ text: String) -> [String] {
         var tokens: [String] = []
         var buf = ""
         for ch in text {
@@ -428,7 +462,7 @@ public final class ForcedAligner: @unchecked Sendable {
     ///   - language: Language name (e.g. "English", "Chinese").
     /// - Returns: Per-word start/end times in seconds.
     public func align(audio: [Float], text: String, language: String = "English") -> [ForcedAlignItem] {
-        let words = AlignmentProcessor.tokenizeWords(text, language: language)
+        let words = AlignmentProcessor.prepareWords(text, language: language)
         guard !words.isEmpty else { return [] }
 
         // Mel spectrogram → (nMels, nFrames) → (1, nMels, nFrames)
@@ -441,7 +475,7 @@ public final class ForcedAligner: @unchecked Sendable {
 
         // Build input: audio header + word tokens interleaved with <timestamp> markers
         let inputIdValues = AlignmentProcessor.buildInputIds(
-            words: words,
+            words: words.map(\.alignText),
             numAudioTokens: numAudioTokens,
             tokenizer: tokenizer,
             config: model.config
@@ -477,9 +511,10 @@ public final class ForcedAligner: @unchecked Sendable {
             let startMs = fixed[i * 2]
             let endMs = fixed[i * 2 + 1]
             items.append(ForcedAlignItem(
-                text: word,
+                text: word.text,
                 startTime: round(Double(startMs) / 1000.0 * 1000) / 1000,
-                endTime: round(Double(endMs) / 1000.0 * 1000) / 1000
+                endTime: round(Double(endMs) / 1000.0 * 1000) / 1000,
+                alignText: word.alignText == word.text ? nil : word.alignText
             ))
         }
 

@@ -3,14 +3,12 @@ import Testing
 @testable import Yuwp
 @testable import NativeASR
 
-/// Integration tests for the native ASR server (asr-server).
+/// Integration tests for the native ASR server.
 /// Uses public-domain test fixtures — no personal voice recordings.
 ///
-/// Requires asr-server running on localhost:9748 (or port set via ASR_TEST_PORT env).
-/// Start the server before running (canonical interface):
-///   .build/arm64-apple-macosx/release/asr-server --model <model-dir> --port 9748
-/// Legacy compatibility also still accepts:
-///   .build/arm64-apple-macosx/release/asr-server <model-dir> --port 9748
+/// Requires a server running on localhost:9748 (or port set via ASR_TEST_PORT env).
+/// Start it with:
+///   .build/arm64-apple-macosx/release/yuwp-asr serve --model <model-dir> --port 9748
 ///
 /// Run with: ASR_TEST=1 swift test --filter "ASR Server"
 @Suite("ASR Server", .tags(.integration),

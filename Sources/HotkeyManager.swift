@@ -36,7 +36,7 @@ final class HotkeyManager {
     func start() -> Bool {
         stop()
 
-        let binding = Config.shared.dictationBinding
+        let binding = Config.shared.dictationBinding.normalized
         HotkeyManager.instance = self
         HotkeyManager.modifierHotkeyTracker = ModifierHotkeyTracker(binding: binding)
 
@@ -185,13 +185,18 @@ final class HotkeyManager {
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
 
         if type == .flagsChanged,
-           var tracker = HotkeyManager.modifierHotkeyTracker,
-           let phase = tracker.handleFlagsChanged(keyCode: keyCode) {
+           var tracker = HotkeyManager.modifierHotkeyTracker {
+            let phase = tracker.handleFlagsChanged(
+                keyCode: keyCode,
+                timestamp: CFAbsoluteTimeGetCurrent()
+            )
             HotkeyManager.modifierHotkeyTracker = tracker
-            Task { @MainActor in
-                HotkeyManager.instance?.onShortcutEvent?(
-                    ShortcutEvent(command: .dictation, phase: phase)
-                )
+            if let phase {
+                Task { @MainActor in
+                    HotkeyManager.instance?.onShortcutEvent?(
+                        ShortcutEvent(command: .dictation, phase: phase)
+                    )
+                }
             }
             return Unmanaged.passRetained(event)
         }

@@ -60,9 +60,9 @@ extension ASRServerCLIError: LocalizedError {
 
 public func parseASRServerCLI(arguments: [String]) throws -> ASRServerCLIConfiguration {
     var args = arguments
-    var legacyPositionalModelSpec: String?
+    var positionalModelSpec: String?
     if let first = args.first, !first.hasPrefix("-") {
-        legacyPositionalModelSpec = args.removeFirst()
+        positionalModelSpec = args.removeFirst()
     }
 
     var explicitModelSpec: String?
@@ -113,7 +113,7 @@ public func parseASRServerCLI(arguments: [String]) throws -> ASRServerCLIConfigu
     }
 
     return ASRServerCLIConfiguration(
-        modelSpec: explicitModelSpec ?? legacyPositionalModelSpec,
+        modelSpec: explicitModelSpec ?? positionalModelSpec,
         port: port,
         host: host,
         parentPID: parentPID,
