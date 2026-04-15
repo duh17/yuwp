@@ -71,6 +71,31 @@ struct TextInjectorFactoryTests {
         )
     }
 
+    @Test func policyDisablesDirectInjectionByDefault() {
+        let policy = TextInjectorFactory.InjectionPolicy.safeDefault
+
+        #expect(!TextInjectorFactory.allowsDirectInjection(strategy: .ax, role: "AXTextField", policy: policy))
+        #expect(!TextInjectorFactory.allowsDirectInjection(strategy: .cgEvent, role: "AXButton", policy: policy))
+    }
+
+    @Test func policyAllowsTextFieldAndTerminalDirectInjectionSeparately() {
+        let textFieldOnly = TextInjectorFactory.InjectionPolicy(
+            allowTextFieldDirectInjection: true,
+            allowTerminalDirectInjection: false
+        )
+        let terminalOnly = TextInjectorFactory.InjectionPolicy(
+            allowTextFieldDirectInjection: false,
+            allowTerminalDirectInjection: true
+        )
+
+        #expect(TextInjectorFactory.allowsDirectInjection(strategy: .ax, role: "AXTextField", policy: textFieldOnly))
+        #expect(TextInjectorFactory.allowsDirectInjection(strategy: .cgEvent, role: "AXTextArea", policy: textFieldOnly))
+        #expect(!TextInjectorFactory.allowsDirectInjection(strategy: .cgEvent, role: "AXButton", policy: textFieldOnly))
+
+        #expect(!TextInjectorFactory.allowsDirectInjection(strategy: .ax, role: "AXTextField", policy: terminalOnly))
+        #expect(TextInjectorFactory.allowsDirectInjection(strategy: .cgEvent, role: "AXButton", policy: terminalOnly))
+    }
+
     @Test func axCapabilityCheckUsesValueAttributeAndPreservesSelectionState() {
         let element = AXUIElementCreateSystemWide()
         var observedAttribute: String?

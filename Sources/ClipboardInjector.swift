@@ -37,12 +37,20 @@ final class SystemClipboardPasteboard: ClipboardPasteboard {
     }
 }
 
-/// Injects text via clipboard paste (Cmd+V).
+/// Injects text via clipboard (copy-only or Cmd+V paste).
 ///
 /// Last-resort fallback when neither AX nor CGEvent can be used.
 /// No live streaming — text only appears on commit.
 @MainActor
 final class ClipboardInjector: TextInjecting, ClipboardPasting {
+
+    enum CommitMode {
+        /// Write dictated text to clipboard and trigger Cmd+V, then restore prior clipboard.
+        case pasteAndRestore
+        /// Write dictated text to clipboard only. Used when no target was focused
+        /// at capture time, so we never lose the dictated text.
+        case copyOnly
+    }
 
     // MARK: - TextInjecting
 
@@ -67,8 +75,9 @@ final class ClipboardInjector: TextInjecting, ClipboardPasting {
 
     // MARK: - Init
 
-    init(screenPoint: NSPoint = .zero) {
+    init(screenPoint: NSPoint = .zero, commitMode: CommitMode = .pasteAndRestore) {
         self.targetPosition = screenPoint
+        self.commitMode = commitMode
         self.pasteboard = SystemClipboardPasteboard()
         self.postPasteShortcut = Self.postCommandV
         self.scheduleRestore = { work in
@@ -80,11 +89,13 @@ final class ClipboardInjector: TextInjecting, ClipboardPasting {
 
     init(
         screenPoint: NSPoint = .zero,
+        commitMode: CommitMode = .pasteAndRestore,
         pasteboard: any ClipboardPasteboard,
         postPasteShortcut: @escaping () -> Void,
         scheduleRestore: @escaping (@escaping () -> Void) -> Void
     ) {
         self.targetPosition = screenPoint
+        self.commitMode = commitMode
         self.pasteboard = pasteboard
         self.postPasteShortcut = postPasteShortcut
         self.scheduleRestore = scheduleRestore
@@ -98,6 +109,12 @@ final class ClipboardInjector: TextInjecting, ClipboardPasting {
 
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+
+        guard commitMode == .pasteAndRestore else {
+            yuwpLog("Copied dictated text to clipboard (no focused target)")
+            return
+        }
+
         postPasteShortcut()
 
         scheduleRestore { [pasteboard] in
@@ -114,6 +131,7 @@ final class ClipboardInjector: TextInjecting, ClipboardPasting {
 
     // MARK: - Private
 
+    private let commitMode: CommitMode
     private let pasteboard: any ClipboardPasteboard
     private let postPasteShortcut: () -> Void
     private let scheduleRestore: (@escaping () -> Void) -> Void

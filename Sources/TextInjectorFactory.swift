@@ -1,9 +1,12 @@
 import AppKit
 import ApplicationServices
 
-/// Creates the best `TextInjecting` implementation for the currently focused element.
+/// Creates the `TextInjecting` implementation for the currently focused element.
 ///
-/// Decision tree:
+/// Default behavior is safety-first: bubble preview grows live and commit pastes
+/// via clipboard. Direct insertion paths are experimental and opt-in.
+///
+/// Capability tree (before policy gating):
 ///   1. No focused element → `ClipboardInjector`
 ///   2. Non-editable AX role (terminals, etc.) → `CGEventInjector`
 ///   3. Editable role but AX value probe fails → `CGEventInjector`
@@ -15,6 +18,24 @@ enum TextInjectorFactory {
         case ax
         case cgEvent
         case clipboard
+    }
+
+    struct InjectionPolicy: Equatable, Sendable {
+        var allowTextFieldDirectInjection: Bool
+        var allowTerminalDirectInjection: Bool
+
+        static let safeDefault = InjectionPolicy(
+            allowTextFieldDirectInjection: false,
+            allowTerminalDirectInjection: false
+        )
+
+        @MainActor
+        static var fromConfig: InjectionPolicy {
+            InjectionPolicy(
+                allowTextFieldDirectInjection: Config.shared.experimentalDirectTextFieldInsertionEnabled,
+                allowTerminalDirectInjection: Config.shared.experimentalDirectTerminalInsertionEnabled
+            )
+        }
     }
 
     // Roles known to support AX text editing.
@@ -36,12 +57,30 @@ enum TextInjectorFactory {
         return .ax
     }
 
+    nonisolated static func allowsDirectInjection(
+        strategy: Strategy,
+        role: String?,
+        policy: InjectionPolicy
+    ) -> Bool {
+        switch strategy {
+        case .clipboard:
+            return false
+        case .ax:
+            return policy.allowTextFieldDirectInjection
+        case .cgEvent:
+            guard let role else { return policy.allowTerminalDirectInjection }
+            return editableRoles.contains(role)
+                ? policy.allowTextFieldDirectInjection
+                : policy.allowTerminalDirectInjection
+        }
+    }
+
     /// Probe the focused element and return an appropriate injector.
     /// Must be called before any UI panel appears — focus changes after that.
-    static func capture() -> any TextInjecting {
+    static func capture(policy: InjectionPolicy = .fromConfig) -> any TextInjecting {
         guard let focused = focusedElement() else {
-            yuwpLog("No focused element — will use clipboard fallback")
-            return ClipboardInjector(screenPoint: NSEvent.mouseLocation)
+            yuwpLog("No focused element — copy-only clipboard fallback to avoid losing dictated text")
+            return ClipboardInjector(screenPoint: NSEvent.mouseLocation, commitMode: .copyOnly)
         }
 
         let point = readTargetScreenPoint(from: focused) ?? NSEvent.mouseLocation
@@ -65,12 +104,34 @@ enum TextInjectorFactory {
             hasReadableSelectionRange: hasSelectionRange
         )
 
-        switch decideStrategy(
+        let strategy = decideStrategy(
             hasFocusedElement: true,
             role: role,
             hasReadableSelectionRange: hasSelectionRange,
             canWriteSelectedText: canWriteSelectedText
-        ) {
+        )
+
+        if !allowsDirectInjection(strategy: strategy, role: role, policy: policy) {
+            switch strategy {
+            case .ax, .cgEvent:
+                if let role, editableRoles.contains(role) {
+                    yuwpLog("Experimental direct text-field insertion disabled — using clipboard preview + paste")
+                } else {
+                    yuwpLog("Experimental direct terminal insertion disabled — using clipboard preview + paste")
+                }
+            case .clipboard:
+                if role == nil {
+                    yuwpLog("No AX role — using clipboard fallback")
+                } else if !hasSelectionRange {
+                    yuwpLog("No AX selection range — using clipboard")
+                } else {
+                    yuwpLog("AX value attribute not settable — using clipboard")
+                }
+            }
+            return ClipboardInjector(screenPoint: point)
+        }
+
+        switch strategy {
         case .clipboard:
             if role == nil {
                 yuwpLog("No AX role — using clipboard fallback")

@@ -14,9 +14,10 @@ final class TypewriterAnimator {
     private var targetText = ""
     private var animationTask: Task<Void, Never>?
 
-    /// Total reveal time for delta chars. Lower = faster typewriter.
-    static let animationDurationNs: UInt64 = 800_000_000  // 0.8s (was 1.5s)
-    static let minimumIntervalNs: UInt64 = 8_000_000 // ~8ms, one frame at 120Hz
+    /// Total reveal time for delta chars. Slightly slower so the effect remains
+    /// visibly character-by-character instead of feeling like word jumps.
+    static let animationDurationNs: UInt64 = 1_300_000_000  // 1.3s
+    static let minimumIntervalNs: UInt64 = 16_000_000 // ~16ms, one frame at 60Hz
 
     /// Feed a new full replacement transcript. Animates new text only.
     ///

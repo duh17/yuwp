@@ -6,9 +6,11 @@ enum TranscriptUpdateKind: String, Sendable, Codable, Equatable {
     case segmentCommit = "segment_commit"
     case final = "final"
 
-    /// Default preview behavior: only partial updates keep the tail actively animating.
+    /// Preview behavior: only final updates should force an immediate settle.
+    /// Segment commits still go through the typewriter path so append-heavy
+    /// speech feels continuous instead of jumping a whole sentence at once.
     var settlesPreviewImmediately: Bool {
-        self != .partial
+        self == .final
     }
 
     /// Default target behavior: only final updates should commit/finish the target surface.

@@ -62,6 +62,25 @@ struct ClipboardInjectorTests {
 
         #expect(pasteboard.currentString == nil)
     }
+
+    @Test func copyOnlyModeKeepsDictatedTextOnClipboardWithoutPasteShortcut() {
+        let pasteboard = FakePasteboard(string: "before", changeCount: 10)
+        var pasteShortcutCount = 0
+        var scheduledRestore: (() -> Void)?
+
+        let injector = ClipboardInjector(
+            commitMode: .copyOnly,
+            pasteboard: pasteboard,
+            postPasteShortcut: { pasteShortcutCount += 1 },
+            scheduleRestore: { scheduledRestore = $0 }
+        )
+
+        injector.commit("dictated text")
+
+        #expect(pasteboard.currentString == "dictated text")
+        #expect(pasteShortcutCount == 0)
+        #expect(scheduledRestore == nil)
+    }
 }
 
 @MainActor

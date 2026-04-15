@@ -35,6 +35,7 @@ enum ASRServerState: Sendable, Equatable {
 private struct ASRServerConfiguration: Sendable, Equatable {
     var transcriptionModel: String = "mlx-community/Qwen3-ASR-0.6B-4bit"
     var batchCommitEnabled: Bool = true
+    var diagnosticLoggingEnabled: Bool = false
     var port: UInt16
     var serverMode: ServerMode = .localhost
 
@@ -69,7 +70,7 @@ private actor NativeASRServerLifecycle {
 
         guard let bindHost = configuration.bindHost else {
             process = nil
-            yuwpLog("asr-server disabled")
+            yuwpLog("swift-mlx-asr-server disabled")
             return .disabled
         }
 
@@ -80,9 +81,9 @@ private actor NativeASRServerLifecycle {
         }
 
         guard let serverBin = NativeASRProvider.findServerBinary() else {
-            yuwpLog("asr-server binary not found — run: swift build -c release --product asr-server")
+            yuwpLog("swift-mlx-asr-server binary not found — run: swift build -c release --product swift-mlx-asr-server")
             process = nil
-            return .error("asr-server not found")
+            return .error("swift-mlx-asr-server not found")
         }
 
         NativeASRProvider.cleanupOrphanedManagedServerIfNeeded(
@@ -112,6 +113,9 @@ private actor NativeASRServerLifecycle {
             yuwpLog("Aligner model not found locally: \(NativeASRProvider.defaultAlignerModel) — subtitles disabled")
         }
         proc.arguments = arguments
+        var childEnvironment = ProcessInfo.processInfo.environment
+        childEnvironment["YUWP_DIAGNOSTIC_LOGGING"] = configuration.diagnosticLoggingEnabled ? "1" : "0"
+        proc.environment = childEnvironment
         proc.standardInput = FileHandle.nullDevice
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = stderrPipe
@@ -139,16 +143,16 @@ private actor NativeASRServerLifecycle {
             try proc.run()
         } catch {
             process = nil
-            yuwpLog("Failed to start asr-server: \(error)")
+            yuwpLog("Failed to start swift-mlx-asr-server: \(error)")
             scheduleRestart(generation: generation)
             return .error("Failed to start server")
         }
 
         process = proc
         if let alignerModelPath {
-            yuwpLog("asr-server started (PID: \(proc.processIdentifier), aligner: \(URL(fileURLWithPath: alignerModelPath).lastPathComponent))")
+            yuwpLog("swift-mlx-asr-server started (PID: \(proc.processIdentifier), aligner: \(URL(fileURLWithPath: alignerModelPath).lastPathComponent))")
         } else {
-            yuwpLog("asr-server started (PID: \(proc.processIdentifier))")
+            yuwpLog("swift-mlx-asr-server started (PID: \(proc.processIdentifier))")
         }
 
         scheduleReadyPoll(generation: generation, configuration: configuration)
@@ -168,7 +172,7 @@ private actor NativeASRServerLifecycle {
         }
 
         process = nil
-        yuwpLog(targetState == .disabled ? "asr-server disabled" : "asr-server stopped")
+        yuwpLog(targetState == .disabled ? "swift-mlx-asr-server disabled" : "swift-mlx-asr-server stopped")
         return targetState
     }
 
@@ -199,7 +203,7 @@ private actor NativeASRServerLifecycle {
     private func handleStartupTimeout(generation: UInt64) {
         guard generation == launchGeneration, !isIntentionalShutdown else { return }
         readyPollTask = nil
-        yuwpLog("asr-server failed to become ready within 30s")
+        yuwpLog("swift-mlx-asr-server failed to become ready within 30s")
         stateSink(.error("Server startup timeout"))
     }
 
@@ -220,12 +224,12 @@ private actor NativeASRServerLifecycle {
         let code = terminationStatus
         if let listenerPID = NativeASRProvider.listeningPID(on: port), listenerPID != processIdentifier {
             let owner = NativeASRProvider.command(for: listenerPID) ?? "pid \(listenerPID)"
-            yuwpLog("asr-server failed to own port \(port); listener PID \(listenerPID): \(owner)")
+            yuwpLog("swift-mlx-asr-server failed to own port \(port); listener PID \(listenerPID): \(owner)")
             stateSink(.error("Port \(port) already in use"))
             return
         }
 
-        yuwpLog("asr-server exited unexpectedly (code \(code))")
+        yuwpLog("swift-mlx-asr-server exited unexpectedly (code \(code))")
         stateSink(.error("Server crashed (exit \(code))"))
         scheduleRestart(generation: generation)
     }
@@ -241,7 +245,7 @@ private actor NativeASRServerLifecycle {
 
         restartAttempts += 1
         let delay = min(Double(1 << restartAttempts), 30.0)
-        yuwpLog("Restarting asr-server in \(Int(delay))s (\(restartAttempts)/\(Self.maxRestartAttempts))")
+        yuwpLog("Restarting swift-mlx-asr-server in \(Int(delay))s (\(restartAttempts)/\(Self.maxRestartAttempts))")
 
         restartTask?.cancel()
         restartTask = Task.detached { [weak self] in
@@ -268,10 +272,10 @@ private actor NativeASRServerLifecycle {
 
 // MARK: - Native ASR Provider
 
-/// Manages the native ASR server process (asr-server).
+/// Manages the native ASR server process (swift-mlx-asr-server).
 /// Communicates via HTTP on localhost.
 ///
-/// Launches `asr-server` as a child process, monitors its health,
+/// Launches `swift-mlx-asr-server` as a child process, monitors its health,
 /// and provides STT sessions via the HTTP streaming API.
 @MainActor
 final class NativeASRProvider: SttProvider {
@@ -299,6 +303,12 @@ final class NativeASRProvider: SttProvider {
     var batchCommitEnabled: Bool {
         get { configuration.batchCommitEnabled }
         set { configuration.batchCommitEnabled = newValue }
+    }
+
+    /// Whether app/server diagnostic stderr logging is enabled.
+    var diagnosticLoggingEnabled: Bool {
+        get { configuration.diagnosticLoggingEnabled }
+        set { configuration.diagnosticLoggingEnabled = newValue }
     }
 
     var port: UInt16 {
@@ -382,20 +392,20 @@ final class NativeASRProvider: SttProvider {
         ModelLocator.resolve(spec)?.path
     }
 
-    /// Find the asr-server binary in expected locations.
+    /// Find the swift-mlx-asr-server binary in expected locations.
     nonisolated static func findServerBinary() -> String? {
         let candidates = [
             // App bundle
-            Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/asr-server").path,
+            Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/swift-mlx-asr-server").path,
             // Development: build directory (release preferred)
             URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
-                .appendingPathComponent(".build/arm64-apple-macosx/release/asr-server").path,
+                .appendingPathComponent(".build/arm64-apple-macosx/release/swift-mlx-asr-server").path,
             URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
-                .appendingPathComponent(".build/arm64-apple-macosx/debug/asr-server").path,
+                .appendingPathComponent(".build/arm64-apple-macosx/debug/swift-mlx-asr-server").path,
         ]
         return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
@@ -405,12 +415,12 @@ final class NativeASRProvider: SttProvider {
         guard let parentPID = Self.parentPID(for: listenerPID), parentPID == 1 else { return }
         guard let command = Self.command(for: listenerPID), command.contains(serverBinaryPath) else { return }
 
-        yuwpLog("Found orphaned asr-server on port \(port) (PID: \(listenerPID)) — terminating")
+        yuwpLog("Found orphaned swift-mlx-asr-server on port \(port) (PID: \(listenerPID)) — terminating")
         kill(listenerPID, SIGTERM)
         Self.waitForListener(on: port, toExit: listenerPID, timeout: 1.5)
 
         if Self.listeningPID(on: port) == listenerPID {
-            yuwpLog("Orphaned asr-server \(listenerPID) ignored SIGTERM — sending SIGKILL")
+            yuwpLog("Orphaned swift-mlx-asr-server \(listenerPID) ignored SIGTERM — sending SIGKILL")
             kill(listenerPID, SIGKILL)
             Self.waitForListener(on: port, toExit: listenerPID, timeout: 1.0)
         }
@@ -483,7 +493,7 @@ final class NativeASRProvider: SttProvider {
 
 // MARK: - Native ASR HTTP Session
 
-/// HTTP-based STT session communicating with asr-server.
+/// HTTP-based STT session communicating with swift-mlx-asr-server.
 /// Audio feeds are serialized on a background queue to avoid blocking the audio thread.
 final class NativeASRSession: SttSession, @unchecked Sendable {
     var onUpdate: ((TranscriptUpdate) -> Void)?

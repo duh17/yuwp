@@ -6,7 +6,7 @@ import Foundation
 /// One provider lives for the app's lifetime. Creates sessions for each dictation.
 ///
 /// Implementations:
-///   - `NativeASRProvider` — local asr-server (Qwen3-ASR via MLX)
+///   - `NativeASRProvider` — local swift-mlx-asr-server (Qwen3-ASR via MLX)
 /// Provider lifecycle and visible state are app-owned, so the API is main-actor isolated.
 @MainActor
 protocol SttProvider: AnyObject, Sendable {
@@ -85,6 +85,10 @@ struct DictationPresentationState: Equatable {
     let surfaceMode: DictationSurfaceMode
     let bubbleStyle: DictationBubbleStyle
     let displayText: String
+    /// Stable text already segment-committed by ASR.
+    let committedText: String
+    /// In-flight tail still subject to ASR correction.
+    let activeText: String
     let caretPosition: NSPoint
 }
 
@@ -197,7 +201,7 @@ final class DictationSession {
             return
         }
 
-        emitPresentation(displayText: "")
+        emitPresentation(displayText: "", committedText: "", activeText: "")
         yuwpLog("Listening...")
 
         // Safety net: auto-stop after max duration
@@ -241,6 +245,7 @@ final class DictationSession {
 
     private func handleUpdate(_ update: TranscriptUpdate) {
         guard !didFinalize else { return }
+        let hadVisiblePreview = !typewriter.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         transcriptState = transcriptState.applying(update)
         let text = transcriptState.fullText
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -260,19 +265,22 @@ final class DictationSession {
         if textInjector.surfaceMode.liveInjectsTarget {
             typewriter.commitCurrentAnimation()
             textInjector.inject(text)
-            emitPresentation(displayText: "")
+            emitPresentation(displayText: "", committedText: "", activeText: "")
             return
         }
 
         typewriter.update(fullText: text)
-        if update.kind.settlesPreviewImmediately {
+        if update.kind.settlesPreviewImmediately
+            || (update.kind == .segmentCommit && !hadVisiblePreview) {
             typewriter.commitCurrentAnimation()
         }
-        emitPresentation(displayText: typewriter.displayText)
+        emitPresentation(
+            displayText: typewriter.displayText,
+            committedText: transcriptState.committedText,
+            activeText: transcriptState.activeText
+        )
 
-        if update.kind == .partial {
-            driveTypewriterDisplay()
-        }
+        driveTypewriterDisplay()
     }
 
     // MARK: - Private
@@ -311,7 +319,7 @@ final class DictationSession {
         onEvent?(.finished)
     }
 
-    private func emitPresentation(displayText: String) {
+    private func emitPresentation(displayText: String, committedText: String, activeText: String) {
         let visibleText = !displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let surfaceMode = textInjector.surfaceMode
         onEvent?(
@@ -320,6 +328,8 @@ final class DictationSession {
                     surfaceMode: surfaceMode,
                     bubbleStyle: surfaceMode.bubbleStyle(hasVisibleText: visibleText),
                     displayText: displayText,
+                    committedText: committedText,
+                    activeText: activeText,
                     caretPosition: textInjector.targetPosition
                 )
             )
@@ -333,8 +343,19 @@ final class DictationSession {
             while typewriter.isAnimating {
                 try? await Task.sleep(nanoseconds: 16_000_000)
                 guard !Task.isCancelled else { break }
-                emitPresentation(displayText: typewriter.displayText)
+                emitPresentation(
+                    displayText: typewriter.displayText,
+                    committedText: self.transcriptState.committedText,
+                    activeText: self.transcriptState.activeText
+                )
             }
+
+            guard !Task.isCancelled else { return }
+            emitPresentation(
+                displayText: typewriter.displayText,
+                committedText: self.transcriptState.committedText,
+                activeText: self.transcriptState.activeText
+            )
         }
     }
 }

@@ -164,7 +164,7 @@ struct DictationSessionTests {
 
     // MARK: - Segment Commits
 
-    @Test func segmentCommitSnapsTranscriptBubbleToCommittedText() async {
+    @Test func segmentCommitContinuesTypewriterAndEventuallyReachesCommittedText() async {
         let (session, stt, _, injector, events) = makeSession()
         injector.surfaceMode = .bubbleClipboard
         session.start()
@@ -176,7 +176,28 @@ struct DictationSessionTests {
 
         #expect(injector.injectCallCount == 0)
         #expect(events.presentations.last?.bubbleStyle == .transcript)
+
+        await waitForCondition(timeoutNanoseconds: 1_500_000_000) {
+            events.presentations.last?.displayText == "Hello, I'm testing this."
+        }
         #expect(events.presentations.last?.displayText == "Hello, I'm testing this.")
+    }
+
+    @Test func partialRewriteStillProgressesInsteadOfFreezingPreview() async {
+        let (session, stt, _, injector, events) = makeSession()
+        injector.surfaceMode = .bubbleClipboard
+        session.start()
+
+        stt.simulatePartial("So the final.")
+        await Task.yield()
+        stt.simulatePartial("So the final output is actually good.")
+        await Task.yield()
+
+        await waitForCondition(timeoutNanoseconds: 1_500_000_000) {
+            events.presentations.last?.displayText.contains("output") == true
+        }
+
+        #expect(events.presentations.last?.displayText.contains("output") == true)
     }
 
     @Test func segmentCommitInjectsCommittedTextIntoLiveSurface() async {
@@ -191,6 +212,21 @@ struct DictationSessionTests {
         #expect(injector.lastInjected == "Hello world")
         #expect(events.presentations.last?.bubbleStyle == .compact)
         #expect(events.presentations.last?.surfaceMode == .terminal)
+    }
+
+    @Test func segmentCommitWithoutRecentPartialStillAnimatesToCompletion() async {
+        let (session, stt, _, injector, events) = makeSession()
+        injector.surfaceMode = .bubbleClipboard
+        session.start()
+
+        stt.simulateSegmentCommit("So the final output is actually good.")
+        await Task.yield()
+
+        await waitForCondition(timeoutNanoseconds: 2_000_000_000) {
+            events.presentations.last?.displayText == "So the final output is actually good."
+        }
+
+        #expect(events.presentations.last?.displayText == "So the final output is actually good.")
     }
 
     // MARK: - Final Result

@@ -80,7 +80,7 @@ struct TranscriptUpdateTests {
 
     @Test func kindDefaultsAreSane() {
         #expect(TranscriptUpdateKind.partial.settlesPreviewImmediately == false)
-        #expect(TranscriptUpdateKind.segmentCommit.settlesPreviewImmediately)
+        #expect(TranscriptUpdateKind.segmentCommit.settlesPreviewImmediately == false)
         #expect(TranscriptUpdateKind.final.settlesPreviewImmediately)
 
         #expect(TranscriptUpdateKind.partial.commitsTargetText == false)
