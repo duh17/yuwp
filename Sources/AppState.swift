@@ -14,6 +14,12 @@ struct AppSettingsState: Sendable, Equatable {
     var serverMode: ServerMode = .localhost
 }
 
+enum MicrophonePermissionState: Sendable, Equatable {
+    case notDetermined
+    case granted
+    case denied
+}
+
 enum AppAction: Sendable, Equatable {
     case shortcutReceived(ShortcutEvent)
     case micPanelDismissed
@@ -22,6 +28,7 @@ enum AppAction: Sendable, Equatable {
     case sessionEvent(DictationEvent)
     case providerStateChanged(ASRServerState)
     case accessibilityPermissionChanged(Bool)
+    case microphonePermissionChanged(MicrophonePermissionState)
     case settingsChanged(AppSettingsState)
     case missingConfiguredModelsChanged([String])
     case modelDownloadStatusChanged(String?)
@@ -31,6 +38,7 @@ enum AppEffect: Sendable, Equatable {
     case startDictation
     case stopDictation
     case replayEnter
+    case requestMicrophonePermission
     case presentMicPanel(DictationPresentationState)
     case updateMicLevel(Float)
     case hideMicPanel
@@ -40,6 +48,8 @@ enum AppEffect: Sendable, Equatable {
 enum AppStatusBehavior: Sendable, Equatable {
     case none
     case openAccessibilitySettings
+    case openMicrophoneSettings
+    case openSettings
 }
 
 struct AppStatusDisplay: Sendable, Equatable {
@@ -52,6 +62,7 @@ struct AppStatusDisplay: Sendable, Equatable {
 struct AppState: Sendable, Equatable {
     var settings = AppSettingsState()
     var hasAccessibilityPermission = false
+    var microphonePermission: MicrophonePermissionState = .notDetermined
     var providerState: ASRServerState = .stopped
     var sessionPhase: AppSessionPhase = .idle
     var pendingEnterReplay = false
@@ -111,6 +122,10 @@ struct AppState: Sendable, Equatable {
             guard granted, let dictationBindingDescription else { return [] }
             return [.log("Ready. \(dictationBindingDescription) to dictate.")]
 
+        case .microphonePermissionChanged(let state):
+            microphonePermission = state
+            return []
+
         case .settingsChanged(let settings):
             self.settings = settings
             return []
@@ -135,6 +150,15 @@ struct AppState: Sendable, Equatable {
             )
         }
 
+        if microphonePermission == .denied {
+            return AppStatusDisplay(
+                title: "Grant Microphone Permission",
+                symbolName: "mic.slash.fill",
+                isEnabled: true,
+                behavior: .openMicrophoneSettings
+            )
+        }
+
         if settings.serverMode == .off {
             return AppStatusDisplay(
                 title: "Server mode is off",
@@ -154,11 +178,17 @@ struct AppState: Sendable, Equatable {
         }
 
         if !missingConfiguredModelLabels.isEmpty {
+            let title: String
+            if missingConfiguredModelLabels.count == 1, let label = missingConfiguredModelLabels.first {
+                title = "\(label) missing"
+            } else {
+                title = "\(missingConfiguredModelLabels.joined(separator: " + ")) missing"
+            }
             return AppStatusDisplay(
-                title: "\(missingConfiguredModelLabels.joined(separator: " + ")) model missing",
+                title: title,
                 symbolName: "exclamationmark.triangle.fill",
-                isEnabled: false,
-                behavior: .none
+                isEnabled: true,
+                behavior: .openSettings
             )
         }
 
@@ -217,11 +247,25 @@ struct AppState: Sendable, Equatable {
             return [.log("Server mode is off — enable This Mac only or Local network to dictate")]
         }
 
+        if microphonePermission == .notDetermined {
+            return [
+                .log("Microphone permission required — requesting access"),
+                .requestMicrophonePermission,
+            ]
+        }
+
+        guard microphonePermission != .denied else {
+            return [.log("Microphone permission denied — open System Settings → Privacy & Security → Microphone")]
+        }
+
         guard providerState == .ready else {
             if missingConfiguredModelLabels.isEmpty {
                 return [.log("Model still loading, please wait...")]
             }
-            return [.log("\(missingConfiguredModelLabels.joined(separator: " + ")) model missing — open Settings → Transcription to fix it")]
+            if missingConfiguredModelLabels.count == 1, let label = missingConfiguredModelLabels.first {
+                return [.log("\(label) missing — open Settings → Model to fix it")]
+            }
+            return [.log("\(missingConfiguredModelLabels.joined(separator: " + ")) models missing — open Settings → Model to fix them")]
         }
 
         sessionPhase = .listening

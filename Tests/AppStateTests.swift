@@ -8,6 +8,7 @@ struct AppStateTests {
         var state = AppState(
             settings: AppSettingsState(serverMode: .localhost),
             hasAccessibilityPermission: true,
+            microphonePermission: .granted,
             providerState: .ready
         )
 
@@ -60,15 +61,49 @@ struct AppStateTests {
         var state = AppState(
             settings: AppSettingsState(serverMode: .localhost),
             hasAccessibilityPermission: true,
+            microphonePermission: .granted,
             providerState: .starting,
-            missingConfiguredModelLabels: ["Transcription"]
+            missingConfiguredModelLabels: ["Model"]
         )
 
         let effects = state.send(.shortcutReceived(ShortcutEvent(command: .dictation, phase: .pressed)))
 
         #expect(state.sessionPhase == .idle)
         #expect(effects == [
-            .log("Transcription model missing — open Settings → Transcription to fix it")
+            .log("Model missing — open Settings → Model to fix it")
+        ])
+    }
+
+    @Test func shortcutRequestsMicrophonePermissionWhenUndetermined() {
+        var state = AppState(
+            settings: AppSettingsState(serverMode: .localhost),
+            hasAccessibilityPermission: true,
+            microphonePermission: .notDetermined,
+            providerState: .ready
+        )
+
+        let effects = state.send(.shortcutReceived(ShortcutEvent(command: .dictation, phase: .pressed)))
+
+        #expect(state.sessionPhase == .idle)
+        #expect(effects == [
+            .log("Microphone permission required — requesting access"),
+            .requestMicrophonePermission,
+        ])
+    }
+
+    @Test func shortcutLogsWhenMicrophonePermissionDenied() {
+        var state = AppState(
+            settings: AppSettingsState(serverMode: .localhost),
+            hasAccessibilityPermission: true,
+            microphonePermission: .denied,
+            providerState: .ready
+        )
+
+        let effects = state.send(.shortcutReceived(ShortcutEvent(command: .dictation, phase: .pressed)))
+
+        #expect(state.sessionPhase == .idle)
+        #expect(effects == [
+            .log("Microphone permission denied — open System Settings → Privacy & Security → Microphone")
         ])
     }
 
@@ -99,6 +134,42 @@ struct AppStateTests {
             symbolName: "checkmark.circle.fill",
             isEnabled: false,
             behavior: .none
+        ))
+    }
+
+    @Test func statusDisplayShowsMicrophoneActionWhenDenied() {
+        let state = AppState(
+            settings: AppSettingsState(serverMode: .localhost),
+            hasAccessibilityPermission: true,
+            microphonePermission: .denied,
+            providerState: .ready
+        )
+
+        let status = state.statusDisplay(port: 9748)
+
+        #expect(status == AppStatusDisplay(
+            title: "Grant Microphone Permission",
+            symbolName: "mic.slash.fill",
+            isEnabled: true,
+            behavior: .openMicrophoneSettings
+        ))
+    }
+
+    @Test func statusDisplayShowsSettingsActionWhenModelMissing() {
+        let state = AppState(
+            settings: AppSettingsState(serverMode: .localhost),
+            hasAccessibilityPermission: true,
+            providerState: .ready,
+            missingConfiguredModelLabels: ["Model"]
+        )
+
+        let status = state.statusDisplay(port: 9748)
+
+        #expect(status == AppStatusDisplay(
+            title: "Model missing",
+            symbolName: "exclamationmark.triangle.fill",
+            isEnabled: true,
+            behavior: .openSettings
         ))
     }
 }

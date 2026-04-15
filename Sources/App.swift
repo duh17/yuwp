@@ -5,10 +5,39 @@ import UniformTypeIdentifiers
 
 // Yuwp — system-wide voice dictation for macOS
 // Press hotkey → speak → text streams into any focused text field
-// Powered by Qwen3-ASR via native asr-server
+// Powered by Qwen3-ASR via native swift-mlx-asr-server
 
-/// Log to stderr (unbuffered, visible even when stdout is piped)
+private final class DiagnosticLogState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var enabled = false
+
+    func setEnabled(_ value: Bool) {
+        lock.lock()
+        enabled = value
+        lock.unlock()
+    }
+
+    func isEnabled() -> Bool {
+        lock.lock()
+        let value = enabled
+        lock.unlock()
+        return value
+    }
+}
+
+private let yuwpDiagnosticLogState = DiagnosticLogState()
+
+func setYuwpDiagnosticLoggingEnabled(_ enabled: Bool) {
+    yuwpDiagnosticLogState.setEnabled(enabled)
+}
+
+private func isYuwpDiagnosticLoggingEnabled() -> Bool {
+    yuwpDiagnosticLogState.isEnabled()
+}
+
+/// Log to stderr when diagnostic logging is enabled.
 func yuwpLog(_ msg: String) {
+    guard isYuwpDiagnosticLoggingEnabled() else { return }
     FileHandle.standardError.write(Data("[yuwp] \(msg)\n".utf8))
 }
 
@@ -39,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         p.serverMode = Config.shared.serverMode
         p.transcriptionModel = Config.shared.transcriptionModel
         p.batchCommitEnabled = Config.shared.batchCommitEnabled
+        p.diagnosticLoggingEnabled = Config.shared.diagnosticLoggingEnabled
         return p
     }()
     private lazy var audioCapture = AudioCapture(inputCatalog: audioInputCatalog)
@@ -58,20 +88,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var settingsWindowController: SettingsWindowController?
     private var permissionTimer: Timer?
     private var hotkeyRecordingActive = false
+    private let onboardingModelPromptKey = "didShowOnboardingModelPrompt"
 
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        setYuwpDiagnosticLoggingEnabled(Config.shared.diagnosticLoggingEnabled)
         normalizeModelSelection()
         syncAppStateFromConfig()
         audioCapture.inputSelection = Config.shared.audioInputSelection
         micPanel.animationConfig = Config.shared.micPanelAnimation
+        setupMainMenuShortcuts()
         setupMenuBar()
         syncRuntimeUI()
         updateStatus()
         setupMicPanelDismiss()
         startSttProvider()
-        requestMicPermission()
+        syncMicrophonePermissionStatus()
         checkPermission()
 
         let env = ProcessInfo.processInfo.environment
@@ -83,6 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.captureSettingsSnapshotIfRequested()
             }
         } else {
+            maybeOpenSettingsForFirstRunModelOnboarding()
             triggerAutoDownloadIfRequested()
         }
     }
@@ -97,6 +131,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let delay = env["YUWP_SETTINGS_SNAPSHOT_DELAY"].flatMap(Double.init) ?? 0.5
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.captureSettingsSnapshot(to: path)
+        }
+    }
+
+    private func maybeOpenSettingsForFirstRunModelOnboarding() {
+        guard !UserDefaults.standard.bool(forKey: onboardingModelPromptKey) else { return }
+        guard !appState.missingConfiguredModelLabels.isEmpty else { return }
+
+        UserDefaults.standard.set(true, forKey: onboardingModelPromptKey)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+            self?.openSettings()
         }
     }
 
@@ -182,6 +226,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 performStopDictation()
             case .replayEnter:
                 replayEnterKey()
+            case .requestMicrophonePermission:
+                requestMicPermission()
             case .presentMicPanel(let state):
                 micPanel.present(state)
             case .updateMicLevel(let level):
@@ -226,7 +272,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard session == nil else { return }
 
         audioCapture.inputSelection = Config.shared.audioInputSelection
-        let injector = TextInjectorFactory.capture()
+        let injectorPolicy = TextInjectorFactory.InjectionPolicy(
+            allowTextFieldDirectInjection: Config.shared.experimentalDirectTextFieldInsertionEnabled,
+            allowTerminalDirectInjection: Config.shared.experimentalDirectTerminalInsertionEnabled
+        )
+        let injector = TextInjectorFactory.capture(policy: injectorPolicy)
         let s = DictationSession(
             sttSession: asrProvider.makeSession(),
             textInjector: injector,
@@ -277,11 +327,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Microphone Permission
 
+    private func syncMicrophonePermissionStatus() {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        send(.microphonePermissionChanged(microphonePermissionState(for: status)))
+    }
+
     private func requestMicPermission() {
-        AVCaptureDevice.requestAccess(for: .audio) { granted in
-            Task { @MainActor in
-                yuwpLog(granted ? "Microphone permission granted" : "Microphone permission denied")
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        switch status {
+        case .authorized:
+            send(.microphonePermissionChanged(.granted))
+            yuwpLog("Microphone permission already granted")
+
+        case .denied, .restricted:
+            send(.microphonePermissionChanged(.denied))
+            yuwpLog("Microphone permission denied")
+
+        case .notDetermined:
+            send(.microphonePermissionChanged(.notDetermined))
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                Task { @MainActor in
+                    self.send(.microphonePermissionChanged(granted ? .granted : .denied))
+                    if granted {
+                        yuwpLog("Microphone permission granted — press your shortcut again to start dictation")
+                    } else {
+                        yuwpLog("Microphone permission denied")
+                    }
+                }
             }
+
+        @unknown default:
+            send(.microphonePermissionChanged(.denied))
+            yuwpLog("Microphone permission status unknown — treating as denied")
+        }
+    }
+
+    private func microphonePermissionState(for status: AVAuthorizationStatus) -> MicrophonePermissionState {
+        switch status {
+        case .authorized:
+            return .granted
+        case .denied, .restricted:
+            return .denied
+        case .notDetermined:
+            return .notDetermined
+        @unknown default:
+            return .denied
         }
     }
 
@@ -295,12 +385,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if hotkeyManager.start() {
             onPermissionGranted()
         } else {
-            let opts = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-            _ = AXIsProcessTrustedWithOptions(opts)
-
+            send(.accessibilityPermissionChanged(false))
             updateStatus()
-            yuwpLog("Waiting for Accessibility permission...")
+            yuwpLog("Accessibility permission required — choose 'Grant Accessibility Permission' from the menu")
 
+            permissionTimer?.invalidate()
             permissionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) {
                 [weak self] _ in
                 Task { @MainActor in
@@ -324,7 +413,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.open(url)
     }
 
+    @objc private func openMicrophoneSettings() {
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
+        NSWorkspace.shared.open(url)
+    }
+
     // MARK: - Menu Bar
+
+    private func setupMainMenuShortcuts() {
+        let mainMenu = NSMenu(title: "MainMenu")
+
+        let appMenuItem = NSMenuItem(title: "Yuwp", action: nil, keyEquivalent: "")
+        let appMenu = NSMenu(title: "Yuwp")
+
+        let settingsShortcutItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsShortcutItem.keyEquivalentModifierMask = [.command]
+        settingsShortcutItem.target = self
+        appMenu.addItem(settingsShortcutItem)
+        appMenu.addItem(.separator())
+
+        let quitShortcutItem = NSMenuItem(title: "Quit Yuwp", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quitShortcutItem.keyEquivalentModifierMask = [.command]
+        quitShortcutItem.target = NSApp
+        appMenu.addItem(quitShortcutItem)
+
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        let windowMenuItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: "Window")
+
+        let closeWindowItem = NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        closeWindowItem.keyEquivalentModifierMask = [.command]
+        windowMenu.addItem(closeWindowItem)
+
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+
+        NSApp.windowsMenu = windowMenu
+        NSApp.mainMenu = mainMenu
+    }
 
     private func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -437,6 +565,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             store.onAudioInputSelectionChange = { [weak self] selection in
                 self?.applyAudioInputSelection(selection)
             }
+            store.onExperimentalDirectTextFieldInsertionChange = { [weak self] enabled in
+                self?.applyExperimentalDirectTextFieldInsertion(enabled)
+            }
+            store.onExperimentalDirectTerminalInsertionChange = { [weak self] enabled in
+                self?.applyExperimentalDirectTerminalInsertion(enabled)
+            }
             store.onServerModeChange = { [weak self] mode in
                 self?.applyServerMode(mode)
             }
@@ -445,6 +579,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             store.onSaveRecordingsChange = { [weak self] enabled in
                 self?.applySaveRecordings(enabled)
+            }
+            store.onDiagnosticLoggingChange = { [weak self] enabled in
+                self?.applyDiagnosticLogging(enabled)
             }
             store.onChooseRecordingsDirectory = { [weak self] in
                 self?.chooseRecordingsDirectory()
@@ -455,8 +592,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             store.onRevealRecordingsDirectory = { [weak self] in
                 self?.revealRecordingsDirectory()
             }
-            store.onModelPresetChange = { [weak self] index in
-                self?.applyModelPreset(index: index)
+            store.onChooseModelDirectory = { [weak self] in
+                self?.chooseTranscriptionModelDirectory()
             }
             store.onBatchCommitChange = { [weak self] enabled in
                 self?.setBatchCommitEnabled(enabled)
@@ -549,6 +686,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         syncAppStateFromConfig()
         restartProviderForSettingsChange()
         yuwpLog("Server mode changed to: \(mode.description)")
+    }
+
+    private func applyExperimentalDirectTextFieldInsertion(_ enabled: Bool) {
+        guard enabled != Config.shared.experimentalDirectTextFieldInsertionEnabled else { return }
+        Config.shared.experimentalDirectTextFieldInsertionEnabled = enabled
+        syncSettingsWindow()
+        yuwpLog("Experimental direct text-field insertion \(enabled ? "enabled" : "disabled") (applies next dictation session)")
+    }
+
+    private func applyExperimentalDirectTerminalInsertion(_ enabled: Bool) {
+        guard enabled != Config.shared.experimentalDirectTerminalInsertionEnabled else { return }
+        Config.shared.experimentalDirectTerminalInsertionEnabled = enabled
+        syncSettingsWindow()
+        yuwpLog("Experimental direct terminal insertion \(enabled ? "enabled" : "disabled") (applies next dictation session)")
     }
 
     private func applyServerPort(_ port: UInt16) {
@@ -645,12 +796,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             dictationBinding: Config.shared.dictationBinding,
             audioInputSelection: Config.shared.audioInputSelection,
             availableAudioInputs: inputs,
+            experimentalDirectTextFieldInsertionEnabled: Config.shared.experimentalDirectTextFieldInsertionEnabled,
+            experimentalDirectTerminalInsertionEnabled: Config.shared.experimentalDirectTerminalInsertionEnabled,
             serverMode: Config.shared.serverMode,
             serverPort: Config.shared.serverPort,
             transcriptionModel: Config.shared.transcriptionModel,
             batchCommitEnabled: Config.shared.batchCommitEnabled,
             modelDownloadStatus: appState.modelDownloadStatus,
             saveRecordings: Config.shared.saveRecordings,
+            diagnosticLoggingEnabled: Config.shared.diagnosticLoggingEnabled,
             recordingsDir: Config.shared.recordingsDir,
             usingDefaultRecordingsDir: Config.shared.usesDefaultRecordingsDir,
             micPanelAnimation: Config.shared.micPanelAnimation,
@@ -725,39 +879,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .openAccessibilitySettings:
             statusMenuItem.action = #selector(openAccessibilitySettings)
             statusMenuItem.target = self
+        case .openMicrophoneSettings:
+            statusMenuItem.action = #selector(openMicrophoneSettings)
+            statusMenuItem.target = self
+        case .openSettings:
+            statusMenuItem.action = #selector(openSettings)
+            statusMenuItem.target = self
         }
     }
 
     private func missingConfiguredModelLabels() -> [String] {
-        ModelLocator.resolve(Config.shared.transcriptionModel) == nil ? ["Transcription"] : []
+        ModelLocator.resolve(Config.shared.transcriptionModel) == nil ? ["Model"] : []
     }
 
     // MARK: - Models
-
-    private func applyModelPreset(index: Int) {
-        guard index >= 0, index < ModelPreset.presets.count else { return }
-        let preset = ModelPreset.presets[index]
-        if ModelPreset.current()?.label == preset.label { return }
-
-        applyModelConfig(
-            transcriptionModel: preset.transcriptionModel,
-            batchCommitEnabled: preset.batchCommitEnabled
-        )
-        yuwpLog("Model changed to: \(preset.label) (\(preset.summary))")
-    }
 
     private func setBatchCommitEnabled(_ newValue: Bool) {
         if newValue, ModelLocator.resolve(Config.shared.transcriptionModel) == nil {
             showAlert(
                 title: "Model missing",
-                message: "Pick or download a valid transcription model before enabling the batch commit pass."
+                message: "Pick or download a valid model before enabling the final accuracy pass."
             )
             syncSettingsWindow()
             return
         }
         guard Config.shared.batchCommitEnabled != newValue else { return }
         applyModelConfig(batchCommitEnabled: newValue)
-        yuwpLog("Batch commit \(newValue ? "enabled" : "disabled")")
+        yuwpLog("Final accuracy pass \(newValue ? "enabled" : "disabled")")
     }
 
     private func applyModelSpec(_ spec: String) {
@@ -769,14 +917,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if ModelLocator.resolve(trimmed) != nil {
             applyModelConfig(transcriptionModel: trimmed)
-            yuwpLog("Transcription model changed to: \(trimmed)")
+            yuwpLog("Model changed to: \(trimmed)")
             return
         }
 
         if ModelLocator.isRepoId(trimmed) {
             let alert = NSAlert()
             alert.messageText = "Download model from Hugging Face?"
-            alert.informativeText = "Yuwp couldn't find `\(trimmed)` locally. Download it now into Application Support so the app can manage it directly? This same model is used for live decoding and batch segment commits."
+            alert.informativeText = "Yuwp couldn't find `\(trimmed)` locally. Download it now into Application Support so the app can manage it directly? This same model is used for live decoding and the optional final accuracy pass."
             alert.addButton(withTitle: "Download")
             alert.addButton(withTitle: "Save Anyway")
             alert.addButton(withTitle: "Cancel")
@@ -796,6 +944,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             message: "Yuwp couldn't find a valid model directory at `\(trimmed)`. Pick a folder with config.json, model.safetensors, vocab.json, and merges.txt."
         )
         syncSettingsWindow()
+    }
+
+    private func chooseTranscriptionModelDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = ModelLocator.localDirectory(for: Config.shared.transcriptionModel)
+            ?? ModelLocator.managedRoot()
+        panel.message = "Choose a model folder containing config.json, model.safetensors, vocab.json, and merges.txt."
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            syncSettingsWindow()
+            return
+        }
+
+        let path = url.standardizedFileURL.path
+        applyModelSpec(path)
     }
 
     private func applyModelConfig(
@@ -867,6 +1033,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Config.shared.saveRecordings = enabled
         syncSettingsWindow()
         yuwpLog("Save recordings \(enabled ? "enabled" : "disabled")")
+    }
+
+    private func applyDiagnosticLogging(_ enabled: Bool) {
+        guard Config.shared.diagnosticLoggingEnabled != enabled else {
+            syncSettingsWindow()
+            return
+        }
+
+        Config.shared.diagnosticLoggingEnabled = enabled
+        setYuwpDiagnosticLoggingEnabled(enabled)
+        asrProvider.diagnosticLoggingEnabled = enabled
+        restartProviderForSettingsChange()
+        syncSettingsWindow()
+
+        if enabled {
+            yuwpLog("Diagnostic logging enabled")
+        }
     }
 
     private func chooseRecordingsDirectory() {

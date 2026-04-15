@@ -13,7 +13,7 @@ Instructions for AI coding agents working on this codebase.
 └───────────────────────┬───────────────────┘
                         │
            ┌────────────▼────────────┐
-           │  asr-server (native)    │
+           │  swift-mlx-asr-server   │
            │  ┌──────────────────┐   │
            │  │ StreamingSession │   │
            │  │ (encoder cache,  │   │
@@ -24,7 +24,7 @@ Instructions for AI coding agents working on this codebase.
            └─────────────────────────┘
 ```
 
-The native `asr-server` loads the MLX model once and serves HTTP.
+The native `swift-mlx-asr-server` loads the MLX model once and serves HTTP.
 Yuwp.app launches it as a child process, communicates via localhost HTTP.
 External clients can use the same HTTP API.
 
@@ -33,7 +33,7 @@ External clients can use the same HTTP API.
 ```bash
 # Build everything (app + server)
 swift build
-swift build -c release --product asr-server
+swift build -c release --product swift-mlx-asr-server
 bash scripts/build_mlx_metallib.sh release  # compile Metal shaders
 
 swift run Yuwp
@@ -59,7 +59,7 @@ appcast URL or public key with `YUWP_SPARKLE_FEED_URL` or
 ### Standalone ASR server (no GUI)
 
 ```bash
-.build/arm64-apple-macosx/release/asr-server <model-dir> [--port 9748] [--host 127.0.0.1]
+.build/arm64-apple-macosx/release/swift-mlx-asr-server <model-dir> [--port 9748] [--host 127.0.0.1]
 ```
 
 ## Key Components
@@ -68,7 +68,7 @@ appcast URL or public key with `YUWP_SPARKLE_FEED_URL` or
 |------|---------|
 | App.swift | NSApplication entry, menu bar, orchestration |
 | DictationSession.swift | Session state machine, protocol abstractions |
-| NativeASRProvider.swift | Manages asr-server process, HTTP STT sessions |
+| NativeASRProvider.swift | Manages swift-mlx-asr-server process, HTTP STT sessions |
 | ModelManager.swift | HF model resolution from cache or local paths |
 | HotkeyManager.swift | Carbon global hotkey + Enter interception tap |
 | AudioCapture.swift | AVAudioEngine → 16kHz mono PCM |
@@ -79,7 +79,7 @@ appcast URL or public key with `YUWP_SPARKLE_FEED_URL` or
 | MicPanel.swift | Floating mic indicator (NSPanel) |
 | TypewriterAnimator.swift | Character-by-character text reveal |
 | Config.swift | UserDefaults-based preferences |
-| asr-server/main.swift | Native HTTP streaming ASR server |
+| swift-mlx-asr-server/main.swift | swift-mlx-asr-server entrypoint (native HTTP streaming ASR server) |
 | NativeASR/ | MLX model loading, inference, streaming session |
 
 ## HTTP API
@@ -131,8 +131,8 @@ rg 'class |struct |enum |protocol ' Sources/*.swift
   directly. The check itself can return stale results.
 - **Global dictation shortcut** uses Carbon hotkeys now. The CGEvent tap is only
   for swallowing Return during active dictation.
-- **asr-server must be built before running Yuwp** — the app locates the binary
-  in `.build/arm64-apple-macosx/release/asr-server`.
+- **swift-mlx-asr-server must be built before running Yuwp** — the app locates the binary
+  in `.build/arm64-apple-macosx/release/swift-mlx-asr-server`.
 
 ## Style
 
@@ -144,6 +144,6 @@ rg 'class |struct |enum |protocol ' Sources/*.swift
 
 1. `swift build` succeeds with no warnings
 2. `swift test` passes
-3. asr-server starts and responds to `/v1/info` with `"status": "ready"`
+3. swift-mlx-asr-server starts and responds to `/v1/info` with `"status": "ready"`
 4. Integration tests pass: `swift test --filter "ASR Server"`
 5. Tested: hotkey → record → transcribe → inject text (manual, end-to-end)

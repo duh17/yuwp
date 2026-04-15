@@ -5,6 +5,8 @@ struct SettingsSnapshot: Sendable, Equatable {
     var dictationBinding: KeyBinding
     var audioInputSelection: AudioInputSelection
     var availableAudioInputs: [AudioInputDeviceDescriptor]
+    var experimentalDirectTextFieldInsertionEnabled: Bool = false
+    var experimentalDirectTerminalInsertionEnabled: Bool = false
 
     var serverMode: ServerMode
     var serverPort: UInt16
@@ -14,6 +16,7 @@ struct SettingsSnapshot: Sendable, Equatable {
     var modelDownloadStatus: String?
 
     var saveRecordings: Bool
+    var diagnosticLoggingEnabled: Bool
     var recordingsDir: URL
     var usingDefaultRecordingsDir: Bool
 
@@ -39,13 +42,16 @@ final class SettingsStore: ObservableObject {
     var onDictationBindingChange: ((KeyBinding) -> Void)?
     var onDictationBindingRecordingChange: ((Bool) -> Void)?
     var onAudioInputSelectionChange: ((AudioInputSelection) -> Void)?
+    var onExperimentalDirectTextFieldInsertionChange: ((Bool) -> Void)?
+    var onExperimentalDirectTerminalInsertionChange: ((Bool) -> Void)?
     var onServerModeChange: ((ServerMode) -> Void)?
     var onServerPortChange: ((UInt16) -> Void)?
     var onSaveRecordingsChange: ((Bool) -> Void)?
+    var onDiagnosticLoggingChange: ((Bool) -> Void)?
     var onChooseRecordingsDirectory: (() -> Void)?
     var onResetRecordingsDirectory: (() -> Void)?
     var onRevealRecordingsDirectory: (() -> Void)?
-    var onModelPresetChange: ((Int) -> Void)?
+    var onChooseModelDirectory: (() -> Void)?
     var onBatchCommitChange: ((Bool) -> Void)?
     var onApplyModelSpec: ((String) -> Void)?
     var onDownloadModel: ((String) -> Void)?
@@ -83,17 +89,6 @@ final class SettingsStore: ObservableObject {
         return selections
     }
 
-    var currentModelPreset: ModelPreset? {
-        ModelPreset.presets.first { preset in
-            preset.transcriptionModel == snapshot.transcriptionModel
-                && preset.batchCommitEnabled == snapshot.batchCommitEnabled
-        }
-    }
-
-    var selectedModelPresetIndex: Int? {
-        guard let preset = currentModelPreset else { return nil }
-        return ModelPreset.presets.firstIndex(where: { $0.label == preset.label })
-    }
 
     var audioInputDescriptionText: String {
         switch snapshot.audioInputSelection {
@@ -110,19 +105,6 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    var modelPresetDescriptionText: String {
-        guard let preset = currentModelPreset else {
-            return "Using a custom model configuration. The advanced model settings below control transcription."
-        }
-        switch preset.label {
-        case "Fast":
-            return "Lower latency with the smaller model. Best default for quick local dictation."
-        case "Best Accuracy":
-            return "Uses the larger model for better recognition quality, at the cost of more compute."
-        default:
-            return preset.summary
-        }
-    }
 
     var serverModeDescriptionText: String {
         switch snapshot.serverMode {
@@ -149,13 +131,6 @@ final class SettingsStore: ObservableObject {
         return installed ? "Installed: \(name)" : "Missing: \(name)"
     }
 
-    var customModelPresetTitle: String {
-        "Custom configuration"
-    }
-
-    var availableModelPresetTitles: [String] {
-        ModelPreset.presets.map(\.label)
-    }
 
     var downloadableModels: [DownloadableASRModel] {
         DownloadableASRModel.supported
@@ -247,6 +222,16 @@ final class SettingsStore: ObservableObject {
         onAudioInputSelectionChange?(selection)
     }
 
+    func setExperimentalDirectTextFieldInsertionEnabled(_ enabled: Bool) {
+        snapshot.experimentalDirectTextFieldInsertionEnabled = enabled
+        onExperimentalDirectTextFieldInsertionChange?(enabled)
+    }
+
+    func setExperimentalDirectTerminalInsertionEnabled(_ enabled: Bool) {
+        snapshot.experimentalDirectTerminalInsertionEnabled = enabled
+        onExperimentalDirectTerminalInsertionChange?(enabled)
+    }
+
     func setServerMode(_ mode: ServerMode) {
         snapshot.serverMode = mode
         onServerModeChange?(mode)
@@ -272,6 +257,11 @@ final class SettingsStore: ObservableObject {
         onSaveRecordingsChange?(enabled)
     }
 
+    func setDiagnosticLoggingEnabled(_ enabled: Bool) {
+        snapshot.diagnosticLoggingEnabled = enabled
+        onDiagnosticLoggingChange?(enabled)
+    }
+
     func chooseRecordingsDirectory() {
         onChooseRecordingsDirectory?()
     }
@@ -284,15 +274,6 @@ final class SettingsStore: ObservableObject {
         onRevealRecordingsDirectory?()
     }
 
-    func setModelPreset(index: Int) {
-        guard index >= 0, index < ModelPreset.presets.count else { return }
-        let preset = ModelPreset.presets[index]
-        snapshot.transcriptionModel = preset.transcriptionModel
-        snapshot.batchCommitEnabled = preset.batchCommitEnabled
-        transcriptionModelDraft = preset.transcriptionModel
-        onModelPresetChange?(index)
-    }
-
     func setBatchCommitEnabled(_ enabled: Bool) {
         snapshot.batchCommitEnabled = enabled
         onBatchCommitChange?(enabled)
@@ -300,6 +281,10 @@ final class SettingsStore: ObservableObject {
 
     func applyTranscriptionModelDraft() {
         onApplyModelSpec?(transcriptionModelDraft)
+    }
+
+    func chooseModelDirectory() {
+        onChooseModelDirectory?()
     }
 
     func downloadModel(repoId: String) {

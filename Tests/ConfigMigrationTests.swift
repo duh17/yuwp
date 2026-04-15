@@ -13,10 +13,13 @@ struct ConfigMigrationTests {
 
         #expect(config.dictationBinding == .ctrlBacktick)
         #expect(config.audioInputSelection == .systemDefault)
+        #expect(!config.experimentalDirectTextFieldInsertionEnabled)
+        #expect(!config.experimentalDirectTerminalInsertionEnabled)
         #expect(config.serverMode == .localhost)
         #expect(config.serverPort == 9748)
         #expect(config.transcriptionModel == "mlx-community/Qwen3-ASR-0.6B-4bit")
         #expect(config.batchCommitEnabled)
+        #expect(!config.diagnosticLoggingEnabled)
         #expect(!config.saveRecordings)
         #expect(config.usesDefaultRecordingsDir)
         #expect(config.recordingsDir == config.defaultRecordingsDir)
@@ -32,19 +35,25 @@ struct ConfigMigrationTests {
         let config = Config(defaults: defaults)
         config.dictationBinding = KeyBinding(keyCode: 61, modifiers: 0, activation: .doubleTap)
         config.audioInputSelection = .device(uid: "test-mic")
+        config.experimentalDirectTextFieldInsertionEnabled = true
+        config.experimentalDirectTerminalInsertionEnabled = true
         config.serverMode = .allInterfaces
         config.serverPort = 8899
         config.transcriptionModel = "mlx-community/Qwen3-ASR-1.7B-bf16"
         config.batchCommitEnabled = false
+        config.diagnosticLoggingEnabled = true
         config.saveRecordings = true
         config.setRecordingsDir(FileManager.default.temporaryDirectory.appendingPathComponent("yuwp-tests-recordings", isDirectory: true))
 
         #expect(config.dictationBinding == KeyBinding(keyCode: 61, modifiers: 0, activation: .doubleTap))
         #expect(config.audioInputSelection == .device(uid: "test-mic"))
+        #expect(config.experimentalDirectTextFieldInsertionEnabled)
+        #expect(config.experimentalDirectTerminalInsertionEnabled)
         #expect(config.serverMode == .allInterfaces)
         #expect(config.serverPort == 8899)
         #expect(config.transcriptionModel == "mlx-community/Qwen3-ASR-1.7B-bf16")
         #expect(!config.batchCommitEnabled)
+        #expect(config.diagnosticLoggingEnabled)
         #expect(config.saveRecordings)
         #expect(!config.usesDefaultRecordingsDir)
         #expect(config.recordingsDir == FileManager.default.temporaryDirectory.appendingPathComponent("yuwp-tests-recordings", isDirectory: true).standardizedFileURL)

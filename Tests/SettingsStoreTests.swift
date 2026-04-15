@@ -4,6 +4,33 @@ import Testing
 
 @Suite("SettingsStore")
 struct SettingsStoreTests {
+    @Test @MainActor func experimentalInsertionTogglesUpdateSnapshotAndCallbacks() {
+        let store = SettingsStore(snapshot: makeSnapshot())
+        var textFieldValue: Bool?
+        var terminalValue: Bool?
+        store.onExperimentalDirectTextFieldInsertionChange = { textFieldValue = $0 }
+        store.onExperimentalDirectTerminalInsertionChange = { terminalValue = $0 }
+
+        store.setExperimentalDirectTextFieldInsertionEnabled(true)
+        store.setExperimentalDirectTerminalInsertionEnabled(true)
+
+        #expect(store.snapshot.experimentalDirectTextFieldInsertionEnabled)
+        #expect(store.snapshot.experimentalDirectTerminalInsertionEnabled)
+        #expect(textFieldValue == true)
+        #expect(terminalValue == true)
+    }
+
+    @Test @MainActor func diagnosticLoggingToggleUpdatesSnapshotAndCallback() {
+        let store = SettingsStore(snapshot: makeSnapshot())
+        var value: Bool?
+        store.onDiagnosticLoggingChange = { value = $0 }
+
+        store.setDiagnosticLoggingEnabled(true)
+
+        #expect(store.snapshot.diagnosticLoggingEnabled)
+        #expect(value == true)
+    }
+
     @Test @MainActor func selectingCustomMicPanelSeedsDefaultCustomValues() {
         let store = SettingsStore(snapshot: makeSnapshot())
         var received: MicPanelAnimationConfig?
@@ -110,6 +137,7 @@ struct SettingsStoreTests {
             batchCommitEnabled: true,
             modelDownloadStatus: nil,
             saveRecordings: false,
+            diagnosticLoggingEnabled: false,
             recordingsDir: FileManager.default.temporaryDirectory.appendingPathComponent("yuwp-tests-recordings", isDirectory: true),
             usingDefaultRecordingsDir: true,
             micPanelAnimation: .default,

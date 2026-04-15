@@ -354,6 +354,32 @@ final class Config {
         }
     }
 
+    /// Experimental: when enabled, Yuwp may inject directly into editable AX fields.
+    /// Default is off — bubble preview + paste commit is safer and more predictable.
+    var experimentalDirectTextFieldInsertionEnabled: Bool {
+        get {
+            defaults.object(forKey: "experimentalDirectTextFieldInsertionEnabled") != nil
+                ? defaults.bool(forKey: "experimentalDirectTextFieldInsertionEnabled")
+                : false
+        }
+        set {
+            defaults.set(newValue, forKey: "experimentalDirectTextFieldInsertionEnabled")
+        }
+    }
+
+    /// Experimental: when enabled, Yuwp may inject directly in terminal/AX-hostile apps via CGEvent.
+    /// Default is off — bubble preview + paste commit is safer and more predictable.
+    var experimentalDirectTerminalInsertionEnabled: Bool {
+        get {
+            defaults.object(forKey: "experimentalDirectTerminalInsertionEnabled") != nil
+                ? defaults.bool(forKey: "experimentalDirectTerminalInsertionEnabled")
+                : false
+        }
+        set {
+            defaults.set(newValue, forKey: "experimentalDirectTerminalInsertionEnabled")
+        }
+    }
+
     var micPanelAnimation: MicPanelAnimationConfig {
         get {
             let selection = MicPanelAnimationSelection(rawValue: defaults.string(forKey: "micPanelAnimationSelection") ?? "") ?? .system
@@ -437,6 +463,18 @@ final class Config {
             return true
         }
         set { defaults.set(newValue, forKey: "batchCommitEnabled") }
+    }
+
+    // MARK: - Privacy
+
+    /// Diagnostic stderr logging for troubleshooting. Default is off.
+    var diagnosticLoggingEnabled: Bool {
+        get {
+            defaults.object(forKey: "diagnosticLoggingEnabled") != nil
+                ? defaults.bool(forKey: "diagnosticLoggingEnabled")
+                : false
+        }
+        set { defaults.set(newValue, forKey: "diagnosticLoggingEnabled") }
     }
 
     // MARK: - Recordings

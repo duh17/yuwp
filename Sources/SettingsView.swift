@@ -12,7 +12,7 @@ private enum SettingsSidebarSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .dictation: "Dictation"
-        case .transcription: "Transcription"
+        case .transcription: "Model"
         case .recordings: "Recordings"
         case .network: "Network"
         case .feedback: "Feedback"
@@ -135,7 +135,7 @@ struct SettingsView: View {
         case .dictation:
             "Choose how Yuwp starts dictation and which shortcut triggers it."
         case .transcription:
-            "Choose a profile for speed or accuracy. Optionally run a slower batch pass whenever Yuwp commits a segment, including the trailing segment when you stop."
+            "Choose the transcription model and whether to run a final accuracy pass when text settles."
         case .recordings:
             "Keep source audio if you want a paper trail for debugging, QA, or re-transcription later."
         case .network:
@@ -181,95 +181,96 @@ struct SettingsView: View {
                 .labelsHidden()
                 .frame(width: 360, alignment: .trailing)
             }
+
+            SettingsDivider()
+
+            SettingsControlRow(
+                title: "Direct text-field insertion (Experimental)",
+                subtitle: "When off (recommended), Yuwp shows the growing preview bubble and pastes on commit instead of typing directly into AX-editable fields."
+            ) {
+                Toggle("", isOn: Binding(
+                    get: { store.snapshot.experimentalDirectTextFieldInsertionEnabled },
+                    set: { store.setExperimentalDirectTextFieldInsertionEnabled($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+            }
+
+            SettingsDivider()
+
+            SettingsControlRow(
+                title: "Direct terminal insertion (Experimental)",
+                subtitle: "When off (recommended), Yuwp avoids CGEvent keypress injection in terminals and uses preview bubble + paste on commit."
+            ) {
+                Toggle("", isOn: Binding(
+                    get: { store.snapshot.experimentalDirectTerminalInsertionEnabled },
+                    set: { store.setExperimentalDirectTerminalInsertionEnabled($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+            }
         }
     }
 
     private var transcriptionContent: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            SettingsGroup {
-                SettingsControlRow(
-                    title: "Profile",
-                    subtitle: store.modelPresetDescriptionText,
-                    topAligned: true
-                ) {
-                    Picker("", selection: Binding(
-                        get: { store.currentModelPreset?.label ?? store.customModelPresetTitle },
-                        set: { newValue in
-                            if let index = ModelPreset.presets.firstIndex(where: { $0.label == newValue }) {
-                                store.setModelPreset(index: index)
-                            }
-                        }
-                    )) {
-                        ForEach(store.availableModelPresetTitles, id: \.self) { title in
-                            Text(title).tag(title)
-                        }
-                        Text(store.customModelPresetTitle).tag(store.customModelPresetTitle)
+        SettingsGroup {
+            SettingsBlockRow(
+                title: "Model",
+                subtitle: store.modelStatusText
+            ) {
+                HStack(spacing: 8) {
+                    TextField(
+                        "mlx-community/Qwen3-ASR-0.6B-4bit or /path/to/model",
+                        text: $store.transcriptionModelDraft
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 320)
+
+                    Button("Choose…") {
+                        store.chooseModelDirectory()
                     }
-                    .labelsHidden()
-                    .frame(width: 220, alignment: .trailing)
-                }
 
-                SettingsDivider()
-
-                SettingsControlRow(
-                    title: "Segment Commit",
-                    subtitle: "Run a slower batch pass when Yuwp commits speech segments for better final text quality."
-                ) {
-                    Toggle("", isOn: Binding(
-                        get: { store.snapshot.batchCommitEnabled },
-                        set: { store.setBatchCommitEnabled($0) }
-                    ))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
+                    Button("Use") {
+                        store.applyTranscriptionModelDraft()
+                    }
                 }
             }
 
-            InsetSettingsCard(
-                title: "Advanced model settings",
-                subtitle: "Use custom model settings only if you want to override the selected profile. This same model is used for live decoding and batch segment commits."
+            SettingsDivider()
+
+            SettingsControlRow(
+                title: "Final Accuracy Pass",
+                subtitle: "Retranscribe settled segments to improve final accuracy. Adds a little commit latency."
             ) {
-                SettingsGroup {
-                    SettingsBlockRow(
-                        title: "Model",
-                        subtitle: store.modelStatusText
-                    ) {
-                        HStack(spacing: 8) {
-                            TextField(
-                                "mlx-community/Qwen3-ASR-0.6B-4bit or /path/to/model",
-                                text: $store.transcriptionModelDraft
-                            )
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.body, design: .monospaced))
-                            .frame(width: 320)
+                Toggle("", isOn: Binding(
+                    get: { store.snapshot.batchCommitEnabled },
+                    set: { store.setBatchCommitEnabled($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+            }
 
-                            Button("Use") {
-                                store.applyTranscriptionModelDraft()
-                            }
+            SettingsDivider()
+
+            SettingsBlockRow(
+                title: "Download",
+                subtitle: store.downloadRowStatusText
+            ) {
+                HStack(spacing: 8) {
+                    Picker("", selection: $store.selectedDownloadModelRepoId) {
+                        ForEach(store.downloadableModels, id: \.repoId) { model in
+                            Text(model.label).tag(model.repoId)
                         }
                     }
+                    .labelsHidden()
+                    .frame(width: 260, alignment: .trailing)
+                    .disabled(store.modelDownloadStatusText != nil)
 
-                    SettingsDivider()
-
-                    SettingsBlockRow(
-                        title: "Download",
-                        subtitle: store.downloadRowStatusText
-                    ) {
-                        HStack(spacing: 8) {
-                            Picker("", selection: $store.selectedDownloadModelRepoId) {
-                                ForEach(store.downloadableModels, id: \.repoId) { model in
-                                    Text(model.label).tag(model.repoId)
-                                }
-                            }
-                            .labelsHidden()
-                            .frame(width: 260, alignment: .trailing)
-                            .disabled(store.modelDownloadStatusText != nil)
-
-                            Button(store.downloadButtonTitle) {
-                                store.downloadSelectedModel()
-                            }
-                            .disabled(!store.canDownloadSelectedModel)
-                        }
+                    Button(store.downloadButtonTitle) {
+                        store.downloadSelectedModel()
                     }
+                    .disabled(!store.canDownloadSelectedModel)
                 }
             }
         }
@@ -284,6 +285,20 @@ struct SettingsView: View {
                 Toggle("", isOn: Binding(
                     get: { store.snapshot.saveRecordings },
                     set: { store.setSaveRecordings($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+            }
+
+            SettingsDivider()
+
+            SettingsControlRow(
+                title: "Diagnostic Logging",
+                subtitle: "Write troubleshooting logs to stderr. Off by default."
+            ) {
+                Toggle("", isOn: Binding(
+                    get: { store.snapshot.diagnosticLoggingEnabled },
+                    set: { store.setDiagnosticLoggingEnabled($0) }
                 ))
                 .labelsHidden()
                 .toggleStyle(.switch)
