@@ -1,0 +1,31 @@
+{
+  "name": "mixed-language terminal correction",
+  "source": "Derived from 2026-04-13 live dictation recording; text-only trace, no audio committed.",
+  "finalText": "Hello. We're testing live dictation in the terminal. It works so far. It works with mixed languages. Now I'll say Chinese. Now, should be able to type. Then, if there's any mistakes, it will delete the previous one and type the new one. Okay, now I'm switching back to English again. So far, it works great. Alrighty, time to stop.",
+  "updates": [
+    {
+      "kind": "partial",
+      "text": "Hello."
+    },
+    {
+      "kind": "segment_commit",
+      "text": "Hello."
+    },
+    {
+      "kind": "partial",
+      "text": "Hello. We're testing live dictation in the terminal. It works so far. It works with mixed languages. 现在我说中文。"
+    },
+    {
+      "kind": "partial",
+      "text": "Hello. We're testing live dictation in the terminal. It works so far. It works with mixed languages. 现在我说中文，现在应该都是可以先打。然后，如果有错误，会删除之前的，然后打后面的。"
+    },
+    {
+      "kind": "partial",
+      "text": "Hello. We're testing live dictation in the terminal. It works so far. It works with mixed languages. 现在我说中文，现在应该都是可以先打。然后，如果有错误，会删除之前的，然后打后面的。Okay, now I'm switching back to English again. So far, it works great. Already, time to stop"
+    },
+    {
+      "kind": "final",
+      "text": "Hello. We're testing live dictation in the terminal. It works so far. It works with mixed languages. Now I'll say Chinese. Now, should be able to type. Then, if there's any mistakes, it will delete the previous one and type the new one. Okay, now I'm switching back to English again. So far, it works great. Alrighty, time to stop."
+    }
+  ]
+}

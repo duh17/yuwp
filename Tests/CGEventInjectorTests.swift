@@ -21,6 +21,15 @@ struct CGEventInjectorTests {
         }
     }
 
+    @MainActor
+    private final class PasteRecorder: ClipboardPasting {
+        private(set) var pasted: [String] = []
+
+        func pasteViaClipboard(_ text: String) {
+            pasted.append(text)
+        }
+    }
+
     @Test func emptyToText() {
         let (bs, suffix) = CGEventInjector.diff(old: "", new: "hello")
         #expect(bs == 0)
@@ -230,5 +239,59 @@ struct CGEventInjectorTests {
         queue.sync {}
 
         #expect(recorder.snapshot().isEmpty)
+    }
+
+    @Test @MainActor func rewriteCommitUsesBulkPasteInsteadOfTypingReplacementTail() {
+        let recorder = OperationRecorder()
+        let pasteRecorder = PasteRecorder()
+        let queue = DispatchQueue(label: "test.cg.inject.bulk-paste")
+        let injector = CGEventInjector(
+            eventQueue: queue,
+            transport: CGEventTransport(
+                postText: { text, shouldContinue in
+                    guard shouldContinue() else { return }
+                    recorder.append("text:\(text)")
+                },
+                postBackspaces: { count, shouldContinue in
+                    guard count > 0 else { return }
+                    guard shouldContinue() else { return }
+                    recorder.append("bs:\(count)")
+                }
+            ),
+            bulkInserter: pasteRecorder
+        )
+
+        injector.inject("hello world")
+        injector.commit("hello there")
+
+        #expect(recorder.snapshot() == ["text:hello world", "bs:5"])
+        #expect(pasteRecorder.pasted == ["there"])
+    }
+
+    @Test @MainActor func appendOnlyCommitKeepsKeyboardTypingInsteadOfUsingPaste() {
+        let recorder = OperationRecorder()
+        let pasteRecorder = PasteRecorder()
+        let queue = DispatchQueue(label: "test.cg.inject.append-commit")
+        let injector = CGEventInjector(
+            eventQueue: queue,
+            transport: CGEventTransport(
+                postText: { text, shouldContinue in
+                    guard shouldContinue() else { return }
+                    recorder.append("text:\(text)")
+                },
+                postBackspaces: { count, shouldContinue in
+                    guard count > 0 else { return }
+                    guard shouldContinue() else { return }
+                    recorder.append("bs:\(count)")
+                }
+            ),
+            bulkInserter: pasteRecorder
+        )
+
+        injector.inject("hello")
+        injector.commit("hello world")
+
+        #expect(recorder.snapshot() == ["text:hello", "text: world"])
+        #expect(pasteRecorder.pasted.isEmpty)
     }
 }

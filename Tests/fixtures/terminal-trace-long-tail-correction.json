@@ -1,0 +1,27 @@
+{
+  "name": "long-tail terminal correction",
+  "source": "Derived from 2026-04-13 live dictation recording; text-only trace, no audio committed.",
+  "finalText": "Okay, now look at this messages we just did dictation in, and you can see the final transcribe created a duplication. Can you check the log and see where this happens? This is in the terminal keyboard event injection. Let's see why this happens.",
+  "updates": [
+    {
+      "kind": "partial",
+      "text": "Okay."
+    },
+    {
+      "kind": "partial",
+      "text": "Okay, now look at this messages we just did dictation in, and you can see the final transcribe created a duplication. Can you check the log and see where this happens? This is in the terminal."
+    },
+    {
+      "kind": "partial",
+      "text": "Okay, now look at this messages we just did dictation in, and you can see the final transcribe created a duplication. Can you check the log and see where this happens? This is in the terminal keyboard input"
+    },
+    {
+      "kind": "partial",
+      "text": "Okay, now look at this messages we just did dictation in, and you can see the final transcribe created a duplication. Can you check the log and see where this happens? This is in the terminal keyboard embed injection. Let's see why this happens"
+    },
+    {
+      "kind": "final",
+      "text": "Okay, now look at this messages we just did dictation in, and you can see the final transcribe created a duplication. Can you check the log and see where this happens? This is in the terminal keyboard event injection. Let's see why this happens."
+    }
+  ]
+}

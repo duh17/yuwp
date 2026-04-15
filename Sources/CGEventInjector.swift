@@ -44,6 +44,10 @@ private final class CGEventCancellationState: @unchecked Sendable {
 /// block the main actor while the dictation bubble is animating.
 @MainActor
 final class CGEventInjector: TextInjecting {
+    private struct CommitResult {
+        let previousText: String
+        let pastedSuffix: String?
+    }
 
     // MARK: - TextInjecting
 
@@ -73,13 +77,30 @@ final class CGEventInjector: TextInjecting {
     }
 
     /// Commit the final text: replace any streamed partial with the corrected version.
+    ///
+    /// Pure append commits keep using keyboard events. Rewrite commits (where we
+    /// must erase already-rendered text) backspace the stale tail, then bulk-insert
+    /// the corrected suffix via the clipboard path to avoid spraying long replacement
+    /// strings through per-character key events.
     func commit(_ text: String) {
         let queueState = self.queueState
         let transport = self.transport
         let cancellation = self.cancellation
         let generation = cancellation.snapshot()
-        let previousText = eventQueue.sync {
+        let bulkInserter = self.bulkInserter
+        let result = eventQueue.sync {
             let previousText = queueState.renderedText
+            if let correction = Self.bulkCorrection(old: previousText, new: text), bulkInserter != nil {
+                transport.postBackspaces(correction.backspaces) {
+                    cancellation.isCurrent(generation)
+                }
+                guard cancellation.isCurrent(generation) else {
+                    return CommitResult(previousText: previousText, pastedSuffix: nil)
+                }
+                queueState.renderedText = ""
+                return CommitResult(previousText: previousText, pastedSuffix: correction.suffix)
+            }
+
             Self.applyTargetText(
                 text,
                 queueState: queueState,
@@ -88,13 +109,22 @@ final class CGEventInjector: TextInjecting {
                 generation: generation
             )
             queueState.renderedText = ""
-            return previousText
+            return CommitResult(previousText: previousText, pastedSuffix: nil)
         }
 
-        if previousText == text {
+        if let pastedSuffix = result.pastedSuffix, !pastedSuffix.isEmpty {
+            bulkInserter?.pasteViaClipboard(pastedSuffix)
+            yuwpLog(
+                "CGEvent commit: replaced \(result.previousText.count) chars with \(text.count) chars "
+                    + "(bulk pasted \(pastedSuffix.count) chars after backspacing)"
+            )
+            return
+        }
+
+        if result.previousText == text {
             yuwpLog("CGEvent commit: text unchanged (\(text.count) chars)")
         } else {
-            yuwpLog("CGEvent commit: replaced \(previousText.count) chars with \(text.count) chars")
+            yuwpLog("CGEvent commit: replaced \(result.previousText.count) chars with \(text.count) chars")
         }
     }
 
@@ -112,16 +142,19 @@ final class CGEventInjector: TextInjecting {
         self.targetPosition = screenPoint
         self.eventQueue = DispatchQueue(label: "yuwp.cg-event-injector", qos: .userInitiated)
         self.transport = Self.liveTransport
+        self.bulkInserter = ClipboardInjector(screenPoint: screenPoint)
     }
 
     init(
         screenPoint: NSPoint = .zero,
         eventQueue: DispatchQueue,
-        transport: CGEventTransport
+        transport: CGEventTransport,
+        bulkInserter: (any ClipboardPasting)? = nil
     ) {
         self.targetPosition = screenPoint
         self.eventQueue = eventQueue
         self.transport = transport
+        self.bulkInserter = bulkInserter
     }
 
     // MARK: - Diff (pure, testable)
@@ -141,6 +174,7 @@ final class CGEventInjector: TextInjecting {
     private let queueState = CGEventQueueState()
     private let cancellation = CGEventCancellationState()
     private let transport: CGEventTransport
+    private let bulkInserter: (any ClipboardPasting)?
 
     nonisolated private static let liveTransport = CGEventTransport(
         postText: { text, shouldContinue in
@@ -178,6 +212,12 @@ final class CGEventInjector: TextInjecting {
         }
         guard cancellation.isCurrent(generation) else { return }
         queueState.renderedText = text
+    }
+
+    nonisolated private static func bulkCorrection(old: String, new: String) -> (backspaces: Int, suffix: String)? {
+        let correction = diff(old: old, new: new)
+        guard correction.backspaces > 0, !correction.suffix.isEmpty else { return nil }
+        return correction
     }
 
     nonisolated private static func postUnicodeCharacter(_ character: Character) {
