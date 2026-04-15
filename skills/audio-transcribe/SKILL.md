@@ -48,7 +48,7 @@ The script uses the repo-local release binary plus sibling `mlx.metallib`.
 If either artifact is missing, it auto-builds them with:
 
 ```bash
-cd ~/workspace/yuwp
+cd /path/to/yuwp
 swift build -c release --product yuwp-asr
 bash scripts/build_mlx_metallib.sh release
 ```

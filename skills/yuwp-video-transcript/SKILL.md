@@ -43,7 +43,7 @@ When it needs local ASR, it will reuse a healthy local server if one is already 
 If the binary is missing, it auto-builds the canonical release CLI:
 
 ```bash
-cd ~/workspace/yuwp
+cd /path/to/yuwp
 swift build -c release --product yuwp-asr
 bash scripts/build_mlx_metallib.sh release
 ```

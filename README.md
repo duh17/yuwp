@@ -1,49 +1,54 @@
 # Yuwp
 
-On-device dictation for macOS.
+Yuwp is a small on-device dictation app for macOS.
 
-Press a hotkey, talk, and Yuwp types into the focused field. Once a model is installed, dictation runs locally on your Mac with no cloud API calls.
+- Runs locally with Swift + MLX (Qwen3-ASR)
+- Uses a global hotkey to start/stop dictation
+- Injects text into most apps (AX API, terminal key events, clipboard fallback)
+- No cloud API required after model download
 
 ## Requirements
 
 - macOS 14+
 - Apple Silicon
 
-## Quick start
+## Install
+
+Download the latest notarized release assets:
+
+- https://github.com/duh17/yuwp/releases/latest
+
+Build from source:
 
 ```bash
 git clone https://github.com/duh17/yuwp.git
 cd yuwp
+xcodebuild -downloadComponent MetalToolchain   # one-time on fresh machines
 scripts/run.sh
 ```
 
-This builds and launches a signed `Yuwp.app` bundle so Accessibility and Microphone permissions survive rebuilds.
+`scripts/run.sh` builds a signed app bundle and launches it from `/Applications/Yuwp.app`.
 
-On first launch:
-1. grant **Accessibility** and **Microphone** access
-2. open **Settings…**
-3. choose or download a model
+## First launch
 
-If you run the app directly with `swift run Yuwp`, macOS may ask for permissions again after each rebuild.
+1. Open Yuwp from the menu bar.
+2. Click **Grant Accessibility Permission** and allow Yuwp in Privacy & Security.
+3. Press the hotkey once to trigger the **Microphone** permission prompt.
+4. Open **Settings… → Transcription** and download/select a model.
 
 ## Usage
 
 - Default shortcut: **Ctrl+`**
-- Press once to start dictation
-- Press again to stop
-- Configure shortcut, models, recordings, server mode, mic panel, and chimes in **Settings…**
+- Press once to start dictation, press again to stop
+- Configure shortcut, model, server mode, recording, mic panel, and chimes in **Settings…**
 
-Yuwp chooses the best text injection method for the focused app:
-- **AX API** for normal text fields
-- **CGEvent** for terminals and AX-hostile editors
-- **Clipboard fallback** when needed
+## CLI / Server
 
-## CLI
-
-Build the standalone CLI:
+Build CLIs:
 
 ```bash
 swift build -c release --product yuwp-asr
+swift build -c release --product swift-mlx-asr-server
 bash scripts/build_mlx_metallib.sh release
 ```
 
@@ -53,38 +58,11 @@ Transcribe a file:
 .build/arm64-apple-macosx/release/yuwp-asr transcribe Tests/fixtures/jfk.wav
 ```
 
-JSON output:
+Run standalone HTTP server:
 
 ```bash
-.build/arm64-apple-macosx/release/yuwp-asr transcribe Tests/fixtures/jfk.wav --format json
-```
-
-SRT output:
-
-```bash
-.build/arm64-apple-macosx/release/yuwp-asr transcribe Tests/fixtures/jfk.wav --format srt --output /tmp/jfk.srt
-```
-
-## HTTP server
-
-Start the local transcription server:
-
-```bash
-.build/arm64-apple-macosx/release/yuwp-asr serve
-```
-
-Health check:
-
-```bash
+.build/arm64-apple-macosx/release/swift-mlx-asr-server <model-dir> --host 127.0.0.1 --port 9748
 curl -sf http://127.0.0.1:9748/v1/info | jq .
-```
-
-Batch transcription:
-
-```bash
-curl -sf http://127.0.0.1:9748/v1/audio/transcriptions \
-  -F file=@Tests/fixtures/jfk.wav \
-  -F response_format=text
 ```
 
 ## Development
@@ -95,6 +73,21 @@ swift test
 scripts/build.sh
 scripts/run.sh
 ```
+
+Fresh clone note: `swift test` works on a clean clone. `scripts/build.sh` / `scripts/run.sh` require the Metal toolchain to produce `mlx.metallib`.
+
+## Privacy
+
+- Private by default: audio processing and transcription run locally on your Mac.
+- Recording is off by default. Audio is only saved if you explicitly enable **Save Recordings**.
+- Diagnostic logging is off by default and can be enabled manually in Settings when troubleshooting.
+
+## Acknowledgments
+
+- [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
+- [MLX](https://github.com/ml-explore/mlx) and [mlx-swift](https://github.com/ml-explore/mlx-swift)
+- [qwen-asr](https://github.com/antirez/qwen-asr) (streaming reference ideas)
+- [Silero VAD](https://github.com/snakers4/silero-vad)
 
 ## License
 
