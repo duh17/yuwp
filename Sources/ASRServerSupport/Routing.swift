@@ -79,18 +79,22 @@ private func handleInfoRoute(_ req: HTTPRequest, context: ASRRouteContext) -> HT
     guard req.method == "GET" else { return jsonResponse(status: 405, ["error": "method not allowed"]) }
 
     var info: [String: Any] = [
-        "streaming_model": context.streamingModelName,
+        "model": context.streamingModelName,
+        "streaming_model": context.streamingModelName, // backward compatibility
         "sample_rate": ASRAudio.sampleRate,
-        "chunk_sec": 2.0,
-        "batch_retranscribe": context.batchRetranscribeEnabled,
+        "chunk_sec": 2.25,
+        "final_accuracy_pass_enabled": context.batchRetranscribeEnabled,
+        "batch_retranscribe": context.batchRetranscribeEnabled, // backward compatibility
         "internal_diagnostics": internalDiagnosticsEnabled,
         "status": "ready",
     ]
     if let activeModelID = context.activeModelID {
-        info["model"] = activeModelID
+        info["model_id"] = activeModelID
     }
-    if let batchModelName = context.batchModelName {
-        info["batch_model"] = batchModelName
+    if let batchModelName = context.batchModelName,
+       batchModelName != context.streamingModelName {
+        info["final_accuracy_pass_model"] = batchModelName
+        info["batch_model"] = batchModelName // backward compatibility
     }
     info["aligner"] = context.aligner != nil
     info["vad"] = context.vad != nil

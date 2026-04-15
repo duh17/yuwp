@@ -192,6 +192,29 @@ def normalize_text(text: str) -> str:
     return text
 
 
+def canonicalize_audio_for_golden(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(resolved)
+
+
+def resolve_audio_from_golden(audio_value: str, *, golden_file: Path) -> Path:
+    raw = Path(audio_value).expanduser()
+    if raw.is_absolute():
+        return raw
+
+    candidates = [
+        (golden_file.parent / raw).resolve(),
+        (REPO_ROOT / raw).resolve(),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
 def levenshtein(seq_a: list[str] | str, seq_b: list[str] | str) -> int:
     if seq_a == seq_b:
         return 0
@@ -237,7 +260,7 @@ def require_cases(sample_set: str) -> list[SampleCase]:
     if missing:
         raise SystemExit(
             "Missing sample files:\n- " + "\n- ".join(missing) +
-            "\n\nMake sure the tracked fixtures are present under Tests/fixtures/ (and optional extended samples under ~/workspace/qwen-asr)."
+            "\n\nMake sure the tracked fixtures are present under Tests/fixtures/ (and optional extended samples under your local qwen-asr checkout)."
         )
     return cases
 
@@ -270,7 +293,7 @@ def transcribe_reference(model_name: str, cases: list[SampleCase]) -> list[Golde
         out.append(
             GoldenCase(
                 id=case.id,
-                audio=str(case.audio),
+                audio=canonicalize_audio_for_golden(case.audio),
                 language=case.language,
                 notes=case.notes,
                 duration_s=duration_s,
@@ -389,12 +412,13 @@ def extract_timing(stderr_text: str, label: str) -> float | None:
 def compare_against_goldens(
     golden: dict[str, Any],
     *,
+    golden_file: Path,
     command_template: str,
     model_dir: str | None,
 ) -> list[CompareCase]:
     cases: list[CompareCase] = []
     for case in golden["cases"]:
-        audio = Path(case["audio"])
+        audio = resolve_audio_from_golden(case["audio"], golden_file=golden_file)
         if not audio.exists():
             raise SystemExit(f"Golden audio file missing: {audio}")
 
@@ -488,6 +512,7 @@ def command_compare(args: argparse.Namespace) -> int:
     golden = load_golden_file(args.golden)
     cases = compare_against_goldens(
         golden,
+        golden_file=args.golden.resolve(),
         command_template=args.candidate_cmd,
         model_dir=args.model_dir,
     )

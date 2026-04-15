@@ -1,6 +1,6 @@
 import Foundation
 
-public let asrServerUsage = "Usage: asr-server [--model <path-or-repo-id>] [--batch-model <dir>] [--aligner-model <dir>] [--disable-vad] [--disable-batch-retranscribe] [--port 9748] [--host 127.0.0.1] [--parent-pid <pid>] [--warmup]"
+public let asrServerUsage = "Usage: swift-mlx-asr-server [--model <path-or-repo-id>] [--batch-model <dir>] [--aligner-model <dir>] [--disable-vad] [--disable-batch-retranscribe] [--port 9748] [--host 127.0.0.1] [--parent-pid <pid>] [--warmup]"
 
 public struct ASRServerCLIConfiguration: Equatable {
     public let modelSpec: String?

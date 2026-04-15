@@ -232,8 +232,11 @@ struct ASRServerSupportTests {
         let json = try #require(try JSONSerialization.jsonObject(with: response.body) as? [String: Any])
 
         #expect(response.status == 200)
+        #expect(json["model"] as? String == "streaming-model")
         #expect(json["streaming_model"] as? String == "streaming-model")
+        #expect(json["final_accuracy_pass_model"] as? String == "batch-model")
         #expect(json["batch_model"] as? String == "batch-model")
+        #expect(json["final_accuracy_pass_enabled"] as? Bool == true)
         #expect(json["status"] as? String == "ready")
         #expect(json["aligner"] as? Bool == false)
         #expect(json["vad"] as? Bool == false)

@@ -2,7 +2,7 @@
 # Build a self-contained Yuwp.app, sign it, install to /Applications, then launch.
 # The app bundle embeds:
 #   - Yuwp
-#   - asr-server
+#   - swift-mlx-asr-server
 #   - mlx.metallib
 #   - Sparkle.framework
 set -euo pipefail
@@ -10,19 +10,19 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIGURATION="release"
-: "${YUWP_INTERNAL_DIAGNOSTICS:=1}"
-: "${YUWP_ALLOW_STALE_METALLIB:=1}"
+: "${YUWP_INTERNAL_DIAGNOSTICS:=0}"
+export YUWP_INTERNAL_DIAGNOSTICS
 DEFAULT_SPARKLE_FEED_URL="https://github.com/duh17/yuwp/releases/latest/download/appcast.xml"
 DEFAULT_SPARKLE_PUBLIC_ED_KEY="wnLCIfY048anOcj7/J/Iv6Lp9Fmba4zQ0EjCL7k/M+E=" # gitleaks:allow public Sparkle key
 SPARKLE_FEED_URL="${YUWP_SPARKLE_FEED_URL:-$DEFAULT_SPARKLE_FEED_URL}"
 SPARKLE_PUBLIC_ED_KEY="${YUWP_SPARKLE_PUBLIC_ED_KEY:-$DEFAULT_SPARKLE_PUBLIC_ED_KEY}"
-export YUWP_INTERNAL_DIAGNOSTICS YUWP_ALLOW_STALE_METALLIB
 APP="/Applications/Yuwp.app"
 MACOS_DIR="$APP/Contents/MacOS"
 RES_DIR="$APP/Contents/Resources"
 FRAMEWORKS_DIR="$APP/Contents/Frameworks"
 BIN_DIR=".build/arm64-apple-macosx/$CONFIGURATION"
-LOGFILE="/tmp/yuwp.log"
+CAPTURE_RUN_LOG="${YUWP_CAPTURE_RUN_LOG:-0}"
+LOGFILE="${YUWP_LOG_FILE:-/tmp/yuwp.log}"
 SIGN_IDENTITY="${YUWP_SIGN_IDENTITY:-}"
 if [ -z "$SIGN_IDENTITY" ]; then
     SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
@@ -42,9 +42,6 @@ else
 fi
 
 echo "[yuwp] Internal diagnostics env: $YUWP_INTERNAL_DIAGNOSTICS"
-echo "[yuwp] Allow stale metallib: $YUWP_ALLOW_STALE_METALLIB"
-echo "[yuwp] Sparkle feed URL: $SPARKLE_FEED_URL"
-echo "[yuwp] Sparkle public key: ${SPARKLE_PUBLIC_ED_KEY:0:12}…"
 bash scripts/build.sh "$CONFIGURATION"
 
 # Kill old app binary if it is already running so we don't leave a stale copy alive.
@@ -57,14 +54,22 @@ if [ -n "$OLD_SERVER_PIDS" ]; then
 fi
 sleep 1
 
-# Recreate the bundle from scratch so embedded frameworks/helpers don't accumulate
-# stale contents across repeated runs.
-rm -rf "$APP"
+# Update the app bundle in place to keep TCC identity stable across dev runs.
 mkdir -p "$MACOS_DIR" "$RES_DIR" "$FRAMEWORKS_DIR"
+rm -f "$MACOS_DIR/asr-server"
+rm -rf "$RES_DIR/Yuwp_NativeASR.bundle"
 cp -f "$BIN_DIR/Yuwp" "$MACOS_DIR/Yuwp"
-cp -f "$BIN_DIR/asr-server" "$MACOS_DIR/asr-server"
+cp -f "$BIN_DIR/swift-mlx-asr-server" "$MACOS_DIR/swift-mlx-asr-server"
 cp -f "$BIN_DIR/mlx.metallib" "$MACOS_DIR/mlx.metallib"
 cp -f "icon-layers/Yuwp.icns" "$RES_DIR/Yuwp.icns"
+
+RESOURCE_BUNDLE="$BIN_DIR/Yuwp_NativeASR.bundle"
+if [ -d "$RESOURCE_BUNDLE" ]; then
+    ditto "$RESOURCE_BUNDLE" "$RES_DIR/Yuwp_NativeASR.bundle"
+else
+    echo "Error: missing NativeASR resource bundle at $RESOURCE_BUNDLE"
+    exit 1
+fi
 
 # SwiftPM doesn't add the app-bundle Frameworks runpath for this executable.
 # Add it here so the packaged app can load Sparkle.framework at runtime.
@@ -73,12 +78,13 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/Yuwp"
 # Embed Sparkle.framework
 SPARKLE_FW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 if [ -d "$SPARKLE_FW" ]; then
+    rm -rf "$FRAMEWORKS_DIR/Sparkle.framework"
     ditto "$SPARKLE_FW" "$FRAMEWORKS_DIR/Sparkle.framework"
 else
     echo "Warning: Sparkle.framework not found at $SPARKLE_FW — run 'swift package resolve' first"
 fi
 
-cat > "$APP/Contents/Info.plist" <<EOF
+cat > "$APP/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -119,7 +125,7 @@ ENTITLEMENTS_SERVER=""
 if [ "$SIGN_IDENTITY" != "-" ]; then
     RUNTIME_FLAG="--options runtime"
     ENTITLEMENTS_APP="--entitlements Yuwp.entitlements"
-    ENTITLEMENTS_SERVER="--entitlements asr-server.entitlements"
+    ENTITLEMENTS_SERVER="--entitlements swift-mlx-asr-server.entitlements"
 fi
 
 # Sparkle framework (XPC services, helpers, then the framework itself)
@@ -141,7 +147,7 @@ codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAG \
     --identifier com.yuwp.app.metallib "$MACOS_DIR/mlx.metallib"
 
 codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAG $ENTITLEMENTS_SERVER \
-    --identifier com.yuwp.app.server "$MACOS_DIR/asr-server"
+    --identifier com.yuwp.app.server "$MACOS_DIR/swift-mlx-asr-server"
 
 codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAG $ENTITLEMENTS_APP \
     --identifier com.yuwp.app "$MACOS_DIR/Yuwp"
@@ -151,8 +157,13 @@ codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAG $ENTITLEMENTS_APP \
 
 codesign --verify --deep --strict "$APP"
 
-> "$LOGFILE"
-echo "Launching Yuwp.app (log: $LOGFILE)..."
-open --stdout "$LOGFILE" --stderr "$LOGFILE" "$APP"
-sleep 4
-cat "$LOGFILE"
+if [ "$CAPTURE_RUN_LOG" = "1" ]; then
+    > "$LOGFILE"
+    echo "Launching Yuwp.app (log: $LOGFILE)..."
+    open --stdout "$LOGFILE" --stderr "$LOGFILE" "$APP"
+    sleep 4
+    cat "$LOGFILE"
+else
+    echo "Launching Yuwp.app..."
+    open "$APP"
+fi

@@ -5,11 +5,10 @@
 #   e.g.: release.sh 0.2.0
 #
 # Required environment variables:
-#   YUWP_SIGN_IDENTITY      — Developer ID Application identity
-#   YUWP_NOTARY_PROFILE     — optional notarytool keychain profile name
-#   YUWP_TEAM_ID            — Apple Team ID (required when not using YUWP_NOTARY_PROFILE)
-#   YUWP_APPLE_ID           — Apple ID email for notarytool (required when not using YUWP_NOTARY_PROFILE)
-#   YUWP_APP_PASSWORD       — App-specific password for notarytool (required when not using YUWP_NOTARY_PROFILE)
+#   YUWP_SIGN_IDENTITY  — Developer ID Application identity
+#   YUWP_TEAM_ID        — Apple Team ID
+#   YUWP_APPLE_ID       — Apple ID email for notarytool
+#   YUWP_APP_PASSWORD   — App-specific password for notarytool
 #   YUWP_SPARKLE_FEED_URL   — optional Sparkle appcast URL override
 #   YUWP_SPARKLE_PUBLIC_ED_KEY — optional Sparkle public key override
 #
@@ -22,21 +21,16 @@ cd "$(dirname "$0")/.."
 
 VERSION="${1:?Usage: release.sh <version>}"
 SIGN_IDENTITY="${YUWP_SIGN_IDENTITY:?Set YUWP_SIGN_IDENTITY}"
-NOTARY_PROFILE="${YUWP_NOTARY_PROFILE:-}"
+TEAM_ID="${YUWP_TEAM_ID:?Set YUWP_TEAM_ID}"
+APPLE_ID="${YUWP_APPLE_ID:?Set YUWP_APPLE_ID}"
+APP_PASSWORD="${YUWP_APP_PASSWORD:?Set YUWP_APP_PASSWORD}"
 DEFAULT_SPARKLE_FEED_URL="https://github.com/duh17/yuwp/releases/latest/download/appcast.xml"
 DEFAULT_SPARKLE_PUBLIC_ED_KEY="wnLCIfY048anOcj7/J/Iv6Lp9Fmba4zQ0EjCL7k/M+E=" # gitleaks:allow public Sparkle key
 SPARKLE_FEED_URL="${YUWP_SPARKLE_FEED_URL:-$DEFAULT_SPARKLE_FEED_URL}"
 SPARKLE_PUBLIC_ED_KEY="${YUWP_SPARKLE_PUBLIC_ED_KEY:-$DEFAULT_SPARKLE_PUBLIC_ED_KEY}"
 
-if [ -z "$NOTARY_PROFILE" ]; then
-    TEAM_ID="${YUWP_TEAM_ID:?Set YUWP_TEAM_ID or YUWP_NOTARY_PROFILE}"
-    APPLE_ID="${YUWP_APPLE_ID:?Set YUWP_APPLE_ID or YUWP_NOTARY_PROFILE}"
-    APP_PASSWORD="${YUWP_APP_PASSWORD:?Set YUWP_APP_PASSWORD or YUWP_NOTARY_PROFILE}"
-fi
-
 CONFIGURATION="release"
 export YUWP_INTERNAL_DIAGNOSTICS=0
-export YUWP_ALLOW_STALE_METALLIB=0
 BIN_DIR=".build/arm64-apple-macosx/$CONFIGURATION"
 RELEASE_DIR="release"
 APP="$RELEASE_DIR/Yuwp.app"
@@ -58,9 +52,17 @@ rm -rf "$RELEASE_DIR"
 mkdir -p "$MACOS_DIR" "$RES_DIR" "$FRAMEWORKS_DIR"
 
 cp -f "$BIN_DIR/Yuwp" "$MACOS_DIR/Yuwp"
-cp -f "$BIN_DIR/asr-server" "$MACOS_DIR/asr-server"
+cp -f "$BIN_DIR/swift-mlx-asr-server" "$MACOS_DIR/swift-mlx-asr-server"
 cp -f "$BIN_DIR/mlx.metallib" "$MACOS_DIR/mlx.metallib"
 cp -f "icon-layers/Yuwp.icns" "$RES_DIR/Yuwp.icns"
+
+RESOURCE_BUNDLE="$BIN_DIR/Yuwp_NativeASR.bundle"
+if [ -d "$RESOURCE_BUNDLE" ]; then
+    ditto "$RESOURCE_BUNDLE" "$RES_DIR/Yuwp_NativeASR.bundle"
+else
+    echo "Error: missing NativeASR resource bundle at $RESOURCE_BUNDLE"
+    exit 1
+fi
 
 # SwiftPM doesn't add the app-bundle Frameworks runpath for this executable.
 # Add it here so the packaged app can load Sparkle.framework at runtime.
@@ -128,10 +130,10 @@ codesign --force --sign "$SIGN_IDENTITY" --options runtime \
 codesign --force --sign "$SIGN_IDENTITY" --options runtime \
     --identifier com.yuwp.app.metallib "$MACOS_DIR/mlx.metallib"
 
-# asr-server (needs allow-unsigned-executable-memory for MLX)
+# swift-mlx-asr-server (needs allow-unsigned-executable-memory for MLX)
 codesign --force --sign "$SIGN_IDENTITY" --options runtime \
-    --entitlements asr-server.entitlements \
-    --identifier com.yuwp.app.server "$MACOS_DIR/asr-server"
+    --entitlements swift-mlx-asr-server.entitlements \
+    --identifier com.yuwp.app.server "$MACOS_DIR/swift-mlx-asr-server"
 
 # Main binary
 codesign --force --sign "$SIGN_IDENTITY" --options runtime \
@@ -156,17 +158,11 @@ codesign --force --sign "$SIGN_IDENTITY" "$DMG"
 
 # ── Notarize ───────────────────────────────────────────────────────────
 echo "=== Notarizing (this may take several minutes) ==="
-if [ -n "$NOTARY_PROFILE" ]; then
-    xcrun notarytool submit "$DMG" \
-        --keychain-profile "$NOTARY_PROFILE" \
-        --wait
-else
-    xcrun notarytool submit "$DMG" \
-        --apple-id "$APPLE_ID" \
-        --team-id "$TEAM_ID" \
-        --password "$APP_PASSWORD" \
-        --wait
-fi
+xcrun notarytool submit "$DMG" \
+    --apple-id "$APPLE_ID" \
+    --team-id "$TEAM_ID" \
+    --password "$APP_PASSWORD" \
+    --wait
 
 echo "=== Stapling ==="
 xcrun stapler staple "$DMG"

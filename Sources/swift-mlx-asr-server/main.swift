@@ -2,7 +2,7 @@ import ASRServerSupport
 import Foundation
 import NativeASR
 
-// asr-server — native streaming ASR HTTP server.
+// swift-mlx-asr-server — native streaming ASR HTTP server.
 // Keep this file as thin orchestration glue so the real logic lives in testable units.
 
 do {

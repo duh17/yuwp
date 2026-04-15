@@ -6,7 +6,7 @@
 """
 Benchmark native Yuwp ASR server with single-model presets and concurrent HTTP clients.
 
-This script targets the Swift local ASR server, not the old Python sidecar.
+This script targets the Swift MLX ASR server, not the old Python sidecar.
 It can compare the small/large single-model presets, capture final transcripts,
 and measure how latency and memory behave as concurrency increases.
 
@@ -189,13 +189,13 @@ def find_server_binary() -> Path:
     candidates = [
         Path(".build/arm64-apple-macosx/release/yuwp-asr"),
         Path(".build/release/yuwp-asr"),
-        Path(".build/arm64-apple-macosx/release/asr-server"),
-        Path(".build/release/asr-server"),
+        Path(".build/arm64-apple-macosx/release/swift-mlx-asr-server"),
+        Path(".build/release/swift-mlx-asr-server"),
     ]
     for candidate in candidates:
         if candidate.exists():
             return candidate.resolve()
-    raise FileNotFoundError("server binary not found — run: swift build -c release --product yuwp-asr")
+    raise FileNotFoundError("server binary not found — run: swift build -c release --product swift-mlx-asr-server or --product yuwp-asr")
 
 
 def count_cjk(text: str) -> int:
@@ -566,7 +566,7 @@ def print_summary(results: list[dict[str, Any]]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark native asr-server with single-model presets and concurrent clients.",
+        description="Benchmark native swift-mlx-asr-server with single-model presets and concurrent clients.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -584,7 +584,7 @@ Examples:
     parser.add_argument("--concurrency", nargs="+", type=int, default=[1], help="Concurrent client counts to test (default: 1)")
     parser.add_argument("--repeats", type=int, default=1, help="Repeat the selected corpus this many times per concurrency level")
     parser.add_argument("--pace", choices=["none", "realtime"], default="none", help="Send chunks as fast as possible or at real-time pace")
-    parser.add_argument("--warmup", action="store_true", help="Pass --warmup when launching asr-server")
+    parser.add_argument("--warmup", action="store_true", help="Pass --warmup when launching swift-mlx-asr-server")
     parser.add_argument("--port-base", type=int, default=9790, help="Base TCP port for launched servers (default: 9790)")
     parser.add_argument("--capture-text", action="store_true", help="Store saved/stream/final text in JSON output")
     parser.add_argument("--json", metavar="PATH", help="Write full JSON results to PATH")

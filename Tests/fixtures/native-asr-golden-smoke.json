@@ -15,7 +15,7 @@
   "cases": [
     {
       "id": "jfk",
-      "audio": "/Users/chenda/workspace/yuwp/Tests/fixtures/jfk.wav",
+      "audio": "Tests/fixtures/jfk.wav",
       "language": null,
       "notes": "Public English speech sample.",
       "duration_s": 11.0,
@@ -25,7 +25,7 @@
     },
     {
       "id": "official_en",
-      "audio": "/Users/chenda/workspace/yuwp/Tests/fixtures/asr_en.wav",
+      "audio": "Tests/fixtures/asr_en.wav",
       "language": null,
       "notes": "Official Qwen3-ASR English sample.",
       "duration_s": 15.051229,
@@ -35,7 +35,7 @@
     },
     {
       "id": "official_zh",
-      "audio": "/Users/chenda/workspace/yuwp/Tests/fixtures/asr_zh.wav",
+      "audio": "Tests/fixtures/asr_zh.wav",
       "language": null,
       "notes": "Official Qwen3-ASR Chinese sample.",
       "duration_s": 4.203938,

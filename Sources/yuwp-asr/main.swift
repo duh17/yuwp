@@ -18,33 +18,33 @@ private func printUsage() {
     """, stderr)
 }
 
-private func findLegacyServerBinary() -> String? {
+private func findServerBinary() -> String? {
     let executableURL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
     let executableDir = executableURL.deletingLastPathComponent()
     let candidates = [
-        executableDir.appendingPathComponent("asr-server").path,
-        Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/asr-server").path,
+        executableDir.appendingPathComponent("swift-mlx-asr-server").path,
+        Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/swift-mlx-asr-server").path,
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent(".build/arm64-apple-macosx/release/asr-server").path,
+            .appendingPathComponent(".build/arm64-apple-macosx/release/swift-mlx-asr-server").path,
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent(".build/arm64-apple-macosx/debug/asr-server").path,
+            .appendingPathComponent(".build/arm64-apple-macosx/debug/swift-mlx-asr-server").path,
     ]
     return candidates.first { FileManager.default.fileExists(atPath: $0) }
 }
 
 private func runServe(arguments: [String]) -> Int32 {
     if arguments.contains("--help") || arguments.contains("-h") {
-        let usage = asrServerUsage.replacingOccurrences(of: "Usage: asr-server", with: "Usage: yuwp-asr serve")
+        let usage = asrServerUsage.replacingOccurrences(of: "Usage: swift-mlx-asr-server", with: "Usage: yuwp-asr serve")
         fputs("\(usage)\n", stderr)
         return 0
     }
 
-    guard let serverBinary = findLegacyServerBinary() else {
-        fputs("Error: could not find asr-server. Build it with `swift build --product asr-server`.\n", stderr)
+    guard let serverBinary = findServerBinary() else {
+        fputs("Error: could not find swift-mlx-asr-server. Build it with `swift build --product swift-mlx-asr-server`.\n", stderr)
         return 1
     }
 
@@ -60,7 +60,7 @@ private func runServe(arguments: [String]) -> Int32 {
         process.waitUntilExit()
         return process.terminationStatus
     } catch {
-        fputs("Error: failed to launch asr-server: \(error.localizedDescription)\n", stderr)
+        fputs("Error: failed to launch swift-mlx-asr-server: \(error.localizedDescription)\n", stderr)
         return 1
     }
 }

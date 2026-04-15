@@ -33,7 +33,7 @@ Examples:
 
   # Reproduce the practical comparison, but explicitly
   uv run scripts/benchmark.py \
-    --audio ~/workspace/qwen-asr/samples/jfk.wav \
+    --audio /path/to/qwen-asr/samples/jfk.wav \
     --audio /tmp/yuwp-subtitle-bench/video-4m.m4a \
     --audio /tmp/yuwp-subtitle-bench/video-32k.m4a \
     --tool yuwp --tool mlx-audio --tool qwen-asr \
@@ -65,9 +65,8 @@ from urllib.request import Request, urlopen
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TRACKED_FIXTURES_DIR = REPO_ROOT / "Tests" / "fixtures"
 QWEN_REPO = Path.home() / "workspace" / "qwen-asr"
-YUWP_LEGACY_SERVER_BIN = REPO_ROOT / ".build" / "arm64-apple-macosx" / "release" / "asr-server"
+YUWP_SERVER_BIN = REPO_ROOT / ".build" / "arm64-apple-macosx" / "release" / "swift-mlx-asr-server"
 YUWP_CANONICAL_CLI_BIN = REPO_ROOT / ".build" / "arm64-apple-macosx" / "release" / "yuwp-asr"
-YUWP_LEGACY_CLI_BIN = REPO_ROOT / ".build" / "arm64-apple-macosx" / "release" / "yuwp-transcribe"
 YUWP_METALLIB = REPO_ROOT / ".build" / "arm64-apple-macosx" / "release" / "mlx.metallib"
 DEFAULT_YUWP_MODEL = Path.home() / ".cache" / "huggingface" / "hub" / "models--mlx-community--Qwen3-ASR-0.6B-bf16" / "snapshots" / "eae2b51f96265328f1e7beced788adb0e4536f92"
 DEFAULT_MLX_MODEL = "mlx-community/Qwen3-ASR-0.6B-bf16"
@@ -292,7 +291,7 @@ def parse_qwen_stderr(stderr: str) -> tuple[float, float]:
 def resolve_yuwp_server_bin() -> Path:
     if YUWP_CANONICAL_CLI_BIN.exists():
         return YUWP_CANONICAL_CLI_BIN
-    return YUWP_LEGACY_SERVER_BIN
+    return YUWP_SERVER_BIN
 
 
 def start_yuwp_server(model_dir: Path, disable_vad: bool) -> PreparedYuwpServer:
@@ -349,9 +348,7 @@ def run_yuwp_server(audio_path: Path, server: PreparedYuwpServer) -> tuple[str, 
 
 
 def resolve_yuwp_cli_bin() -> Path:
-    if YUWP_CANONICAL_CLI_BIN.exists():
-        return YUWP_CANONICAL_CLI_BIN
-    return YUWP_LEGACY_CLI_BIN
+    return YUWP_CANONICAL_CLI_BIN
 
 
 def run_yuwp_cli(audio_path: Path, model_dir: Path) -> tuple[str, float, float]:

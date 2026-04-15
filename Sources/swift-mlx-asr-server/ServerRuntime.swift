@@ -557,6 +557,14 @@ func startServer(
 
 // MARK: - Logging
 
+private let diagnosticLoggingEnabled: Bool = {
+    let raw = ProcessInfo.processInfo.environment["YUWP_DIAGNOSTIC_LOGGING"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
+}()
+
 func log(_ message: String) {
-    fputs("[asr-server] \(message)\n", stderr)
+    guard diagnosticLoggingEnabled else { return }
+    fputs("[swift-mlx-asr-server] \(message)\n", stderr)
 }

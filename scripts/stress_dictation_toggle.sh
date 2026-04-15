@@ -93,7 +93,7 @@ echo "[stress] log=$STRESS_LOG_FILE"
 
 # Clean restart so log parsing is deterministic.
 pkill -f '/Applications/Yuwp.app/Contents/MacOS/Yuwp' >/dev/null 2>&1 || true
-pkill -f '/Applications/Yuwp.app/Contents/MacOS/asr-server' >/dev/null 2>&1 || true
+pkill -f '/Applications/Yuwp.app/Contents/MacOS/swift-mlx-asr-server' >/dev/null 2>&1 || true
 : > "$STRESS_LOG_FILE"
 nohup "$APP_BIN" > "$STRESS_LOG_FILE" 2>&1 &
 
@@ -142,9 +142,9 @@ for i in $(seq 1 "$ITERATIONS"); do
     fi
 done
 
-if rg -q "Final result timeout|asr-server exited unexpectedly|Failed to start audio engine|Audio capture failed to start" "$STRESS_LOG_FILE"; then
+if rg -q "Final result timeout|swift-mlx-asr-server exited unexpectedly|Failed to start audio engine|Audio capture failed to start" "$STRESS_LOG_FILE"; then
     echo "[stress] FAIL: detected error signatures in log"
-    rg -n "Final result timeout|asr-server exited unexpectedly|Failed to start audio engine|Audio capture failed to start" "$STRESS_LOG_FILE" || true
+    rg -n "Final result timeout|swift-mlx-asr-server exited unexpectedly|Failed to start audio engine|Audio capture failed to start" "$STRESS_LOG_FILE" || true
     exit 1
 fi
 

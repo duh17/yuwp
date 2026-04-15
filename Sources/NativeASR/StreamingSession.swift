@@ -77,11 +77,19 @@ public final class StreamingSession: @unchecked Sendable {
     private static let silenceRMS: Float = 0.003
     private static let speechStartRMS: Float = 0.010
     private static let pauseRMS: Float = 0.020
-    private static let pauseChunks = 2
+    private static let pauseChunks = 1
     private static let stallRefreshRMS: Float = 0.008
     private static let stallRefreshChunks = 1
     private static let stallRefreshMinSamples = ASRAudio.sampleRate * 2
-    private static let stallRefreshRetryChunks = 1
+    // Avoid expensive full-session refresh attempts on every chunk when speech
+    // has plateaued; retry every ~4s at the default 2s chunk size.
+    private static let stallRefreshRetryChunks = 2
+    // Session-context retranscribe walks the whole session buffer. Cap that path
+    // for long sessions to avoid multi-second stalls during live dictation.
+    private static let maxSessionContextSamples = ASRAudio.sampleRate * 45
+    // Cap expensive mid-session batch correction windows. For longer active
+    // segments we commit the streaming text directly and keep moving.
+    private static let maxLiveBatchSegmentSamples = ASRAudio.sampleRate * 12
 
     public init(
         transcriber: Qwen3ASRTranscriber,
@@ -235,15 +243,19 @@ public final class StreamingSession: @unchecked Sendable {
            speechActiveForRefresh,
            projectedNoGrowthRun >= Self.stallRefreshChunks,
            audioBuffer.count >= Self.stallRefreshMinSamples,
-           chunkIdx - lastStallBatchAttemptChunk >= Self.stallRefreshRetryChunks,
-           let refreshedText = batchRefreshFromSessionContext(minSamples: Self.stallRefreshMinSamples)
+           chunkIdx - lastStallBatchAttemptChunk >= Self.stallRefreshRetryChunks
         {
+            // Record the attempt even if refresh fails so we don't retry every
+            // chunk and starve real-time decoding under long utterances.
             lastStallBatchAttemptChunk = chunkIdx
-            let refreshedCombined = Self.appendSegment(committedText, refreshedText)
-            if refreshedCombined != combined {
-                activeText = refreshedText
-                combined = refreshedCombined
-                textChanged = true
+
+            if let refreshedText = batchRefreshFromSessionContext(minSamples: Self.stallRefreshMinSamples) {
+                let refreshedCombined = Self.appendSegment(committedText, refreshedText)
+                if refreshedCombined != combined {
+                    activeText = refreshedText
+                    combined = refreshedCombined
+                    textChanged = true
+                }
             }
         }
 
@@ -587,14 +599,29 @@ public final class StreamingSession: @unchecked Sendable {
     private func batchRefreshFromSessionContext(minSamples: Int) -> String? {
         guard sessionAudioBuffer.count >= minSamples else { return nil }
 
-        guard let activeText = sessionContextActiveText() else { return nil }
-        if !activeText.isEmpty {
-            rawTokens = transcriber.tokenizer.encode(activeText)
+        if let activeText = sessionContextActiveText() {
+            if !activeText.isEmpty {
+                rawTokens = transcriber.tokenizer.encode(activeText)
+            }
+            kvCache = transcriber.model.makeCache()
+            prevPrefillEmbeds = nil
+            fputs("[StreamingSession] Session-context batch refresh: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s audio → \(activeText.count) chars\n", stderr)
+            return activeText
         }
-        kvCache = transcriber.model.makeCache()
-        prevPrefillEmbeds = nil
-        fputs("[StreamingSession] Session-context batch refresh: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s audio → \(activeText.count) chars\n", stderr)
-        return activeText
+
+        // Fallback: if session-context split fails, retranscribe the active
+        // segment buffer directly so live UI can continue progressing.
+        guard audioBuffer.count >= minSamples else { return nil }
+        guard audioBuffer.count <= Self.maxLiveBatchSegmentSamples else {
+            fputs("[StreamingSession] Skip active-segment refresh fallback (segment too long: \(audioBuffer.count / ASRAudio.sampleRate)s)\n", stderr)
+            return nil
+        }
+        if let fallback = batchRetranscribe() {
+            fputs("[StreamingSession] Active-segment batch refresh fallback: \(audioBuffer.count / ASRAudio.sampleRate)s audio → \(fallback.count) chars\n", stderr)
+            return fallback
+        }
+
+        return nil
     }
 
     private func batchCommitSegmentText() -> String? {
@@ -602,6 +629,17 @@ public final class StreamingSession: @unchecked Sendable {
             fputs("[StreamingSession] Session-context pause commit: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s audio → \(activeText.count) chars\n", stderr)
             return activeText
         }
+
+        // Keep live UX responsive: avoid long synchronous batch passes in the
+        // middle of dictation for very large active segments.
+        if audioBuffer.count > Self.maxLiveBatchSegmentSamples {
+            let streamed = extractText(rawTokens).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !streamed.isEmpty {
+                fputs("[StreamingSession] Pause commit using streaming text (segment too long: \(audioBuffer.count / ASRAudio.sampleRate)s)\n", stderr)
+                return streamed
+            }
+        }
+
         return batchRetranscribe()
     }
 
@@ -614,6 +652,12 @@ public final class StreamingSession: @unchecked Sendable {
     }
 
     private func sessionContextActiveText() -> String? {
+        if !committedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            sessionAudioBuffer.count > Self.maxSessionContextSamples {
+            fputs("[StreamingSession] Session-context skipped (session too long: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s)\n", stderr)
+            return nil
+        }
+
         do {
             let batcher = batchTranscriber ?? transcriber
             let result = try batcher.transcribe(audio: sessionAudioBuffer)
