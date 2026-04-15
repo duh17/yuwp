@@ -31,7 +31,7 @@ enum AppAction: Sendable, Equatable {
     case microphonePermissionChanged(MicrophonePermissionState)
     case settingsChanged(AppSettingsState)
     case missingConfiguredModelsChanged([String])
-    case modelDownloadStatusChanged(String?)
+    case modelDownloadStatusChanged(repoId: String, status: String?)
 }
 
 enum AppEffect: Sendable, Equatable {
@@ -59,6 +59,11 @@ struct AppStatusDisplay: Sendable, Equatable {
     let behavior: AppStatusBehavior
 }
 
+struct ModelDownloadActivity: Sendable, Equatable {
+    let repoId: String
+    let status: String
+}
+
 struct AppState: Sendable, Equatable {
     var settings = AppSettingsState()
     var hasAccessibilityPermission = false
@@ -66,7 +71,7 @@ struct AppState: Sendable, Equatable {
     var providerState: ASRServerState = .stopped
     var sessionPhase: AppSessionPhase = .idle
     var pendingEnterReplay = false
-    var modelDownloadStatus: String?
+    var activeModelDownload: ModelDownloadActivity?
     var missingConfiguredModelLabels: [String] = []
     var hotkeyBehavior = DictationHotkeyBehavior()
 
@@ -134,8 +139,12 @@ struct AppState: Sendable, Equatable {
             missingConfiguredModelLabels = labels
             return []
 
-        case .modelDownloadStatusChanged(let status):
-            modelDownloadStatus = status
+        case .modelDownloadStatusChanged(let repoId, let status):
+            if let status {
+                activeModelDownload = ModelDownloadActivity(repoId: repoId, status: status)
+            } else if activeModelDownload?.repoId == repoId {
+                activeModelDownload = nil
+            }
             return []
         }
     }
@@ -168,9 +177,9 @@ struct AppState: Sendable, Equatable {
             )
         }
 
-        if let modelDownloadStatus {
+        if let activeModelDownload {
             return AppStatusDisplay(
-                title: modelDownloadStatus,
+                title: activeModelDownload.status,
                 symbolName: "arrow.down.circle",
                 isEnabled: false,
                 behavior: .none
@@ -178,6 +187,17 @@ struct AppState: Sendable, Equatable {
         }
 
         if !missingConfiguredModelLabels.isEmpty {
+            if providerState == .ready,
+               missingConfiguredModelLabels.count == 1,
+               missingConfiguredModelLabels.first == "Word-level Alignment" {
+                return AppStatusDisplay(
+                    title: "Ready (word-level alignment missing)",
+                    symbolName: "exclamationmark.triangle.fill",
+                    isEnabled: true,
+                    behavior: .openSettings
+                )
+            }
+
             let title: String
             if missingConfiguredModelLabels.count == 1, let label = missingConfiguredModelLabels.first {
                 title = "\(label) missing"
@@ -263,9 +283,9 @@ struct AppState: Sendable, Equatable {
                 return [.log("Model still loading, please wait...")]
             }
             if missingConfiguredModelLabels.count == 1, let label = missingConfiguredModelLabels.first {
-                return [.log("\(label) missing — open Settings → Model to fix it")]
+                return [.log("\(label) missing — open Settings → Model to download it")]
             }
-            return [.log("\(missingConfiguredModelLabels.joined(separator: " + ")) models missing — open Settings → Model to fix them")]
+            return [.log("\(missingConfiguredModelLabels.joined(separator: " + ")) missing — open Settings → Model to download them")]
         }
 
         sessionPhase = .listening

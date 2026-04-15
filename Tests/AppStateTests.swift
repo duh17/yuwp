@@ -70,7 +70,7 @@ struct AppStateTests {
 
         #expect(state.sessionPhase == .idle)
         #expect(effects == [
-            .log("Model missing — open Settings → Model to fix it")
+            .log("Model missing — open Settings → Model to download it")
         ])
     }
 
@@ -123,7 +123,7 @@ struct AppStateTests {
             providerState: .ready,
             sessionPhase: .idle,
             pendingEnterReplay: false,
-            modelDownloadStatus: nil,
+            activeModelDownload: nil,
             missingConfiguredModelLabels: []
         )
 
@@ -171,5 +171,36 @@ struct AppStateTests {
             isEnabled: true,
             behavior: .openSettings
         ))
+    }
+
+    @Test func statusDisplayShowsReadyWithWarningWhenOnlyAlignmentModelMissing() {
+        let state = AppState(
+            settings: AppSettingsState(serverMode: .localhost),
+            hasAccessibilityPermission: true,
+            providerState: .ready,
+            missingConfiguredModelLabels: ["Word-level Alignment"]
+        )
+
+        let status = state.statusDisplay(port: 9748)
+
+        #expect(status == AppStatusDisplay(
+            title: "Ready (word-level alignment missing)",
+            symbolName: "exclamationmark.triangle.fill",
+            isEnabled: true,
+            behavior: .openSettings
+        ))
+    }
+
+    @Test func modelDownloadStatusTracksRepoLifecycle() {
+        var state = AppState()
+
+        _ = state.send(.modelDownloadStatusChanged(repoId: "repo-a", status: "Downloading…"))
+        #expect(state.activeModelDownload == ModelDownloadActivity(repoId: "repo-a", status: "Downloading…"))
+
+        _ = state.send(.modelDownloadStatusChanged(repoId: "repo-b", status: nil))
+        #expect(state.activeModelDownload == ModelDownloadActivity(repoId: "repo-a", status: "Downloading…"))
+
+        _ = state.send(.modelDownloadStatusChanged(repoId: "repo-a", status: nil))
+        #expect(state.activeModelDownload == nil)
     }
 }

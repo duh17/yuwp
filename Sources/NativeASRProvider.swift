@@ -288,8 +288,8 @@ final class NativeASRProvider: SttProvider {
     private(set) var state: ASRServerState = .stopped
     var onStateChange: (@MainActor @Sendable (ASRServerState) -> Void)?
 
-    /// Hidden default aligner model used to power timed transcription output when available locally.
-    nonisolated fileprivate static let defaultAlignerModel = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
+    /// Default aligner model used to power timed transcription output when available locally.
+    nonisolated static let defaultAlignerModel = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
 
     private var configuration: ASRServerConfiguration
 
@@ -327,6 +327,9 @@ final class NativeASRProvider: SttProvider {
         }
     }
 
+    private var lifecycleCommandTask: Task<Void, Never>?
+    private var latestLifecycleCommandID: UInt64 = 0
+
     init(port: UInt16 = 9748) {
         self.configuration = ASRServerConfiguration(port: port)
     }
@@ -335,16 +338,18 @@ final class NativeASRProvider: SttProvider {
 
     func start() {
         let configuration = configuration
-        applyState(runLifecycleSync { lifecycle in
+        applyState(preflightStartState(for: configuration))
+        enqueueLifecycleCommand { lifecycle in
             await lifecycle.start(configuration: configuration)
-        })
+        }
     }
 
     func shutdown() {
         let targetState: ASRServerState = configuration.serverMode == .off ? .disabled : .stopped
-        applyState(runLifecycleSync { lifecycle in
+        applyState(targetState)
+        enqueueLifecycleCommand { lifecycle in
             await lifecycle.shutdown(targetState: targetState)
-        })
+        }
     }
 
     // MARK: - SttProvider
@@ -356,6 +361,8 @@ final class NativeASRProvider: SttProvider {
     // MARK: - State
 
     private func applyState(_ newState: ASRServerState) {
+        guard state != newState else { return }
+
         state = newState
         onStateChange?(newState)
         if case .ready = newState {
@@ -366,23 +373,32 @@ final class NativeASRProvider: SttProvider {
         }
     }
 
-    private func runLifecycleSync<Result: Sendable>(
-        _ operation: @escaping @Sendable (NativeASRServerLifecycle) async -> Result
-    ) -> Result {
-        let result = LockedBox<Result?>(nil)
-        let sema = DispatchSemaphore(value: 0)
-
-        Task.detached { [lifecycle] in
-            let value = await operation(lifecycle)
-            result.set(value)
-            sema.signal()
+    private func preflightStartState(for configuration: ASRServerConfiguration) -> ASRServerState {
+        guard configuration.bindHost != nil else { return .disabled }
+        guard Self.resolveModelPath(configuration.transcriptionModel) != nil else {
+            return .error("Transcription model not found")
         }
-
-        sema.wait()
-        guard let value = result.get() else {
-            fatalError("NativeASRProvider lifecycle operation returned no result")
+        guard Self.findServerBinary() != nil else {
+            return .error("swift-mlx-asr-server not found")
         }
-        return value
+        return .starting
+    }
+
+    private func enqueueLifecycleCommand(
+        _ operation: @escaping @Sendable (NativeASRServerLifecycle) async -> ASRServerState
+    ) {
+        latestLifecycleCommandID &+= 1
+        let commandID = latestLifecycleCommandID
+        let previousTask = lifecycleCommandTask
+
+        lifecycleCommandTask = Task { @MainActor [weak self, previousTask] in
+            _ = await previousTask?.value
+            guard let self else { return }
+
+            let newState = await operation(lifecycle)
+            guard commandID == latestLifecycleCommandID else { return }
+            applyState(newState)
+        }
     }
 
     // MARK: - Model + Binary Resolution

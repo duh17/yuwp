@@ -126,6 +126,22 @@ struct SettingsStoreTests {
         #expect(!store.canDownloadSelectedModel)
     }
 
+    @Test @MainActor func alignerDownloadStatusStaysInAlignerRow() {
+        var snapshot = makeSnapshot()
+        snapshot.alignerDownloadStatus = "Word-level alignment model 55% — Downloading model.safetensors…"
+        snapshot.isModelDownloadInProgress = true
+
+        let store = SettingsStore(snapshot: snapshot)
+        store.selectedDownloadModelRepoId = "mlx-community/placeholder-transcription-model"
+
+        #expect(store.downloadRowStatusText != snapshot.alignerDownloadStatus)
+        #expect(store.alignerDownloadRowStatusText == snapshot.alignerDownloadStatus)
+        #expect(store.downloadButtonTitle == "Download")
+        #expect(store.alignerDownloadButtonTitle == "Downloading…")
+        #expect(!store.canDownloadSelectedModel)
+        #expect(!store.canDownloadAligner)
+    }
+
     private func makeSnapshot(transcriptionModel: String = "mlx-community/Qwen3-ASR-0.6B-4bit") -> SettingsSnapshot {
         SettingsSnapshot(
             dictationBinding: .ctrlBacktick,
@@ -135,7 +151,11 @@ struct SettingsStoreTests {
             serverPort: 9748,
             transcriptionModel: transcriptionModel,
             batchCommitEnabled: true,
-            modelDownloadStatus: nil,
+            transcriptionDownloadStatus: nil,
+            alignerDownloadStatus: nil,
+            isModelDownloadInProgress: false,
+            alignerModelRepoId: "mlx-community/Qwen3-ForcedAligner-0.6B-8bit",
+            alignerInstalled: false,
             saveRecordings: false,
             diagnosticLoggingEnabled: false,
             recordingsDir: FileManager.default.temporaryDirectory.appendingPathComponent("yuwp-tests-recordings", isDirectory: true),

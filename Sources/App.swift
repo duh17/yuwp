@@ -603,7 +603,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             store.onDownloadModel = { [weak self] repoId in
                 guard let self else { return }
-                Task { await self.downloadModel(repoId: repoId) }
+                let activateForTranscription = repoId != NativeASRProvider.defaultAlignerModel
+                Task { await self.downloadModel(repoId: repoId, activateForTranscription: activateForTranscription) }
             }
             store.onMicPanelAnimationChange = { [weak self] config in
                 self?.applyMicPanelAnimation(config)
@@ -681,11 +682,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func applyServerMode(_ mode: ServerMode) {
         guard mode != Config.shared.serverMode else { return }
+
+        if mode == .allInterfaces,
+           Config.shared.serverMode != .allInterfaces,
+           !confirmLocalNetworkServerMode() {
+            syncSettingsWindow()
+            yuwpLog("Server mode change cancelled: local network mode not confirmed")
+            return
+        }
+
         Config.shared.serverMode = mode
         asrProvider.serverMode = mode
         syncAppStateFromConfig()
         restartProviderForSettingsChange()
         yuwpLog("Server mode changed to: \(mode.description)")
+    }
+
+    private func confirmLocalNetworkServerMode() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Expose transcription server to your local network?"
+        alert.informativeText = "Local network mode binds Yuwp to 0.0.0.0:\(Config.shared.serverPort). Any device on your local network can send audio and receive transcripts from this Mac. The API is currently unauthenticated and unencrypted. Only enable this on trusted networks."
+        alert.addButton(withTitle: "Enable Local Network")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func applyExperimentalDirectTextFieldInsertion(_ enabled: Bool) {
@@ -792,6 +812,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func makeSettingsSnapshot(availableAudioInputs: [AudioInputDeviceDescriptor]? = nil) -> SettingsSnapshot {
         let inputs = availableAudioInputs ?? audioInputCatalog.availableInputDevices()
+        let alignerRepoId = NativeASRProvider.defaultAlignerModel
+        let activeDownload = appState.activeModelDownload
+        let transcriptionDownloadStatus = activeDownload?.repoId == alignerRepoId ? nil : activeDownload?.status
+        let alignerDownloadStatus = activeDownload?.repoId == alignerRepoId ? activeDownload?.status : nil
+
         return SettingsSnapshot(
             dictationBinding: Config.shared.dictationBinding,
             audioInputSelection: Config.shared.audioInputSelection,
@@ -802,7 +827,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             serverPort: Config.shared.serverPort,
             transcriptionModel: Config.shared.transcriptionModel,
             batchCommitEnabled: Config.shared.batchCommitEnabled,
-            modelDownloadStatus: appState.modelDownloadStatus,
+            transcriptionDownloadStatus: transcriptionDownloadStatus,
+            alignerDownloadStatus: alignerDownloadStatus,
+            isModelDownloadInProgress: activeDownload != nil,
+            alignerModelRepoId: alignerRepoId,
+            alignerInstalled: ModelLocator.resolve(alignerRepoId) != nil,
             saveRecordings: Config.shared.saveRecordings,
             diagnosticLoggingEnabled: Config.shared.diagnosticLoggingEnabled,
             recordingsDir: Config.shared.recordingsDir,
@@ -889,7 +918,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func missingConfiguredModelLabels() -> [String] {
-        ModelLocator.resolve(Config.shared.transcriptionModel) == nil ? ["Model"] : []
+        var labels: [String] = []
+        if ModelLocator.resolve(Config.shared.transcriptionModel) == nil {
+            labels.append("Model")
+        }
+        if ModelLocator.resolve(NativeASRProvider.defaultAlignerModel) == nil {
+            labels.append("Word-level Alignment")
+        }
+        return labels
     }
 
     // MARK: - Models
@@ -994,25 +1030,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.runModal()
     }
 
-    private func downloadModel(repoId: String) async {
-        send(.modelDownloadStatusChanged("Preparing \(ModelLocator.shortRepoName(repoId))…"))
+    private func downloadStatusLabel(for repoId: String) -> String {
+        if repoId == NativeASRProvider.defaultAlignerModel {
+            return "Word-level alignment model"
+        }
+        return ModelLocator.shortRepoName(repoId)
+    }
+
+    private func downloadModel(repoId: String, activateForTranscription: Bool = true) async {
+        let statusLabel = downloadStatusLabel(for: repoId)
+        send(.modelDownloadStatusChanged(repoId: repoId, status: "Preparing \(statusLabel)…"))
 
         do {
             let _ = try await ModelDownloadManager.shared.download(repoId: repoId) { [weak self] progress, status in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     let pct = Int(progress * 100)
-                    let message = "\(ModelLocator.shortRepoName(repoId)) \(pct)% — \(status)"
+                    let message = "\(statusLabel) \(pct)% — \(status)"
                     yuwpLog("Model download progress: \(message)")
-                    self.send(.modelDownloadStatusChanged(message))
+                    self.send(.modelDownloadStatusChanged(repoId: repoId, status: message))
                 }
             }
 
-            send(.modelDownloadStatusChanged(nil))
-            applyModelConfig(transcriptionModel: repoId)
+            send(.modelDownloadStatusChanged(repoId: repoId, status: nil))
+            if activateForTranscription {
+                applyModelConfig(transcriptionModel: repoId)
+            } else {
+                syncAppStateFromConfig()
+                restartProviderForSettingsChange()
+            }
             yuwpLog("Downloaded model: \(repoId)")
         } catch {
-            send(.modelDownloadStatusChanged(nil))
+            send(.modelDownloadStatusChanged(repoId: repoId, status: nil))
             syncSettingsWindow()
             showAlert(title: "Model download failed", message: error.localizedDescription)
             yuwpLog("Model download failed: \(repoId) — \(error.localizedDescription)")

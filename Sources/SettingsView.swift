@@ -135,11 +135,11 @@ struct SettingsView: View {
         case .dictation:
             "Choose how Yuwp starts dictation and which shortcut triggers it."
         case .transcription:
-            "Choose the transcription model and whether to run a final accuracy pass when text settles."
+            "Choose the transcription model, manage downloads, and install the optional word-level alignment model for timestamped output."
         case .recordings:
             "Keep source audio if you want a paper trail for debugging, QA, or re-transcription later."
         case .network:
-            "Choose whether Yuwp exposes its local transcription server only to this Mac or to other devices on your local network."
+            "Choose whether Yuwp exposes its local transcription server only to this Mac or to other devices on your local network. Local network mode is unauthenticated and unencrypted."
         case .feedback:
             "Tune how the mic panel animates while dictation is active, and choose the sounds Yuwp plays when dictation starts and stops."
         }
@@ -161,6 +161,7 @@ struct SettingsView: View {
                     onRecordingChange: { store.setDictationBindingRecording($0) }
                 )
                 .frame(width: 360, height: 30, alignment: .trailing)
+                .accessibilityLabel("Shortcut")
             }
 
             SettingsDivider()
@@ -170,7 +171,7 @@ struct SettingsView: View {
                 subtitle: store.audioInputDescriptionText,
                 topAligned: true
             ) {
-                Picker("", selection: Binding(
+                Picker("Microphone", selection: Binding(
                     get: { store.snapshot.audioInputSelection.persistenceString },
                     set: { store.setAudioInputSelection(AudioInputSelection(persistenceString: $0)) }
                 )) {
@@ -188,7 +189,7 @@ struct SettingsView: View {
                 title: "Direct text-field insertion (Experimental)",
                 subtitle: "When off (recommended), Yuwp shows the growing preview bubble and pastes on commit instead of typing directly into AX-editable fields."
             ) {
-                Toggle("", isOn: Binding(
+                Toggle("Direct text-field insertion", isOn: Binding(
                     get: { store.snapshot.experimentalDirectTextFieldInsertionEnabled },
                     set: { store.setExperimentalDirectTextFieldInsertionEnabled($0) }
                 ))
@@ -202,7 +203,7 @@ struct SettingsView: View {
                 title: "Direct terminal insertion (Experimental)",
                 subtitle: "When off (recommended), Yuwp avoids CGEvent keypress injection in terminals and uses preview bubble + paste on commit."
             ) {
-                Toggle("", isOn: Binding(
+                Toggle("Direct terminal insertion", isOn: Binding(
                     get: { store.snapshot.experimentalDirectTerminalInsertionEnabled },
                     set: { store.setExperimentalDirectTerminalInsertionEnabled($0) }
                 ))
@@ -226,6 +227,7 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
                     .frame(width: 320)
+                    .accessibilityLabel("Transcription model")
 
                     Button("Choose…") {
                         store.chooseModelDirectory()
@@ -243,7 +245,7 @@ struct SettingsView: View {
                 title: "Final Accuracy Pass",
                 subtitle: "Retranscribe settled segments to improve final accuracy. Adds a little commit latency."
             ) {
-                Toggle("", isOn: Binding(
+                Toggle("Final Accuracy Pass", isOn: Binding(
                     get: { store.snapshot.batchCommitEnabled },
                     set: { store.setBatchCommitEnabled($0) }
                 ))
@@ -258,19 +260,38 @@ struct SettingsView: View {
                 subtitle: store.downloadRowStatusText
             ) {
                 HStack(spacing: 8) {
-                    Picker("", selection: $store.selectedDownloadModelRepoId) {
+                    Picker("Download model", selection: $store.selectedDownloadModelRepoId) {
                         ForEach(store.downloadableModels, id: \.repoId) { model in
                             Text(model.label).tag(model.repoId)
                         }
                     }
                     .labelsHidden()
                     .frame(width: 260, alignment: .trailing)
-                    .disabled(store.modelDownloadStatusText != nil)
+                    .disabled(store.isModelDownloadInProgress)
 
                     Button(store.downloadButtonTitle) {
                         store.downloadSelectedModel()
                     }
                     .disabled(!store.canDownloadSelectedModel)
+                }
+            }
+
+            SettingsDivider()
+
+            SettingsBlockRow(
+                title: "Word-level Alignment",
+                subtitle: store.alignerDownloadRowStatusText
+            ) {
+                HStack(spacing: 8) {
+                    Text(store.alignerModelDisplayName)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 260, alignment: .trailing)
+
+                    Button(store.alignerDownloadButtonTitle) {
+                        store.downloadModel(repoId: store.snapshot.alignerModelRepoId)
+                    }
+                    .disabled(!store.canDownloadAligner)
                 }
             }
         }
@@ -282,7 +303,7 @@ struct SettingsView: View {
                 title: "Save Recordings",
                 subtitle: "Save microphone audio to disk after each dictation session."
             ) {
-                Toggle("", isOn: Binding(
+                Toggle("Save Recordings", isOn: Binding(
                     get: { store.snapshot.saveRecordings },
                     set: { store.setSaveRecordings($0) }
                 ))
@@ -296,7 +317,7 @@ struct SettingsView: View {
                 title: "Diagnostic Logging",
                 subtitle: "Write troubleshooting logs to stderr. Off by default."
             ) {
-                Toggle("", isOn: Binding(
+                Toggle("Diagnostic Logging", isOn: Binding(
                     get: { store.snapshot.diagnosticLoggingEnabled },
                     set: { store.setDiagnosticLoggingEnabled($0) }
                 ))
@@ -323,50 +344,62 @@ struct SettingsView: View {
     }
 
     private var networkContent: some View {
-        SettingsGroup {
-            SettingsControlRow(
-                title: "Availability",
-                subtitle: store.serverModeDescriptionText,
-                topAligned: true
-            ) {
-                Picker("", selection: Binding(
-                    get: { store.snapshot.serverMode.rawValue },
-                    set: { rawValue in
-                        if let mode = ServerMode(rawValue: rawValue) {
-                            store.setServerMode(mode)
+        VStack(alignment: .leading, spacing: 18) {
+            SettingsGroup {
+                SettingsControlRow(
+                    title: "Availability",
+                    subtitle: store.serverModeDescriptionText,
+                    topAligned: true
+                ) {
+                    Picker("Server availability", selection: Binding(
+                        get: { store.snapshot.serverMode.rawValue },
+                        set: { rawValue in
+                            if let mode = ServerMode(rawValue: rawValue) {
+                                store.setServerMode(mode)
+                            }
+                        }
+                    )) {
+                        ForEach(ServerMode.allCases, id: \.rawValue) { mode in
+                            Text(mode.description).tag(mode.rawValue)
                         }
                     }
-                )) {
-                    ForEach(ServerMode.allCases, id: \.rawValue) { mode in
-                        Text(mode.description).tag(mode.rawValue)
-                    }
+                    .labelsHidden()
+                    .frame(width: 220, alignment: .trailing)
                 }
-                .labelsHidden()
-                .frame(width: 220, alignment: .trailing)
+
+                SettingsDivider()
+
+                SettingsBlockRow(
+                    title: "Port",
+                    subtitle: "Use a custom port if you need Yuwp to avoid another local service.",
+                    muted: store.snapshot.serverMode == .off
+                ) {
+                    HStack(spacing: 8) {
+                        TextField("9748", text: $store.serverPortDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 110)
+                            .accessibilityLabel("Server port")
+
+                        Button("Apply") {
+                            store.applyServerPortDraft()
+                        }
+
+                        Text("1–65535")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .disabled(store.snapshot.serverMode == .off)
+                    .opacity(store.snapshot.serverMode == .off ? 0.55 : 1.0)
+                }
             }
 
-            SettingsDivider()
-
-            SettingsBlockRow(
-                title: "Port",
-                subtitle: "Use a custom port if you need Yuwp to avoid another local service.",
-                muted: store.snapshot.serverMode == .off
-            ) {
-                HStack(spacing: 8) {
-                    TextField("9748", text: $store.serverPortDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 110)
-
-                    Button("Apply") {
-                        store.applyServerPortDraft()
-                    }
-
-                    Text("1–65535")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+            if store.snapshot.serverMode == .allInterfaces {
+                InsetSettingsCard(
+                    title: "Security warning",
+                    subtitle: "Local network mode exposes Yuwp’s HTTP API to other devices on your network. The API is unauthenticated and unencrypted. Only enable this on trusted networks."
+                ) {
+                    EmptyView()
                 }
-                .disabled(store.snapshot.serverMode == .off)
-                .opacity(store.snapshot.serverMode == .off ? 0.55 : 1.0)
             }
         }
     }
@@ -379,7 +412,7 @@ struct SettingsView: View {
                     subtitle: store.micPanelAnimationSummaryText,
                     topAligned: true
                 ) {
-                    Picker("", selection: Binding(
+                    Picker("Mic panel animation", selection: Binding(
                         get: { store.micPanelAnimationSelection.rawValue },
                         set: { rawValue in
                             if let selection = MicPanelAnimationSelection(rawValue: rawValue) {
@@ -467,7 +500,7 @@ struct SettingsView: View {
         ) {
             VStack(alignment: .trailing, spacing: 8) {
                 HStack(spacing: 8) {
-                    Picker("", selection: Binding(
+                    Picker("\(role.title) sound", selection: Binding(
                         get: { store.chimeConfig(for: role).selection.rawValue },
                         set: { rawValue in
                             if let selection = DictationChimeSelection(rawValue: rawValue) {

@@ -13,7 +13,11 @@ struct SettingsSnapshot: Sendable, Equatable {
 
     var transcriptionModel: String
     var batchCommitEnabled: Bool
-    var modelDownloadStatus: String?
+    var transcriptionDownloadStatus: String?
+    var alignerDownloadStatus: String?
+    var isModelDownloadInProgress: Bool
+    var alignerModelRepoId: String
+    var alignerInstalled: Bool
 
     var saveRecordings: Bool
     var diagnosticLoggingEnabled: Bool
@@ -113,7 +117,7 @@ final class SettingsStore: ObservableObject {
         case .localhost:
             return "Only Yuwp and other apps on this Mac can connect to the server."
         case .allInterfaces:
-            return "Makes the server available on your local network so other devices can connect to this Mac."
+            return "Makes the server available on your local network so other devices can connect to this Mac. This API is unauthenticated and unencrypted — only use on trusted networks."
         }
     }
 
@@ -131,13 +135,32 @@ final class SettingsStore: ObservableObject {
         return installed ? "Installed: \(name)" : "Missing: \(name)"
     }
 
+    var alignerModelDisplayName: String {
+        let shortName = ModelLocator.shortRepoName(snapshot.alignerModelRepoId)
+        let withoutForcedAligner = shortName.replacingOccurrences(of: "ForcedAligner-", with: "")
+        return withoutForcedAligner.replacingOccurrences(of: "-", with: " ")
+    }
+
+    var alignerStatusText: String {
+        snapshot.alignerInstalled
+            ? "Installed: \(alignerModelDisplayName)"
+            : "Missing: \(alignerModelDisplayName)"
+    }
 
     var downloadableModels: [DownloadableASRModel] {
         DownloadableASRModel.supported
     }
 
     var modelDownloadStatusText: String? {
-        snapshot.modelDownloadStatus
+        snapshot.transcriptionDownloadStatus
+    }
+
+    var alignerModelDownloadStatusText: String? {
+        snapshot.alignerDownloadStatus
+    }
+
+    var isModelDownloadInProgress: Bool {
+        snapshot.isModelDownloadInProgress
     }
 
     var selectedDownloadModelIsManagedInstalled: Bool {
@@ -177,8 +200,29 @@ final class SettingsStore: ObservableObject {
 
     var canDownloadSelectedModel: Bool {
         !selectedDownloadModelRepoId.isEmpty
-            && modelDownloadStatusText == nil
+            && !snapshot.isModelDownloadInProgress
             && !(selectedDownloadModelIsCurrent && selectedDownloadModelIsManagedInstalled)
+    }
+
+    var alignerDownloadRowStatusText: String {
+        if let status = alignerModelDownloadStatusText {
+            return status
+        }
+        if snapshot.alignerInstalled {
+            return "Installed locally and ready for word-level timestamping/subtitles."
+        }
+        return "Not bundled. Download to enable word-level subtitle alignment for timestamped outputs (SRT/VTT/verbose JSON)."
+    }
+
+    var alignerDownloadButtonTitle: String {
+        if alignerModelDownloadStatusText != nil {
+            return "Downloading…"
+        }
+        return snapshot.alignerInstalled ? "Installed" : "Download"
+    }
+
+    var canDownloadAligner: Bool {
+        !snapshot.alignerInstalled && !snapshot.isModelDownloadInProgress
     }
 
     var micPanelAnimationSummaryText: String {
