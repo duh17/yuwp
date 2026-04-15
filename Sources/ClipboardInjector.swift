@@ -72,7 +72,7 @@ final class ClipboardInjector: TextInjecting, ClipboardPasting {
         self.pasteboard = SystemClipboardPasteboard()
         self.postPasteShortcut = Self.postCommandV
         self.scheduleRestore = { work in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.clipboardRestoreDelay) {
                 work()
             }
         }
@@ -118,14 +118,29 @@ final class ClipboardInjector: TextInjecting, ClipboardPasting {
     private let postPasteShortcut: () -> Void
     private let scheduleRestore: (@escaping () -> Void) -> Void
 
+    private static let clipboardRestoreDelay: TimeInterval = 0.45
+
     private static func postCommandV() {
+        let commandKey: CGKeyCode = 55
         let vKey: CGKeyCode = 9
-        if let down = CGEvent(keyboardEventSource: nil, virtualKey: vKey, keyDown: true),
-           let up = CGEvent(keyboardEventSource: nil, virtualKey: vKey, keyDown: false) {
-            down.flags = .maskCommand
-            up.flags = .maskCommand
-            down.post(tap: .cgSessionEventTap)
-            up.post(tap: .cgSessionEventTap)
+
+        guard
+            let source = CGEventSource(stateID: .combinedSessionState),
+            let commandDown = CGEvent(keyboardEventSource: source, virtualKey: commandKey, keyDown: true),
+            let vDown = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: true),
+            let vUp = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: false),
+            let commandUp = CGEvent(keyboardEventSource: source, virtualKey: commandKey, keyDown: false)
+        else {
+            return
         }
+
+        commandDown.flags = .maskCommand
+        vDown.flags = .maskCommand
+        vUp.flags = .maskCommand
+
+        commandDown.post(tap: .cgSessionEventTap)
+        vDown.post(tap: .cgSessionEventTap)
+        vUp.post(tap: .cgSessionEventTap)
+        commandUp.post(tap: .cgSessionEventTap)
     }
 }
