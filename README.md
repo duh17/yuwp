@@ -76,6 +76,14 @@ scripts/run.sh
 
 Fresh clone note: `swift test` works on a clean clone. `scripts/build.sh` / `scripts/run.sh` require the Metal toolchain to produce `mlx.metallib`.
 
+## Benchmarks
+
+Benchmark tooling lives under [`benchmarks/`](benchmarks/README.md).
+
+```bash
+uv run benchmarks/cli.py --help
+```
+
 ## Privacy
 
 - Private by default: audio processing and transcription run locally on your Mac.

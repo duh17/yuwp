@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- Layer 2 — low-opacity support/cradle cells -->
-  <rect x="234.0" y="362.0" width="76.0" height="76.0" rx="18.2" fill="#efeee9" opacity="0.220" />
-  <rect x="234.0" y="458.0" width="76.0" height="76.0" rx="18.2" fill="#efeee9" opacity="0.280" />
-  <rect x="234.0" y="554.0" width="76.0" height="76.0" rx="18.2" fill="#efeee9" opacity="0.220" />
-</svg>

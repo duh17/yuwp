@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BIN = REPO_ROOT / ".build/arm64-apple-macosx/release/asr-stream-test"
 YUWP_RECORDINGS_DIR = Path.home() / "Library/Application Support/Yuwp/recordings"
 OPPI_DICTATION_DIR = Path.home() / ".config/oppi/dictation"

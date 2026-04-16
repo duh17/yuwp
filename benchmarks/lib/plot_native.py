@@ -4,11 +4,11 @@
 # dependencies = ["matplotlib"]
 # ///
 """
-Render comparison plots from scripts/bench-native-asr.py JSON output.
+Render comparison plots from native server benchmark JSON output.
 
 Examples:
-  uv run scripts/plot-native-asr-bench.py /tmp/yuwp-bench.json
-  uv run scripts/plot-native-asr-bench.py /tmp/yuwp-bench.json --out-dir /tmp/yuwp-bench-plots
+  uv run benchmarks/cli.py plot-native /tmp/yuwp-bench.json
+  uv run benchmarks/cli.py plot-native /tmp/yuwp-bench.json --out-dir /tmp/yuwp-bench-plots
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ CONCURRENCY_MARKERS = {1: "o", 2: "s", 4: "^", 8: "D"}
 def load_results(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text())
     if "results" not in payload:
-        raise ValueError("expected JSON from bench-native-asr.py with top-level 'results'")
+        raise ValueError("expected JSON from the native server benchmark with top-level 'results'")
     return payload
 
 
@@ -296,8 +296,8 @@ def write_index(results_path: Path, images: list[Path], out_dir: Path, payload: 
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Plot results from bench-native-asr.py")
-    parser.add_argument("json", help="Path to benchmark JSON from bench-native-asr.py")
+    parser = argparse.ArgumentParser(description="Plot results from the native server benchmark")
+    parser.add_argument("json", help="Path to benchmark JSON from `benchmarks/cli.py server-load`")
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help=f"Output directory (default: {DEFAULT_OUT_DIR})")
     return parser.parse_args()
 

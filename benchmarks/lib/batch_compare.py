@@ -18,13 +18,13 @@ Interface note:
 
 Examples:
   # Yuwp server vs mlx-audio on one long file, with transcript diffs
-  uv run scripts/benchmark.py \
+  uv run benchmarks/cli.py compare \
     --audio /tmp/yuwp-subtitle-bench/video-32k.m4a \
     --tool yuwp --tool mlx-audio \
     --compare-text
 
   # VAD vs low-energy fallback on the same Yuwp model
-  uv run scripts/benchmark.py \
+  uv run benchmarks/cli.py compare \
     --audio /tmp/yuwp-subtitle-bench/video-32k.m4a \
     --tool yuwp \
     --yuwp-chunking vad \
@@ -32,7 +32,7 @@ Examples:
     --compare-text
 
   # Reproduce the practical comparison, but explicitly
-  uv run scripts/benchmark.py \
+  uv run benchmarks/cli.py compare \
     --audio /path/to/qwen-asr/samples/jfk.wav \
     --audio /tmp/yuwp-subtitle-bench/video-4m.m4a \
     --audio /tmp/yuwp-subtitle-bench/video-32k.m4a \
@@ -62,7 +62,7 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 TRACKED_FIXTURES_DIR = REPO_ROOT / "Tests" / "fixtures"
 QWEN_REPO = Path.home() / "workspace" / "qwen-asr"
 YUWP_SERVER_BIN = REPO_ROOT / ".build" / "arm64-apple-macosx" / "release" / "swift-mlx-asr-server"

@@ -57,7 +57,7 @@ mkdir -p "$MACOS_DIR" "$RES_DIR" "$FRAMEWORKS_DIR"
 cp -f "$BIN_DIR/Yuwp" "$MACOS_DIR/Yuwp"
 cp -f "$BIN_DIR/swift-mlx-asr-server" "$MACOS_DIR/swift-mlx-asr-server"
 cp -f "$BIN_DIR/mlx.metallib" "$MACOS_DIR/mlx.metallib"
-cp -f "icon-layers/Yuwp.icns" "$RES_DIR/Yuwp.icns"
+cp -f "Resources/Yuwp.icns" "$RES_DIR/Yuwp.icns"
 
 RESOURCE_BUNDLE="$BIN_DIR/Yuwp_NativeASR.bundle"
 if [ -d "$RESOURCE_BUNDLE" ]; then

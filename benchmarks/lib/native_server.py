@@ -15,14 +15,14 @@ Interface note:
 
 Examples:
   # Compare the two built-in single-model presets on a balanced corpus.
-  uv run scripts/bench-native-asr.py small large --balanced 5 --concurrency 1 2 4
+  uv run benchmarks/cli.py server-load small large --balanced 5 --concurrency 1 2 4
 
   # Stress one model with real-time pacing and save JSON for later review.
-  uv run scripts/bench-native-asr.py large --balanced 5 --concurrency 1 2 4 \
+  uv run benchmarks/cli.py server-load large --balanced 5 --concurrency 1 2 4 \
     --pace realtime --capture-text --json /tmp/native-bench.json
 
   # Run on explicit files.
-  uv run scripts/bench-native-asr.py small large \
+  uv run benchmarks/cli.py server-load small large \
     --files path/to/audio1.flac path/to/audio2.flac
 """
 

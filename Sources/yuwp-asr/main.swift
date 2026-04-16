@@ -8,8 +8,6 @@ private struct CompanionCommand {
 
 private let companionCommands: [String: CompanionCommand] = [
     "restitch": .init(binaryName: "asr-stitch-debug"),
-    "bench": .init(binaryName: "asr-bench"),
-    "stream-test": .init(binaryName: "asr-stream-test"),
     "test": .init(binaryName: "asr-test"),
     "align": .init(binaryName: "align-test"),
 ]
@@ -22,8 +20,6 @@ private func printUsage() {
       transcribe <audio-file> [options]   One-shot local transcription
       serve [options]                     Run the local ASR HTTP server
       restitch <debug-json> [options]     Restitch subtitle output from debug JSON
-      bench ...                           Run internal batch benchmark tooling
-      stream-test ...                     Run internal streaming benchmark tooling
       test ...                            Run internal batch smoke tooling
       align ...                           Run internal forced-aligner checks
 

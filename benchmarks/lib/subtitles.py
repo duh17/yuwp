@@ -3,10 +3,10 @@
 Stress-test timed `response_format=json` batch transcription against a set of local files.
 
 Examples:
-  uv run scripts/bench-subtitles.py \
-    --manifest scripts/bench-subtitles.example.json
+  uv run benchmarks/cli.py subtitles \
+    --manifest benchmarks/fixtures/subtitles-manifest.example.json
 
-  uv run scripts/bench-subtitles.py \
+  uv run benchmarks/cli.py subtitles \
     --file /tmp/a.m4a --file /tmp/b.m4a \
     --base-url http://127.0.0.1:9748
 """
