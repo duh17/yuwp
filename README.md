@@ -93,3 +93,4 @@ Fresh clone note: `swift test` works on a clean clone. `scripts/build.sh` / `scr
 
 - [MIT](LICENSE)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
+- Binary app bundles and release DMGs include these notices plus vendored upstream license texts under `OpenSource/`

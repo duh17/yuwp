@@ -1,7 +1,7 @@
 import Foundation
 
 public enum YuwpTranscribeSupport {
-    public static func runCLI(arguments: [String], programName: String = "yuwp-transcribe") -> Int32 {
+    public static func runCLI(arguments: [String], programName: String = "yuwp-asr transcribe") -> Int32 {
         do {
             let config = try parseCLI(arguments: arguments)
             try run(config: config)
@@ -204,7 +204,7 @@ private func makeJSONOutput(
 private func validatePathExists(_ path: String, label: String) throws -> URL {
     let url = URL(fileURLWithPath: path).standardizedFileURL
     guard FileManager.default.fileExists(atPath: url.path) else {
-        throw NSError(domain: "yuwp-transcribe", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(label) not found: \(path)"])
+        throw NSError(domain: "yuwp-asr", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(label) not found: \(path)"])
     }
     return url
 }

@@ -1,0 +1,15 @@
+FluidInference / FluidAudio CoreML conversion used by Yuwp
+
+Upstream model card:
+https://huggingface.co/FluidInference/silero-vad-coreml
+
+Attribution from the model card:
+- Developed by: Silero Team (original), converted by FluidAudio
+- License: MIT
+
+Yuwp bundles the compiled CoreML artifact derived from that Apple-platform
+conversion at:
+- Sources/NativeASR/Resources/silero_vad.mlmodelc
+
+See also:
+- third_party/licenses/silero-vad-LICENSE.txt

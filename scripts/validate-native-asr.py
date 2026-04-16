@@ -26,7 +26,7 @@ Examples:
 
   # Compare a built native CLI against the saved goldens
   uv run scripts/validate-native-asr.py compare \
-    --candidate-cmd 'swift run --package-path . asr-test {audio} {model_dir} {language_arg}' \
+    --candidate-cmd 'swift run --package-path . yuwp-asr test {audio} {model_dir} {language_arg}' \
     --model-dir '~/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-0.6B/snapshots/5eb144179a02acc5e5ba31e748d22b0cf3e303b0'
 
 Notes:

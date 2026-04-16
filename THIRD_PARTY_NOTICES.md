@@ -1,50 +1,111 @@
 # Third-Party Notices
 
-## Silero VAD
+This document separates third-party material into three buckets:
 
-Yuwp bundles a compiled CoreML Silero VAD model at:
+1. Bundled in the repository and/or packaged app
+2. Downloaded at runtime, but not redistributed in the repository or DMG
+3. Acknowledged implementation references that informed Yuwp but are not bundled
+
+The packaged macOS app also ships these notices plus the vendored license files under
+`Contents/Resources/OpenSource/`.
+
+## Bundled In The Repo Or App
+
+### Sparkle
+
+- Upstream: <https://github.com/sparkle-project/Sparkle>
+- What Yuwp ships: `Sparkle.framework` inside the packaged app bundle
+- License: MIT, plus Sparkle's bundled third-party license notices
+- Vendored license text: `third_party/licenses/Sparkle-LICENSE.txt`
+
+### MLX Swift / MLX Runtime Support
+
+- Upstream: <https://github.com/ml-explore/mlx-swift>
+- What Yuwp ships:
+  - Swift code linked into the app and server binaries via SwiftPM
+  - `mlx.metallib`, compiled from the checked-out MLX Metal kernels by `scripts/build_mlx_metallib.sh`
+- License: MIT
+- Vendored license text: `third_party/licenses/mlx-swift-LICENSE.txt`
+
+### Swift Numerics
+
+- Upstream: <https://github.com/apple/swift-numerics>
+- What Yuwp ships: transitive SwiftPM dependency used through the MLX Swift stack
+- License: Apache License 2.0
+- Vendored license text:
+  - `third_party/licenses/swift-numerics-LICENSE.txt`
+  - `third_party/licenses/Apache-2.0.txt`
+
+### Silero VAD CoreML Artifact
+
+Yuwp bundles a compiled CoreML VAD model at:
 
 - `Sources/NativeASR/Resources/silero_vad.mlmodelc`
 
-Yuwp also includes a local Swift wrapper and chunking helpers at:
+Yuwp loads that model through:
 
 - `Sources/NativeASR/SileroVAD.swift`
 
-The current provenance we can trace in-repo is:
+Provenance:
 
-1. **Original model:** [`snakers4/silero-vad`](https://github.com/snakers4/silero-vad)
+1. Original model: `snakers4/silero-vad`
+   - Upstream: <https://github.com/snakers4/silero-vad>
    - License: MIT
    - Copyright: Silero Team
-2. **Bundled CoreML conversion:** [`FluidInference/silero-vad-coreml`](https://huggingface.co/FluidInference/silero-vad-coreml)
-   - The model card declares `license: mit`
-   - The bundled model metadata in this repo lists the author as `Fluid Infernece + Silero Team`
+2. Apple-platform CoreML conversion used for the bundled artifact:
+   - Upstream: <https://huggingface.co/FluidInference/silero-vad-coreml>
+   - Model card attribution: "Developed by: Silero Team (original), converted by FluidAudio"
+   - License: MIT
+   - Credit: FluidInference / FluidAudio for the CoreML conversion that Yuwp packages
 
-`SileroVAD.swift` itself is local Yuwp code that loads the bundled CoreML model and implements the VAD/chunking helpers we use for long-form batch transcription and subtitles.
+The bundled repository artifact is the compiled CoreML form of that converted model, not the
+original PyTorch release.
 
-### Silero VAD license
+Vendored notice files:
 
-Source: <https://github.com/snakers4/silero-vad/blob/master/LICENSE>
+- `third_party/licenses/silero-vad-LICENSE.txt`
+- `third_party/licenses/silero-vad-coreml-NOTICE.txt`
 
-```text
-MIT License
+## Runtime-Downloaded Models (Not Bundled In The Repo Or DMG)
 
-Copyright (c) 2020-present Silero Team
+Yuwp can download or use locally cached ASR / aligner models at runtime. Those model weights are
+not redistributed in this repository or the packaged macOS app, but they are first-class third
+party dependencies of the product.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+### Qwen3-ASR
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+- Upstream model card: <https://huggingface.co/Qwen/Qwen3-ASR-1.7B>
+- Typical Yuwp defaults also include MLX-community converted variants such as
+  `mlx-community/Qwen3-ASR-0.6B-4bit`
+- License: Apache License 2.0
+- Vendored Apache 2.0 text: `third_party/licenses/Apache-2.0.txt`
+- Credit: Qwen team for the underlying ASR model family
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
+### Qwen3 Forced Aligner
+
+- Official upstream model: <https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B>
+- Default Yuwp aligner path today points at the MLX-community conversion:
+  <https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit>
+- License: Apache License 2.0
+- Vendored Apache 2.0 text: `third_party/licenses/Apache-2.0.txt`
+- Credit:
+  - Qwen team for the original forced aligner model
+  - MLX Community for the MLX conversion / quantized release Yuwp uses by default
+
+## Acknowledgments / Implementation References
+
+The following projects informed the implementation, evaluation, or streaming design, but Yuwp does
+not bundle their source code unless separately noted above.
+
+### qwen-asr
+
+- Upstream: <https://github.com/antirez/qwen-asr>
+- Role in Yuwp: streaming / rollback / reference-implementation ideas during native ASR work
+- License: MIT
+- Redistribution status: acknowledged reference, not bundled as a shipped library in Yuwp
+
+### Qwen Official Tooling And Model Cards
+
+- Upstream: <https://huggingface.co/Qwen/Qwen3-ASR-1.7B>
+- Role in Yuwp: upstream model architecture, tokenizer/config expectations, and model-level docs
+- Redistribution status: runtime-downloaded models only, not packaged in the app bundle

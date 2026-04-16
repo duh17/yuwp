@@ -20,7 +20,9 @@ APP="/Applications/Yuwp.app"
 MACOS_DIR="$APP/Contents/MacOS"
 RES_DIR="$APP/Contents/Resources"
 FRAMEWORKS_DIR="$APP/Contents/Frameworks"
+OPEN_SOURCE_DIR="$RES_DIR/OpenSource"
 BIN_DIR=".build/arm64-apple-macosx/$CONFIGURATION"
+VENDORED_LICENSES_DIR="third_party/licenses"
 CAPTURE_RUN_LOG="${YUWP_CAPTURE_RUN_LOG:-0}"
 LOGFILE="${YUWP_LOG_FILE:-/tmp/yuwp.log}"
 SIGN_IDENTITY="${YUWP_SIGN_IDENTITY:-}"
@@ -70,6 +72,16 @@ else
     echo "Error: missing NativeASR resource bundle at $RESOURCE_BUNDLE"
     exit 1
 fi
+
+if [ ! -d "$VENDORED_LICENSES_DIR" ]; then
+    echo "Error: missing vendored licenses at $VENDORED_LICENSES_DIR"
+    exit 1
+fi
+rm -rf "$OPEN_SOURCE_DIR"
+mkdir -p "$OPEN_SOURCE_DIR"
+cp -f "LICENSE" "$OPEN_SOURCE_DIR/LICENSE.txt"
+cp -f "THIRD_PARTY_NOTICES.md" "$OPEN_SOURCE_DIR/THIRD_PARTY_NOTICES.md"
+ditto "$VENDORED_LICENSES_DIR" "$OPEN_SOURCE_DIR/licenses"
 
 # SwiftPM doesn't add the app-bundle Frameworks runpath for this executable.
 # Add it here so the packaged app can load Sparkle.framework at runtime.

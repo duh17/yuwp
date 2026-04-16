@@ -37,7 +37,10 @@ APP="$RELEASE_DIR/Yuwp.app"
 MACOS_DIR="$APP/Contents/MacOS"
 RES_DIR="$APP/Contents/Resources"
 FRAMEWORKS_DIR="$APP/Contents/Frameworks"
+OPEN_SOURCE_DIR="$RES_DIR/OpenSource"
+DMG_STAGE="$RELEASE_DIR/dmg-root"
 DMG="$RELEASE_DIR/Yuwp-$VERSION.dmg"
+VENDORED_LICENSES_DIR="third_party/licenses"
 
 SPARKLE_FW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 SPARKLE_TOOLS_DIR=$(find .build/artifacts -name "sign_update" -exec dirname {} \; 2>/dev/null | head -1)
@@ -63,6 +66,16 @@ else
     echo "Error: missing NativeASR resource bundle at $RESOURCE_BUNDLE"
     exit 1
 fi
+
+if [ ! -d "$VENDORED_LICENSES_DIR" ]; then
+    echo "Error: missing vendored licenses at $VENDORED_LICENSES_DIR"
+    exit 1
+fi
+rm -rf "$OPEN_SOURCE_DIR"
+mkdir -p "$OPEN_SOURCE_DIR"
+cp -f "LICENSE" "$OPEN_SOURCE_DIR/LICENSE.txt"
+cp -f "THIRD_PARTY_NOTICES.md" "$OPEN_SOURCE_DIR/THIRD_PARTY_NOTICES.md"
+ditto "$VENDORED_LICENSES_DIR" "$OPEN_SOURCE_DIR/licenses"
 
 # SwiftPM doesn't add the app-bundle Frameworks runpath for this executable.
 # Add it here so the packaged app can load Sparkle.framework at runtime.
@@ -151,8 +164,14 @@ codesign --verify --deep --strict "$APP"
 
 # ── Create DMG ─────────────────────────────────────────────────────────
 echo "=== Creating DMG ==="
-hdiutil create -volname "Yuwp" -srcfolder "$APP" \
+mkdir -p "$DMG_STAGE"
+ditto "$APP" "$DMG_STAGE/Yuwp.app"
+cp -f "LICENSE" "$DMG_STAGE/LICENSE.txt"
+cp -f "THIRD_PARTY_NOTICES.md" "$DMG_STAGE/THIRD_PARTY_NOTICES.md"
+ditto "$VENDORED_LICENSES_DIR" "$DMG_STAGE/THIRD_PARTY_LICENSES"
+hdiutil create -volname "Yuwp" -srcfolder "$DMG_STAGE" \
     -ov -format UDZO "$DMG"
+rm -rf "$DMG_STAGE"
 
 codesign --force --sign "$SIGN_IDENTITY" "$DMG"
 
