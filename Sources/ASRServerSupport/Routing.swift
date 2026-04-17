@@ -82,7 +82,7 @@ private func handleInfoRoute(_ req: HTTPRequest, context: ASRRouteContext) -> HT
         "model": context.streamingModelName,
         "streaming_model": context.streamingModelName, // backward compatibility
         "sample_rate": ASRAudio.sampleRate,
-        "chunk_sec": 2.25,
+        "chunk_sec": 1.75,
         "final_accuracy_pass_enabled": context.batchRetranscribeEnabled,
         "batch_retranscribe": context.batchRetranscribeEnabled, // backward compatibility
         "internal_diagnostics": internalDiagnosticsEnabled,

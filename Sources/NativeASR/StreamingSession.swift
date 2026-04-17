@@ -16,7 +16,7 @@ public struct StreamConfig: Sendable {
     public var finalizationPass: FinalizationPass
 
     public init(
-        chunkSec: Double = 2.25, rollback: Int = 5, unfixedChunks: Int = 2,
+        chunkSec: Double = 1.75, rollback: Int = 5, unfixedChunks: Int = 2,
         maxNewTokens: Int = 32, maxEncWindows: Int = 4, maxPrefixTokens: Int = 20,
         batchRetranscribe: Bool = true,
         finalizationPass: FinalizationPass = .activeSegmentOnly
@@ -648,12 +648,23 @@ public final class StreamingSession: @unchecked Sendable {
             fputs("[StreamingSession] Session-context final segment: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s audio → \(activeText.count) chars\n", stderr)
             return activeText
         }
+
+        // Hard guard: avoid giant end-of-session batch retranscribes that can
+        // spike GPU memory after long uninterrupted dictation.
+        if audioBuffer.count > Self.maxLiveBatchSegmentSamples {
+            let streamed = extractText(rawTokens).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !streamed.isEmpty {
+                fputs("[StreamingSession] Finalize using streaming text (segment too long: \(audioBuffer.count / ASRAudio.sampleRate)s)\n", stderr)
+                return streamed
+            }
+            return nil
+        }
+
         return batchRetranscribe()
     }
 
     private func sessionContextActiveText() -> String? {
-        if !committedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            sessionAudioBuffer.count > Self.maxSessionContextSamples {
+        if sessionAudioBuffer.count > Self.maxSessionContextSamples {
             fputs("[StreamingSession] Session-context skipped (session too long: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s)\n", stderr)
             return nil
         }
