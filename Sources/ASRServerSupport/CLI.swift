@@ -1,6 +1,7 @@
+import ASRIPC
 import Foundation
 
-public let asrServerUsage = "Usage: swift-mlx-asr-server [--model <path-or-repo-id>] [--batch-model <dir>] [--aligner-model <dir>] [--disable-vad] [--disable-batch-retranscribe] [--port 9748] [--host 127.0.0.1] [--parent-pid <pid>] [--warmup]"
+public let asrServerUsage = "Usage: swift-mlx-asr-server [--model <path-or-repo-id>] [--batch-model <dir>] [--aligner-model <dir>] [--transport <http|stdio> (default: stdio)] [--disable-vad] [--disable-batch-retranscribe] [--port 9748] [--host 127.0.0.1] [--parent-pid <pid>] [--warmup]"
 
 public struct ASRServerCLIConfiguration: Equatable {
     public let modelSpec: String?
@@ -12,6 +13,7 @@ public struct ASRServerCLIConfiguration: Equatable {
     public let alignerModelPath: String?
     public let batchRetranscribeEnabled: Bool
     public let vadEnabled: Bool
+    public let transport: ASRIPCTransport
 
     public init(
         modelSpec: String? = nil,
@@ -22,7 +24,8 @@ public struct ASRServerCLIConfiguration: Equatable {
         batchModelPath: String? = nil,
         alignerModelPath: String? = nil,
         batchRetranscribeEnabled: Bool = true,
-        vadEnabled: Bool = true
+        vadEnabled: Bool = true,
+        transport: ASRIPCTransport = .stdio
     ) {
         self.modelSpec = modelSpec?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.port = port
@@ -33,6 +36,7 @@ public struct ASRServerCLIConfiguration: Equatable {
         self.alignerModelPath = alignerModelPath
         self.batchRetranscribeEnabled = batchRetranscribeEnabled
         self.vadEnabled = vadEnabled
+        self.transport = transport
     }
 }
 
@@ -40,6 +44,7 @@ public enum ASRServerCLIError: Error, Equatable {
     case missingValue(flag: String)
     case invalidPort(String)
     case invalidParentPID(String)
+    case invalidTransport(String)
     case unknownOption(String)
 }
 
@@ -52,6 +57,8 @@ extension ASRServerCLIError: LocalizedError {
             return "--port requires a number"
         case .invalidParentPID:
             return "--parent-pid requires a pid"
+        case .invalidTransport(let value):
+            return "--transport must be one of: http, stdio (got '\(value)')"
         case .unknownOption(let flag):
             return "Unknown option: \(flag)"
         }
@@ -74,6 +81,7 @@ public func parseASRServerCLI(arguments: [String]) throws -> ASRServerCLIConfigu
     var alignerModelPath: String?
     var batchRetranscribeEnabled = true
     var vadEnabled = true
+    var transport: ASRIPCTransport = .stdio
 
     while !args.isEmpty {
         switch args.removeFirst() {
@@ -105,6 +113,13 @@ public func parseASRServerCLI(arguments: [String]) throws -> ASRServerCLIConfigu
             batchRetranscribeEnabled = false
         case "--disable-vad":
             vadEnabled = false
+        case "--transport":
+            guard !args.isEmpty else { throw ASRServerCLIError.missingValue(flag: "--transport") }
+            let value = args.removeFirst().trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard let parsed = ASRIPCTransport(rawValue: value) else {
+                throw ASRServerCLIError.invalidTransport(value)
+            }
+            transport = parsed
         case let flag where flag.hasPrefix("-"):
             throw ASRServerCLIError.unknownOption(flag)
         case let value:
@@ -121,6 +136,7 @@ public func parseASRServerCLI(arguments: [String]) throws -> ASRServerCLIConfigu
         batchModelPath: batchModelPath,
         alignerModelPath: alignerModelPath,
         batchRetranscribeEnabled: batchRetranscribeEnabled,
-        vadEnabled: vadEnabled
+        vadEnabled: vadEnabled,
+        transport: transport
     )
 }

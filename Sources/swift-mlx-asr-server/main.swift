@@ -1,3 +1,4 @@
+import ASRIPC
 import ASRServerSupport
 import Foundation
 import NativeASR
@@ -29,9 +30,8 @@ do {
         batchTranscriber = nil
     }
 
-    let alignerSpec = config.alignerModelPath ?? YuwpModelSupport.defaultAlignerURL()?.path
     let aligner: ForcedAligner?
-    if let alignerSpec {
+    if let alignerSpec = config.alignerModelPath {
         let alignerURL = URL(fileURLWithPath: alignerSpec).standardizedFileURL
         guard FileManager.default.fileExists(atPath: alignerURL.path) else {
             fputs("Aligner model not found: \(alignerSpec)\n", stderr)
@@ -73,18 +73,28 @@ do {
         batchRetranscribeEnabled: config.batchRetranscribeEnabled,
         vad: vad
     )
-    startServer(
-        host: config.host,
-        port: config.port,
-        mgr: manager,
-        aligner: aligner,
-        vad: vad,
-        streamingModelName: modelURL.lastPathComponent,
-        activeModelID: YuwpModelSupport.publicModelID(for: config.modelSpec ?? YuwpModelSupport.defaultYuwpModelSpec() ?? modelURL.path),
-        batchModelName: batchTranscriber?.modelDirectory.lastPathComponent,
-        batchRetranscribeEnabled: config.batchRetranscribeEnabled,
-        parentPID: config.parentPID
-    )
+    switch config.transport {
+    case .http:
+        startServer(
+            host: config.host,
+            port: config.port,
+            mgr: manager,
+            aligner: aligner,
+            vad: vad,
+            streamingModelName: modelURL.lastPathComponent,
+            activeModelID: YuwpModelSupport.publicModelID(for: config.modelSpec ?? YuwpModelSupport.defaultYuwpModelSpec() ?? modelURL.path),
+            batchModelName: batchTranscriber?.modelDirectory.lastPathComponent,
+            batchRetranscribeEnabled: config.batchRetranscribeEnabled,
+            parentPID: config.parentPID
+        )
+    case .stdio:
+        startStdioServer(
+            mgr: manager,
+            streamingModelName: modelURL.lastPathComponent,
+            activeModelID: YuwpModelSupport.publicModelID(for: config.modelSpec ?? YuwpModelSupport.defaultYuwpModelSpec() ?? modelURL.path),
+            batchRetranscribeEnabled: config.batchRetranscribeEnabled
+        )
+    }
 } catch let error as ASRServerCLIError {
     fputs("\(error.localizedDescription)\n", stderr)
     exit(1)

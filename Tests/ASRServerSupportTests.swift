@@ -1,3 +1,4 @@
+import ASRIPC
 import Foundation
 import Testing
 @testable import ASRServerSupport
@@ -16,6 +17,7 @@ struct ASRServerSupportTests {
             "--aligner-model", "/models/aligner",
             "--disable-batch-retranscribe",
             "--disable-vad",
+            "--transport", "stdio",
         ])
 
         #expect(config.modelSpec == "/models/qwen")
@@ -27,6 +29,7 @@ struct ASRServerSupportTests {
         #expect(config.alignerModelPath == "/models/aligner")
         #expect(config.batchRetranscribeEnabled == false)
         #expect(config.vadEnabled == false)
+        #expect(config.transport == .stdio)
     }
 
     @Test func cliParserPrefersExplicitModelOverPositionalModel() throws {
@@ -36,6 +39,7 @@ struct ASRServerSupportTests {
         ])
 
         #expect(config.modelSpec == "/models/explicit")
+        #expect(config.transport == .stdio)
     }
 
     @Test func cliParserAllowsNoExplicitModelForFallbackResolution() throws {
@@ -45,6 +49,7 @@ struct ASRServerSupportTests {
 
         #expect(config.modelSpec == nil)
         #expect(config.port == 9999)
+        #expect(config.transport == .stdio)
     }
 
     @Test func cliParserUsesCanonicalModelFlagWithoutPositionalModel() throws {
@@ -55,11 +60,18 @@ struct ASRServerSupportTests {
 
         #expect(config.modelSpec == "mlx-community/Qwen3-ASR-1.7B-bf16")
         #expect(config.host == "0.0.0.0")
+        #expect(config.transport == .stdio)
     }
 
     @Test func cliParserRejectsInvalidPort() {
         #expect(throws: ASRServerCLIError.invalidPort("wat")) {
             try parseASRServerCLI(arguments: ["--model", "/models/qwen", "--port", "wat"])
+        }
+    }
+
+    @Test func cliParserRejectsInvalidTransport() {
+        #expect(throws: ASRServerCLIError.invalidTransport("grpc")) {
+            try parseASRServerCLI(arguments: ["--transport", "grpc"])
         }
     }
 

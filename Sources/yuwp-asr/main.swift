@@ -18,7 +18,7 @@ private func printUsage() {
 
     Commands:
       transcribe <audio-file> [options]   One-shot local transcription
-      serve [options]                     Run the local ASR HTTP server
+      serve [options]                     Run the local ASR server (stdio by default)
       restitch <debug-json> [options]     Restitch subtitle output from debug JSON
       test ...                            Run internal batch smoke tooling
       align ...                           Run internal forced-aligner checks
@@ -26,7 +26,8 @@ private func printUsage() {
     Examples:
       yuwp-asr transcribe note.m4a --format json
       yuwp-asr transcribe note.m4a --model ~/models/Qwen3-ASR-0.6B-4bit
-      yuwp-asr serve --model ~/models/Qwen3-ASR-1.7B-bf16 --port 9748
+      yuwp-asr serve --model ~/models/Qwen3-ASR-1.7B-bf16
+      yuwp-asr serve --transport http --host 127.0.0.1 --port 9748
       yuwp-asr restitch /tmp/debug.json --format srt
 
     """, stderr)

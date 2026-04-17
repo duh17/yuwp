@@ -19,9 +19,10 @@ let package = Package(
             name: "Yuwp",
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle"),
+                "ASRIPC",
             ],
             path: "Sources",
-            exclude: ["NativeASR", "ASRServerSupport", "asr-test", "asr-bench", "asr-stream-test", "swift-mlx-asr-server", "yuwp-asr", "align-test", "asr-stitch-debug"]
+            exclude: ["NativeASR", "ASRServerSupport", "ASRIPC", "asr-test", "asr-bench", "asr-stream-test", "swift-mlx-asr-server", "yuwp-asr", "align-test", "asr-stitch-debug"]
         ),
         .target(
             name: "NativeASR",
@@ -53,13 +54,17 @@ let package = Package(
             path: "Sources/asr-stream-test"
         ),
         .target(
+            name: "ASRIPC",
+            path: "Sources/ASRIPC"
+        ),
+        .target(
             name: "ASRServerSupport",
-            dependencies: ["NativeASR"],
+            dependencies: ["NativeASR", "ASRIPC"],
             path: "Sources/ASRServerSupport"
         ),
         .executableTarget(
             name: "swift-mlx-asr-server",
-            dependencies: ["NativeASR", "ASRServerSupport"],
+            dependencies: ["NativeASR", "ASRServerSupport", "ASRIPC"],
             path: "Sources/swift-mlx-asr-server"
         ),
         .executableTarget(
@@ -79,7 +84,7 @@ let package = Package(
         ),
         .testTarget(
             name: "YuwpTests",
-            dependencies: ["Yuwp", "NativeASR", "ASRServerSupport"],
+            dependencies: ["Yuwp", "NativeASR", "ASRServerSupport", "ASRIPC"],
             path: "Tests",
             exclude: ["fixtures"]
         ),

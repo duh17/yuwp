@@ -3,8 +3,10 @@ import Darwin
 #else
 import Glibc
 #endif
+import ASRIPC
 import ASRServerSupport
 import Foundation
+import MLX
 import NativeASR
 
 // MARK: - Shutdown State
@@ -153,13 +155,15 @@ final class StreamingSessionManager: @unchecked Sendable {
     private let bootstrapChunkSamples: Int
     private let vad: SileroVAD?
     private let sessionTimeout: TimeInterval = 300
+    private var processedChunksSinceCacheTrim = 0
+    private let cacheTrimChunkInterval = 8
 
     init(
         transcriber: Qwen3ASRTranscriber,
         batchTranscriber: Qwen3ASRTranscriber? = nil,
         batchRetranscribeEnabled: Bool = true,
         vad: SileroVAD? = nil,
-        chunkSec: Double = 2.25
+        chunkSec: Double = 1.75
     ) {
         self.transcriber = transcriber
         self.batchTranscriber = batchTranscriber
@@ -218,6 +222,11 @@ final class StreamingSessionManager: @unchecked Sendable {
             let speechHint = analyzeSpeechActivity(chunk, vad: vad)
             let result = session.processChunk(chunk, speechHint: speechHint)
             if result.batchCorrected { batchCorrected = true }
+            processedChunksSinceCacheTrim += 1
+            if processedChunksSinceCacheTrim >= cacheTrimChunkInterval {
+                Self.trimMLXCache()
+                processedChunksSinceCacheTrim = 0
+            }
 #if YUWP_INTERNAL_DIAGNOSTICS
             log(
                 "PERF sid=\(sid) chunk=\(session.processedChunkCount) "
@@ -270,6 +279,15 @@ final class StreamingSessionManager: @unchecked Sendable {
             batchCorrected: false
         )
         inferenceLock.unlock()
+
+        stateLock.lock()
+        let shouldTrimCache = sessions.isEmpty
+        stateLock.unlock()
+        if shouldTrimCache {
+            inferenceLock.lock()
+            Self.trimMLXCache()
+            inferenceLock.unlock()
+        }
 
         log("Session stopped (\(sid)): \(text.count) chars")
         return response
@@ -359,8 +377,21 @@ final class StreamingSessionManager: @unchecked Sendable {
             pendingAudio.removeValue(forKey: sid)
             lastActivity.removeValue(forKey: sid)
         }
+        let shouldTrimCache = !expired.isEmpty && sessions.isEmpty
         stateLock.unlock()
-        if !expired.isEmpty { log("Expired \(expired.count) session(s)") }
+
+        if !expired.isEmpty {
+            log("Expired \(expired.count) session(s)")
+        }
+        if shouldTrimCache {
+            inferenceLock.lock()
+            Self.trimMLXCache()
+            inferenceLock.unlock()
+        }
+    }
+
+    private static func trimMLXCache() {
+        MLX.Memory.clearCache()
     }
 }
 
@@ -469,6 +500,166 @@ func writeResponse(fd: Int32, response: HTTPResponse) {
 }
 
 // MARK: - Server
+
+private enum StdioFrameReadResult {
+    case frame(ASRIPCFrame)
+    case eof
+    case invalidHeader
+    case truncated
+}
+
+private func readExactBytes(fd: Int32, count: Int) -> Data? {
+    guard count >= 0 else { return nil }
+    if count == 0 { return Data() }
+
+    var buffer = [UInt8](repeating: 0, count: count)
+    var offset = 0
+
+    while offset < count {
+        let readCount = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
+            guard let base = rawBuffer.baseAddress else { return -1 }
+            return Darwin.read(fd, base.advanced(by: offset), count - offset)
+        }
+
+        if readCount == 0 { return nil }
+        if readCount < 0 {
+            if errno == EINTR { continue }
+            return nil
+        }
+
+        offset += readCount
+    }
+
+    return Data(buffer)
+}
+
+private func writeAllBytes(fd: Int32, data: Data) -> Bool {
+    var offset = 0
+    return data.withUnsafeBytes { rawBuffer in
+        guard let base = rawBuffer.baseAddress else { return true }
+
+        while offset < data.count {
+            let written = Darwin.write(fd, base.advanced(by: offset), data.count - offset)
+            if written < 0 {
+                if errno == EINTR { continue }
+                return false
+            }
+            if written == 0 { return false }
+            offset += written
+        }
+        return true
+    }
+}
+
+private func readStdioFrame() -> StdioFrameReadResult {
+    guard let header = readExactBytes(fd: STDIN_FILENO, count: ASRIPCFrameCodec.headerSize) else {
+        return .eof
+    }
+    guard let lengths = ASRIPCFrameCodec.decodeHeader(header) else {
+        return .invalidHeader
+    }
+
+    guard let metadata = readExactBytes(fd: STDIN_FILENO, count: lengths.metadataLength),
+          let binary = readExactBytes(fd: STDIN_FILENO, count: lengths.binaryLength)
+    else {
+        return .truncated
+    }
+
+    return .frame(ASRIPCFrame(metadata: metadata, binary: binary))
+}
+
+private func makeIPCResponse(id: UInt64, from payload: [String: Any]) -> ASRIPCResponse {
+    ASRIPCResponse(
+        id: id,
+        ok: true,
+        text: payload["text"] as? String,
+        committedText: payload["committed_text"] as? String,
+        activeText: payload["active_text"] as? String,
+        updateKind: payload["update_kind"] as? String,
+        batchCorrected: payload["batch_corrected"] as? Bool,
+        isFinal: payload["is_final"] as? Bool
+    )
+}
+
+private func writeIPCResponse(_ response: ASRIPCResponse) -> Bool {
+    guard let frame = try? ASRIPCCodec.encode(response) else { return false }
+    return writeAllBytes(fd: STDOUT_FILENO, data: frame)
+}
+
+func startStdioServer(
+    mgr: StreamingSessionManager,
+    streamingModelName: String,
+    activeModelID: String?,
+    batchRetranscribeEnabled: Bool
+) {
+    log("Listening on stdio")
+
+    while true {
+        let request: ASRIPCRequest
+        switch readStdioFrame() {
+        case .eof:
+            log("Stdio input closed")
+            return
+        case .invalidHeader:
+            let response = ASRIPCResponse(id: 0, ok: false, error: "invalid frame header")
+            if !writeIPCResponse(response) { return }
+            continue
+        case .truncated:
+            let response = ASRIPCResponse(id: 0, ok: false, error: "truncated stdio frame")
+            _ = writeIPCResponse(response)
+            return
+        case .frame(let frame):
+            do {
+                request = try ASRIPCCodec.decodeRequest(metadata: frame.metadata)
+            } catch {
+                let response = ASRIPCResponse(id: 0, ok: false, error: "invalid request: \(error.localizedDescription)")
+                if !writeIPCResponse(response) { return }
+                continue
+            }
+
+            let response: ASRIPCResponse
+            switch request.command {
+            case .info:
+                response = ASRIPCResponse(
+                    id: request.id,
+                    ok: true,
+                    status: "ready",
+                    model: activeModelID ?? streamingModelName,
+                    sampleRate: ASRAudio.sampleRate,
+                    chunkSec: 1.75,
+                    finalAccuracyPassEnabled: batchRetranscribeEnabled
+                )
+            case .create:
+                response = ASRIPCResponse(id: request.id, ok: true, sessionID: mgr.create())
+            case .feed:
+                guard let sid = request.sessionID else {
+                    response = ASRIPCResponse(id: request.id, ok: false, error: "missing session_id")
+                    break
+                }
+                guard let payload = mgr.feed(sid, pcmData: frame.binary) else {
+                    response = ASRIPCResponse(id: request.id, ok: false, error: "session not found")
+                    break
+                }
+                response = makeIPCResponse(id: request.id, from: payload)
+            case .stop:
+                guard let sid = request.sessionID else {
+                    response = ASRIPCResponse(id: request.id, ok: false, error: "missing session_id")
+                    break
+                }
+                guard let payload = mgr.stop(sid) else {
+                    response = ASRIPCResponse(id: request.id, ok: false, error: "session not found")
+                    break
+                }
+                response = makeIPCResponse(id: request.id, from: payload)
+            }
+
+            if !writeIPCResponse(response) {
+                log("Failed to write stdio response")
+                return
+            }
+        }
+    }
+}
 
 func startServer(
     host: String,
