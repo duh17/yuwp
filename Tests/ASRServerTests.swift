@@ -6,14 +6,14 @@ import Testing
 /// Integration tests for the native ASR server.
 /// Uses public-domain test fixtures — no personal voice recordings.
 ///
-/// Requires a server running on localhost:9748 (or port set via ASR_TEST_PORT env).
+/// Requires a server running on localhost:7936 (or port set via ASR_TEST_PORT env).
 /// Start it with:
-///   .build/arm64-apple-macosx/release/yuwp-asr serve --model <model-dir> --port 9748
+///   .build/arm64-apple-macosx/release/yuwp-asr serve --transport http --model <model-dir> --port 7936
 ///
 /// Run with: ASR_TEST=1 swift test --filter "ASR Server"
 @Suite("ASR Server", .tags(.integration),
        .enabled(if: ProcessInfo.processInfo.environment["ASR_TEST"] != nil,
-               "Set ASR_TEST=1 with swift-mlx-asr-server running on :9748"))
+               "Set ASR_TEST=1 with swift-mlx-asr-server running on :7936"))
 struct ASRServerTests {
     let host: String
     let port: String
@@ -25,7 +25,7 @@ struct ASRServerTests {
 
     init() {
         self.host = ProcessInfo.processInfo.environment["ASR_TEST_HOST"] ?? "127.0.0.1"
-        self.port = ProcessInfo.processInfo.environment["ASR_TEST_PORT"] ?? "9748"
+        self.port = ProcessInfo.processInfo.environment["ASR_TEST_PORT"] ?? "7936"
     }
 
     // MARK: - Helpers

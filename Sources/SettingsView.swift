@@ -412,7 +412,7 @@ struct SettingsView: View {
                     muted: store.snapshot.serverMode == .off
                 ) {
                     HStack(spacing: 8) {
-                        TextField("9748", text: $store.serverPortDraft)
+                        TextField("\(ASRIPCDefaults.defaultHTTPPort)", text: $store.serverPortDraft)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 110)
                             .accessibilityLabel("Server port")

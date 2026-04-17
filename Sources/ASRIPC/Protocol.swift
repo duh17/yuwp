@@ -1,5 +1,10 @@
 import Foundation
 
+public enum ASRIPCDefaults {
+    /// Default localhost HTTP port used whenever transport is `.http`.
+    public static let defaultHTTPPort: UInt16 = 7936
+}
+
 public enum ASRIPCTransport: String, Sendable, Codable, Equatable, CaseIterable {
     case http
     case stdio

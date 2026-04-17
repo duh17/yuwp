@@ -182,7 +182,7 @@ struct SettingsStoreTests {
             audioInputSelection: .systemDefault,
             availableAudioInputs: [],
             serverMode: .localhost,
-            serverPort: 9748,
+            serverPort: 7936,
             asrTransport: .http,
             transcriptionModel: transcriptionModel,
             batchCommitEnabled: true,

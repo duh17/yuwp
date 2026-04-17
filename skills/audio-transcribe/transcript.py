@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = Path("/tmp/yuwp-video-transcripts")
-DEFAULT_SERVER_URL = "http://127.0.0.1:9748"
+DEFAULT_SERVER_URL = "http://127.0.0.1:7936"
 TRANSCRIBE_TIMEOUT_SECONDS = 60 * 60
 BUILD_TIMEOUT_SECONDS = 30 * 60
 SERVER_READY_TIMEOUT_SECONDS = 120
@@ -581,7 +581,16 @@ def transcribe_with_yuwp(audio_path: Path, *, output_format: str, model_spec: st
     port = pick_free_port()
     server_url = f"http://127.0.0.1:{port}"
     log_path = OUTPUT_DIR / f"yuwp-asr-serve-{port}.log"
-    command = [str(cli_path), "serve", "--host", "127.0.0.1", "--port", str(port)]
+    command = [
+        str(cli_path),
+        "serve",
+        "--transport",
+        "http",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+    ]
     if model_spec:
         command += ["--model", model_spec]
 

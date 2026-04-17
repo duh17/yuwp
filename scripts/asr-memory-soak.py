@@ -67,7 +67,7 @@ class SoakReport:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Soak-test streaming server memory growth")
     p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=9748)
+    p.add_argument("--port", type=int, default=7936)
     p.add_argument("--audio", type=Path, default=Path("Tests/fixtures/jfk.wav"))
     p.add_argument("--duration-sec", type=float, default=600.0, help="Total soak duration")
     p.add_argument("--chunk-sec", type=float, default=2.25, help="Chunk size to send")

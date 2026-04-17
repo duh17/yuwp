@@ -58,11 +58,11 @@ Transcribe a file:
 .build/arm64-apple-macosx/release/yuwp-asr transcribe Tests/fixtures/jfk.wav
 ```
 
-Run standalone HTTP server:
+Run standalone HTTP server (default transport is stdio, so pass `--transport http`):
 
 ```bash
-.build/arm64-apple-macosx/release/swift-mlx-asr-server <model-dir> --host 127.0.0.1 --port 9748
-curl -sf http://127.0.0.1:9748/v1/info | jq .
+.build/arm64-apple-macosx/release/swift-mlx-asr-server <model-dir> --transport http --host 127.0.0.1 --port 7936
+curl -sf http://127.0.0.1:7936/v1/info | jq .
 ```
 
 ## Development

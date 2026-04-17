@@ -49,8 +49,8 @@ bash scripts/build.sh "$CONFIGURATION"
 # Kill old app binary if it is already running so we don't leave a stale copy alive.
 pkill -f "$APP/Contents/MacOS/Yuwp" >/dev/null 2>&1 || true
 
-# Clear any stale ASR server still holding the port from an old dev run.
-OLD_SERVER_PIDS=$(lsof -tiTCP:9748 -sTCP:LISTEN || true)
+# Clear any stale ASR server still holding the default HTTP port from an old dev run.
+OLD_SERVER_PIDS=$(lsof -tiTCP:7936 -sTCP:LISTEN || true)
 if [ -n "$OLD_SERVER_PIDS" ]; then
     kill $OLD_SERVER_PIDS >/dev/null 2>&1 || true
 fi

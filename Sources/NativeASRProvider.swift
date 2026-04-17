@@ -590,7 +590,7 @@ final class NativeASRProvider: SttProvider {
     private var lifecycleCommandTask: Task<Void, Never>?
     private var latestLifecycleCommandID: UInt64 = 0
 
-    init(port: UInt16 = 9748) {
+    init(port: UInt16 = ASRIPCDefaults.defaultHTTPPort) {
         self.configuration = ASRServerConfiguration(port: port)
     }
 

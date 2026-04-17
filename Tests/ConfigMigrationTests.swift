@@ -17,7 +17,7 @@ struct ConfigMigrationTests {
         #expect(!config.experimentalDirectTextFieldInsertionEnabled)
         #expect(!config.experimentalDirectTerminalInsertionEnabled)
         #expect(config.serverMode == .localhost)
-        #expect(config.serverPort == 9748)
+        #expect(config.serverPort == 7936)
         #expect(config.asrTransport == .stdio)
         #expect(config.transcriptionModel == "mlx-community/Qwen3-ASR-0.6B-4bit")
         #expect(config.batchCommitEnabled)

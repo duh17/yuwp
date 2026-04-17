@@ -27,7 +27,7 @@ private func printUsage() {
       yuwp-asr transcribe note.m4a --format json
       yuwp-asr transcribe note.m4a --model ~/models/Qwen3-ASR-0.6B-4bit
       yuwp-asr serve --model ~/models/Qwen3-ASR-1.7B-bf16
-      yuwp-asr serve --transport http --host 127.0.0.1 --port 9748
+      yuwp-asr serve --transport http --host 127.0.0.1 --port 7936
       yuwp-asr restitch /tmp/debug.json --format srt
 
     """, stderr)

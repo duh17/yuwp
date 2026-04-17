@@ -471,7 +471,7 @@ final class Config {
         get {
             let value = defaults.object(forKey: "serverPort") != nil
                 ? defaults.integer(forKey: "serverPort")
-                : 9748
+                : Int(ASRIPCDefaults.defaultHTTPPort)
             return UInt16(clamping: max(1, min(value, 65_535)))
         }
         set {

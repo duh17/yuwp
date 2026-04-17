@@ -1,7 +1,7 @@
 import ASRIPC
 import Foundation
 
-public let asrServerUsage = "Usage: swift-mlx-asr-server [--model <path-or-repo-id>] [--batch-model <dir>] [--aligner-model <dir>] [--transport <http|stdio> (default: stdio)] [--disable-vad] [--disable-batch-retranscribe] [--port 9748] [--host 127.0.0.1] [--parent-pid <pid>] [--warmup]"
+public let asrServerUsage = "Usage: swift-mlx-asr-server [--model <path-or-repo-id>] [--batch-model <dir>] [--aligner-model <dir>] [--transport <http|stdio> (default: stdio)] [--disable-vad] [--disable-batch-retranscribe] [--port \(ASRIPCDefaults.defaultHTTPPort)] [--host 127.0.0.1] [--parent-pid <pid>] [--warmup]"
 
 public struct ASRServerCLIConfiguration: Equatable {
     public let modelSpec: String?
@@ -17,7 +17,7 @@ public struct ASRServerCLIConfiguration: Equatable {
 
     public init(
         modelSpec: String? = nil,
-        port: UInt16 = 9748,
+        port: UInt16 = ASRIPCDefaults.defaultHTTPPort,
         host: String = "127.0.0.1",
         parentPID: Int32? = nil,
         warmup: Bool = false,
@@ -73,7 +73,7 @@ public func parseASRServerCLI(arguments: [String]) throws -> ASRServerCLIConfigu
     }
 
     var explicitModelSpec: String?
-    var port: UInt16 = 9748
+    var port: UInt16 = ASRIPCDefaults.defaultHTTPPort
     var host = "127.0.0.1"
     var parentPID: Int32?
     var warmup = false

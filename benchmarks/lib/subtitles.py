@@ -8,7 +8,7 @@ Examples:
 
   uv run benchmarks/cli.py subtitles \
     --file /tmp/a.m4a --file /tmp/b.m4a \
-    --base-url http://127.0.0.1:9748
+    --base-url http://127.0.0.1:7936
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-DEFAULT_BASE_URL = "http://127.0.0.1:9748"
+DEFAULT_BASE_URL = "http://127.0.0.1:7936"
 DEFAULT_OUT_DIR = Path("/tmp/yuwp-subtitle-bench")
 DEFAULT_GAP_WARN_SEC = 2.0
 DEFAULT_OVERLAP_TOLERANCE_SEC = 0.05

@@ -8,7 +8,7 @@ Instructions for AI coding agents working on this codebase.
 ┌───────────────────────────────────────────┐
 │            Yuwp.app (macOS)               │
 │  Hotkey → AudioCapture → NativeASRProvider│
-│                            ↕ HTTP :9748   │
+│                      ↕ stdio / HTTP :7936 │
 │               TextInjector (AX API)       │
 └───────────────────────┬───────────────────┘
                         │
@@ -20,13 +20,15 @@ Instructions for AI coding agents working on this codebase.
            │  │  KV reuse,       │   │
            │  │  prefix rollback)│   │
            │  └──────────────────┘   │
-           │     HTTP :9748          │
+           │   stdio / HTTP :7936    │
            └─────────────────────────┘
 ```
 
-The native `swift-mlx-asr-server` loads the MLX model once and serves HTTP.
-Yuwp.app launches it as a child process, communicates via localhost HTTP.
-External clients can use the same HTTP API.
+The native `swift-mlx-asr-server` loads the MLX model once and serves either
+stdio IPC (default) or HTTP.
+Yuwp.app launches it as a child process and usually talks via stdio.
+External clients can use the same HTTP API when the server runs with
+`--transport http`.
 
 ## Build & Run
 
@@ -59,7 +61,7 @@ appcast URL or public key with `YUWP_SPARKLE_FEED_URL` or
 ### Standalone ASR server (no GUI)
 
 ```bash
-.build/arm64-apple-macosx/release/swift-mlx-asr-server <model-dir> [--port 9748] [--host 127.0.0.1]
+.build/arm64-apple-macosx/release/swift-mlx-asr-server <model-dir> --transport http [--port 7936] [--host 127.0.0.1]
 ```
 
 ## Key Components
@@ -68,7 +70,7 @@ appcast URL or public key with `YUWP_SPARKLE_FEED_URL` or
 |------|---------|
 | App.swift | NSApplication entry, menu bar, orchestration |
 | DictationSession.swift | Session state machine, protocol abstractions |
-| NativeASRProvider.swift | Manages swift-mlx-asr-server process, HTTP STT sessions |
+| NativeASRProvider.swift | Manages swift-mlx-asr-server process, stdio/HTTP STT sessions |
 | ModelManager.swift | HF model resolution from cache or local paths |
 | HotkeyManager.swift | Carbon global hotkey + Enter interception tap |
 | AudioCapture.swift | AVAudioEngine → 16kHz mono PCM |
@@ -79,12 +81,12 @@ appcast URL or public key with `YUWP_SPARKLE_FEED_URL` or
 | MicPanel.swift | Floating mic indicator (NSPanel) |
 | TypewriterAnimator.swift | Character-by-character text reveal |
 | Config.swift | UserDefaults-based preferences |
-| swift-mlx-asr-server/main.swift | swift-mlx-asr-server entrypoint (native HTTP streaming ASR server) |
+| swift-mlx-asr-server/main.swift | swift-mlx-asr-server entrypoint (native streaming ASR server: stdio + HTTP) |
 | NativeASR/ | MLX model loading, inference, streaming session |
 
 ## HTTP API
 
-All communication uses a single HTTP protocol on `127.0.0.1:9748`:
+When transport is HTTP, communication uses this API on `127.0.0.1:7936` by default:
 
 | Method | Path | Description |
 |--------|------|-------------|

@@ -225,7 +225,7 @@ struct ForcedAlignerIntegrationTests {
 
 @Suite("Timed Batch Output", .tags(.integration),
        .enabled(if: ProcessInfo.processInfo.environment["ASR_TEST"] != nil,
-               "Set ASR_TEST=1 with `yuwp-asr serve --model <dir> [--aligner-model <dir>] --port 9748` running"))
+               "Set ASR_TEST=1 with `yuwp-asr serve --transport http --model <dir> [--aligner-model <dir>] --port 7936` running"))
 struct SubtitleEndpointTests {
     let host: String
     let port: String
@@ -234,7 +234,7 @@ struct SubtitleEndpointTests {
 
     init() {
         self.host = ProcessInfo.processInfo.environment["ASR_TEST_HOST"] ?? "127.0.0.1"
-        self.port = ProcessInfo.processInfo.environment["ASR_TEST_PORT"] ?? "9748"
+        self.port = ProcessInfo.processInfo.environment["ASR_TEST_PORT"] ?? "7936"
     }
 
     private func fixtureURL(_ name: String) -> URL {

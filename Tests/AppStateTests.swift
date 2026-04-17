@@ -128,10 +128,10 @@ struct AppStateTests {
             missingConfiguredModelLabels: []
         )
 
-        let status = state.statusDisplay(port: 9748)
+        let status = state.statusDisplay(port: 7936)
 
         #expect(status == AppStatusDisplay(
-            title: "Ready (0.0.0.0:9748)",
+            title: "Ready (0.0.0.0:7936)",
             symbolName: "checkmark.circle.fill",
             isEnabled: false,
             behavior: .none
@@ -145,7 +145,7 @@ struct AppStateTests {
             providerState: .ready
         )
 
-        let status = state.statusDisplay(port: 9748)
+        let status = state.statusDisplay(port: 7936)
 
         #expect(status == AppStatusDisplay(
             title: "Ready (stdio)",
@@ -163,7 +163,7 @@ struct AppStateTests {
             providerState: .ready
         )
 
-        let status = state.statusDisplay(port: 9748)
+        let status = state.statusDisplay(port: 7936)
 
         #expect(status == AppStatusDisplay(
             title: "Grant Microphone Permission",
@@ -181,7 +181,7 @@ struct AppStateTests {
             missingConfiguredModelLabels: ["Model"]
         )
 
-        let status = state.statusDisplay(port: 9748)
+        let status = state.statusDisplay(port: 7936)
 
         #expect(status == AppStatusDisplay(
             title: "Model missing",
@@ -199,7 +199,7 @@ struct AppStateTests {
             missingConfiguredModelLabels: ["Word-level Alignment"]
         )
 
-        let status = state.statusDisplay(port: 9748)
+        let status = state.statusDisplay(port: 7936)
 
         #expect(status == AppStatusDisplay(
             title: "Ready (word-level alignment missing)",
@@ -229,10 +229,10 @@ struct AppStateTests {
             providerState: .ready
         )
 
-        let status = state.statusDisplay(port: 9748)
+        let status = state.statusDisplay(port: 7936)
 
         #expect(status == AppStatusDisplay(
-            title: "Ready (127.0.0.1:9748)",
+            title: "Ready (127.0.0.1:7936)",
             symbolName: "checkmark.circle.fill",
             isEnabled: false,
             behavior: .none
