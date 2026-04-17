@@ -6,9 +6,9 @@
 #
 # Required environment variables:
 #   YUWP_SIGN_IDENTITY  — Developer ID Application identity
-#   YUWP_TEAM_ID        — Apple Team ID
-#   YUWP_APPLE_ID       — Apple ID email for notarytool
-#   YUWP_APP_PASSWORD   — App-specific password for notarytool
+#   Notarization auth (choose one):
+#     - YUWP_NOTARY_PROFILE (preferred; keychain profile for notarytool)
+#     - YUWP_TEAM_ID + YUWP_APPLE_ID + YUWP_APP_PASSWORD
 #   YUWP_SPARKLE_FEED_URL   — optional Sparkle appcast URL override
 #   YUWP_SPARKLE_PUBLIC_ED_KEY — optional Sparkle public key override
 #
@@ -21,9 +21,17 @@ cd "$(dirname "$0")/.."
 
 VERSION="${1:?Usage: release.sh <version>}"
 SIGN_IDENTITY="${YUWP_SIGN_IDENTITY:?Set YUWP_SIGN_IDENTITY}"
-TEAM_ID="${YUWP_TEAM_ID:?Set YUWP_TEAM_ID}"
-APPLE_ID="${YUWP_APPLE_ID:?Set YUWP_APPLE_ID}"
-APP_PASSWORD="${YUWP_APP_PASSWORD:?Set YUWP_APP_PASSWORD}"
+NOTARY_PROFILE="${YUWP_NOTARY_PROFILE:-}"
+TEAM_ID="${YUWP_TEAM_ID:-}"
+APPLE_ID="${YUWP_APPLE_ID:-}"
+APP_PASSWORD="${YUWP_APP_PASSWORD:-}"
+
+if [ -z "$NOTARY_PROFILE" ]; then
+    [ -n "$TEAM_ID" ] || { echo "Set YUWP_NOTARY_PROFILE, or set YUWP_TEAM_ID + YUWP_APPLE_ID + YUWP_APP_PASSWORD"; exit 1; }
+    [ -n "$APPLE_ID" ] || { echo "Set YUWP_NOTARY_PROFILE, or set YUWP_TEAM_ID + YUWP_APPLE_ID + YUWP_APP_PASSWORD"; exit 1; }
+    [ -n "$APP_PASSWORD" ] || { echo "Set YUWP_NOTARY_PROFILE, or set YUWP_TEAM_ID + YUWP_APPLE_ID + YUWP_APP_PASSWORD"; exit 1; }
+fi
+
 DEFAULT_SPARKLE_FEED_URL="https://github.com/duh17/yuwp/releases/latest/download/appcast.xml"
 DEFAULT_SPARKLE_PUBLIC_ED_KEY="wnLCIfY048anOcj7/J/Iv6Lp9Fmba4zQ0EjCL7k/M+E=" # gitleaks:allow public Sparkle key
 SPARKLE_FEED_URL="${YUWP_SPARKLE_FEED_URL:-$DEFAULT_SPARKLE_FEED_URL}"
@@ -177,11 +185,18 @@ codesign --force --sign "$SIGN_IDENTITY" "$DMG"
 
 # ── Notarize ───────────────────────────────────────────────────────────
 echo "=== Notarizing (this may take several minutes) ==="
-xcrun notarytool submit "$DMG" \
-    --apple-id "$APPLE_ID" \
-    --team-id "$TEAM_ID" \
-    --password "$APP_PASSWORD" \
-    --wait
+if [ -n "$NOTARY_PROFILE" ]; then
+    echo "Using notarytool keychain profile: $NOTARY_PROFILE"
+    xcrun notarytool submit "$DMG" \
+        --keychain-profile "$NOTARY_PROFILE" \
+        --wait
+else
+    xcrun notarytool submit "$DMG" \
+        --apple-id "$APPLE_ID" \
+        --team-id "$TEAM_ID" \
+        --password "$APP_PASSWORD" \
+        --wait
+fi
 
 echo "=== Stapling ==="
 xcrun stapler staple "$DMG"
