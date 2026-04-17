@@ -13,6 +13,7 @@ final class ShortcutRecorderView: NSStackView {
     }
 
     private let defaultBinding: KeyBinding
+    private let spacer = NSView(frame: .zero)
     private let bindingLabel = NSTextField(labelWithString: "")
     private let recordButton = NSButton(title: "Record…", target: nil, action: nil)
     private let resetButton = NSButton(title: "Reset Default", target: nil, action: nil)
@@ -38,19 +39,32 @@ final class ShortcutRecorderView: NSStackView {
 
 
     private func setup() {
-        bindingLabel.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        bindingLabel.font = .systemFont(ofSize: NSFont.systemFontSize)
         bindingLabel.stringValue = binding.description
+        bindingLabel.alignment = .right
+        bindingLabel.lineBreakMode = .byTruncatingMiddle
+        bindingLabel.maximumNumberOfLines = 1
         bindingLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        bindingLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         bindingLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
+
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         recordButton.target = self
         recordButton.action = #selector(toggleRecording(_:))
         recordButton.bezelStyle = .rounded
+        recordButton.setContentHuggingPriority(.required, for: .horizontal)
+        recordButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         resetButton.target = self
         resetButton.action = #selector(resetToDefault(_:))
         resetButton.bezelStyle = .rounded
+        resetButton.setContentHuggingPriority(.required, for: .horizontal)
+        resetButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
+        addArrangedSubview(spacer)
         addArrangedSubview(bindingLabel)
         addArrangedSubview(recordButton)
         addArrangedSubview(resetButton)

@@ -28,8 +28,9 @@ enum DictationChimeRole: String, Sendable {
 
     var mechanicalSoundName: NSSound.Name {
         switch self {
-        case .start: NSSound.Name("Morse")
-        case .stop: NSSound.Name("Funk")
+        // Morse is too subtle/inconsistent as a start cue on some systems.
+        case .start: NSSound.Name("Funk")
+        case .stop: NSSound.Name("Pop")
         }
     }
 }
@@ -65,17 +66,54 @@ enum DictationChimeAssetManager {
 
 @MainActor
 final class DictationChimePlayer {
+    typealias NamedSoundFactory = (NSSound.Name) -> NSSound?
+    typealias CustomSoundFactory = (URL) -> NSSound?
+
+    // Keep strong refs while playing; short-lived local NSSound instances can
+    // be deallocated before audible output begins on some systems.
+    private var activeSounds: [DictationChimeRole: NSSound] = [:]
+    private let namedSoundFactory: NamedSoundFactory
+    private let customSoundFactory: CustomSoundFactory
+    private let beep: () -> Void
+
+    init(
+        namedSoundFactory: @escaping NamedSoundFactory = { NSSound(named: $0) },
+        customSoundFactory: @escaping CustomSoundFactory = { NSSound(contentsOf: $0, byReference: false) },
+        beep: @escaping () -> Void = { NSSound.beep() }
+    ) {
+        self.namedSoundFactory = namedSoundFactory
+        self.customSoundFactory = customSoundFactory
+        self.beep = beep
+    }
+
     func play(_ role: DictationChimeRole, config: DictationChimeConfig? = nil) {
         let resolvedConfig = config ?? configForRole(role)
         let sound = sound(for: role, config: resolvedConfig)
 
-        if let sound {
-            if sound.isPlaying {
-                sound.stop()
+        guard let sound else {
+            activeSounds.removeValue(forKey: role)
+            if resolvedConfig.selection != .none {
+                yuwpLog("Chime \(role.rawValue): selection=\(resolvedConfig.selection.rawValue) resolved nil -> beep fallback")
+                beep()
             }
-            sound.play()
-        } else if resolvedConfig.selection != .none {
-            NSSound.beep()
+            return
+        }
+
+        if let prior = activeSounds[role], prior.isPlaying {
+            prior.stop()
+        }
+        activeSounds[role] = sound
+
+        let started = sound.play()
+        yuwpLog("Chime \(role.rawValue): selection=\(resolvedConfig.selection.rawValue) sound=\(sound.name ?? "custom") started=\(started)")
+
+        if !started, let fallback = namedSoundFactory(role.defaultSoundName) {
+            activeSounds[role] = fallback
+            let fallbackStarted = fallback.play()
+            yuwpLog("Chime \(role.rawValue): fallback sound=\(role.defaultSoundName) started=\(fallbackStarted)")
+            if !fallbackStarted {
+                beep()
+            }
         }
     }
 
@@ -91,22 +129,22 @@ final class DictationChimePlayer {
     private func sound(for role: DictationChimeRole, config: DictationChimeConfig) -> NSSound? {
         switch config.selection {
         case .systemDefault:
-            return NSSound(named: role.defaultSoundName)
+            return namedSoundFactory(role.defaultSoundName)
         case .soft:
-            return NSSound(named: role.softSoundName)
+            return namedSoundFactory(role.softSoundName)
         case .mechanical:
-            return NSSound(named: role.mechanicalSoundName)
+            return namedSoundFactory(role.mechanicalSoundName)
         case .none:
             return nil
         case .custom:
             guard let asset = config.customAsset else {
                 yuwpLog("Custom \(role.rawValue) chime selected but no file is configured — falling back to default")
-                return NSSound(named: role.defaultSoundName)
+                return namedSoundFactory(role.defaultSoundName)
             }
             let url = DictationChimeAssetManager.url(for: asset)
-            guard FileManager.default.fileExists(atPath: url.path), let sound = NSSound(contentsOf: url, byReference: false) else {
+            guard FileManager.default.fileExists(atPath: url.path), let sound = customSoundFactory(url) else {
                 yuwpLog("Custom \(role.rawValue) chime missing or unreadable at: \(url.path) — falling back to default")
-                return NSSound(named: role.defaultSoundName)
+                return namedSoundFactory(role.defaultSoundName)
             }
             return sound
         }
