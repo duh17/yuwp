@@ -1,3 +1,4 @@
+import ASRIPC
 import Foundation
 import Testing
 @testable import Yuwp
@@ -142,6 +143,39 @@ struct SettingsStoreTests {
         #expect(!store.canDownloadAligner)
     }
 
+    @Test @MainActor func transportDescriptionAndPortDescriptionReflectModeAndTransport() {
+        var snapshot = makeSnapshot()
+        snapshot.serverMode = .localhost
+        snapshot.asrTransport = .stdio
+        let localhostStdio = SettingsStore(snapshot: snapshot)
+        #expect(localhostStdio.asrTransportDescriptionText.contains("direct pipes"))
+        #expect(localhostStdio.serverPortDescriptionText.contains("does not use a local TCP port"))
+
+        snapshot.asrTransport = .http
+        let localhostHttp = SettingsStore(snapshot: snapshot)
+        #expect(localhostHttp.asrTransportDescriptionText.contains("localhost HTTP"))
+        #expect(localhostHttp.serverPortDescriptionText == "Use a custom port if you need Yuwp to avoid another local service.")
+
+        snapshot.serverMode = .allInterfaces
+        let lan = SettingsStore(snapshot: snapshot)
+        #expect(lan.asrTransportDescriptionText == "Local network mode requires HTTP transport.")
+
+        snapshot.serverMode = .off
+        let off = SettingsStore(snapshot: snapshot)
+        #expect(off.asrTransportDescriptionText == "Choose how Yuwp talks to its ASR process when the server is enabled.")
+    }
+
+    @Test @MainActor func setASRTransportUpdatesSnapshotAndCallback() {
+        let store = SettingsStore(snapshot: makeSnapshot())
+        var callback: ASRIPCTransport?
+        store.onASRTransportChange = { callback = $0 }
+
+        store.setASRTransport(.stdio)
+
+        #expect(store.snapshot.asrTransport == .stdio)
+        #expect(callback == .stdio)
+    }
+
     private func makeSnapshot(transcriptionModel: String = "mlx-community/Qwen3-ASR-0.6B-4bit") -> SettingsSnapshot {
         SettingsSnapshot(
             dictationBinding: .ctrlBacktick,
@@ -149,6 +183,7 @@ struct SettingsStoreTests {
             availableAudioInputs: [],
             serverMode: .localhost,
             serverPort: 9748,
+            asrTransport: .http,
             transcriptionModel: transcriptionModel,
             batchCommitEnabled: true,
             transcriptionDownloadStatus: nil,

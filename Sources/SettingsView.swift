@@ -1,3 +1,4 @@
+import ASRIPC
 import SwiftUI
 
 private enum SettingsSidebarSection: String, CaseIterable, Identifiable {
@@ -160,7 +161,7 @@ struct SettingsView: View {
                     defaultBinding: .ctrlBacktick,
                     onRecordingChange: { store.setDictationBindingRecording($0) }
                 )
-                .frame(width: 360, height: 30, alignment: .trailing)
+                .frame(minWidth: 360, idealWidth: 520, maxWidth: 620, minHeight: 30, alignment: .trailing)
                 .accessibilityLabel("Shortcut")
             }
 
@@ -232,10 +233,12 @@ struct SettingsView: View {
                     Button("Choose…") {
                         store.chooseModelDirectory()
                     }
+                    .fixedSize(horizontal: true, vertical: false)
 
                     Button("Use") {
                         store.applyTranscriptionModelDraft()
                     }
+                    .fixedSize(horizontal: true, vertical: false)
                 }
             }
 
@@ -272,6 +275,8 @@ struct SettingsView: View {
                     Button(store.downloadButtonTitle) {
                         store.downloadSelectedModel()
                     }
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
                     .disabled(!store.canDownloadSelectedModel)
                 }
             }
@@ -286,11 +291,15 @@ struct SettingsView: View {
                     Text(store.alignerModelDisplayName)
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                         .frame(width: 260, alignment: .trailing)
 
                     Button(store.alignerDownloadButtonTitle) {
                         store.downloadModel(repoId: store.snapshot.alignerModelRepoId)
                     }
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
                     .disabled(!store.canDownloadAligner)
                 }
             }
@@ -334,8 +343,11 @@ struct SettingsView: View {
             ) {
                 HStack(spacing: 8) {
                     Button("Choose…") { store.chooseRecordingsDirectory() }
+                        .fixedSize(horizontal: true, vertical: false)
                     Button("Reset Default") { store.resetRecordingsDirectory() }
+                        .fixedSize(horizontal: true, vertical: false)
                     Button("Reveal in Finder") { store.revealRecordingsDirectory() }
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 .disabled(!store.snapshot.saveRecordings)
             }
@@ -369,9 +381,34 @@ struct SettingsView: View {
 
                 SettingsDivider()
 
+                SettingsControlRow(
+                    title: "App Transport",
+                    subtitle: store.asrTransportDescriptionText,
+                    topAligned: true
+                ) {
+                    Picker("App transport", selection: Binding(
+                        get: { store.snapshot.asrTransport.rawValue },
+                        set: { rawValue in
+                            if let transport = ASRIPCTransport(rawValue: rawValue) {
+                                store.setASRTransport(transport)
+                            }
+                        }
+                    )) {
+                        ForEach(ASRIPCTransport.allCases, id: \.rawValue) { transport in
+                            Text(transport.settingsTitle).tag(transport.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 220, alignment: .trailing)
+                    .disabled(store.snapshot.serverMode == .allInterfaces)
+                    .opacity(store.snapshot.serverMode == .allInterfaces ? 0.55 : 1.0)
+                }
+
+                SettingsDivider()
+
                 SettingsBlockRow(
                     title: "Port",
-                    subtitle: "Use a custom port if you need Yuwp to avoid another local service.",
+                    subtitle: store.serverPortDescriptionText,
                     muted: store.snapshot.serverMode == .off
                 ) {
                     HStack(spacing: 8) {
@@ -383,6 +420,7 @@ struct SettingsView: View {
                         Button("Apply") {
                             store.applyServerPortDraft()
                         }
+                        .fixedSize(horizontal: true, vertical: false)
 
                         Text("1–65535")
                             .font(.footnote)
@@ -518,6 +556,7 @@ struct SettingsView: View {
                     Button("Preview") {
                         store.previewChime(role)
                     }
+                    .fixedSize(horizontal: true, vertical: false)
                 }
 
                 if store.chimeConfig(for: role).selection == .custom {
@@ -528,6 +567,7 @@ struct SettingsView: View {
                         Button("Choose…") {
                             store.chooseCustomChime(for: role)
                         }
+                        .fixedSize(horizontal: true, vertical: false)
                     }
                 }
             }

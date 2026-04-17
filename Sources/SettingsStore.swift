@@ -1,3 +1,4 @@
+import ASRIPC
 import Combine
 import Foundation
 
@@ -10,6 +11,7 @@ struct SettingsSnapshot: Sendable, Equatable {
 
     var serverMode: ServerMode
     var serverPort: UInt16
+    var asrTransport: ASRIPCTransport
 
     var transcriptionModel: String
     var batchCommitEnabled: Bool
@@ -49,6 +51,7 @@ final class SettingsStore: ObservableObject {
     var onExperimentalDirectTextFieldInsertionChange: ((Bool) -> Void)?
     var onExperimentalDirectTerminalInsertionChange: ((Bool) -> Void)?
     var onServerModeChange: ((ServerMode) -> Void)?
+    var onASRTransportChange: ((ASRIPCTransport) -> Void)?
     var onServerPortChange: ((UInt16) -> Void)?
     var onSaveRecordingsChange: ((Bool) -> Void)?
     var onDiagnosticLoggingChange: ((Bool) -> Void)?
@@ -119,6 +122,24 @@ final class SettingsStore: ObservableObject {
         case .allInterfaces:
             return "Makes the server available on your local network so other devices can connect to this Mac. This API is unauthenticated and unencrypted — only use on trusted networks."
         }
+    }
+
+    var asrTransportDescriptionText: String {
+        switch snapshot.serverMode {
+        case .allInterfaces:
+            return "Local network mode requires HTTP transport."
+        case .localhost:
+            return snapshot.asrTransport.settingsDescription
+        case .off:
+            return "Choose how Yuwp talks to its ASR process when the server is enabled."
+        }
+    }
+
+    var serverPortDescriptionText: String {
+        if snapshot.serverMode == .localhost, snapshot.asrTransport == .stdio {
+            return "Standard I/O transport does not use a local TCP port. This value is remembered for HTTP mode and local-network serving."
+        }
+        return "Use a custom port if you need Yuwp to avoid another local service."
     }
 
     var recordingsPathText: String {
@@ -279,6 +300,11 @@ final class SettingsStore: ObservableObject {
     func setServerMode(_ mode: ServerMode) {
         snapshot.serverMode = mode
         onServerModeChange?(mode)
+    }
+
+    func setASRTransport(_ transport: ASRIPCTransport) {
+        snapshot.asrTransport = transport
+        onASRTransportChange?(transport)
     }
 
     func applyServerPortDraft() {

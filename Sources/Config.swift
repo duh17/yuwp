@@ -1,3 +1,4 @@
+import ASRIPC
 import Foundation
 
 enum KeyBindingActivation: String, Sendable, Codable {
@@ -41,6 +42,46 @@ enum ServerMode: String, Sendable, CaseIterable {
     /// The app itself should always talk to the local server through loopback,
     /// even when the server is bound to all interfaces.
     var clientHost: String { "127.0.0.1" }
+}
+
+enum ServerRuntimePolicy {
+    static func effectiveTransport(
+        serverMode: ServerMode,
+        requestedTransport: ASRIPCTransport
+    ) -> ASRIPCTransport {
+        serverMode == .allInterfaces ? .http : requestedTransport
+    }
+
+    static func canUseTransport(_ transport: ASRIPCTransport, in serverMode: ServerMode) -> Bool {
+        transport != .stdio || serverMode != .allInterfaces
+    }
+
+    static func shouldRestartProviderForPortChange(
+        serverMode: ServerMode,
+        transport: ASRIPCTransport
+    ) -> Bool {
+        !(serverMode == .localhost && transport == .stdio)
+    }
+}
+
+extension ASRIPCTransport {
+    var settingsTitle: String {
+        switch self {
+        case .http:
+            "HTTP"
+        case .stdio:
+            "Standard I/O"
+        }
+    }
+
+    var settingsDescription: String {
+        switch self {
+        case .http:
+            "Uses localhost HTTP for app ↔ ASR process communication. Required for local network mode."
+        case .stdio:
+            "Uses direct pipes (stdin/stdout) between app and ASR process. No local HTTP overhead."
+        }
+    }
 }
 
 /// Concrete global key combo binding.
@@ -435,6 +476,16 @@ final class Config {
         }
         set {
             defaults.set(Int(newValue), forKey: "serverPort")
+        }
+    }
+
+    var asrTransport: ASRIPCTransport {
+        get {
+            let raw = defaults.string(forKey: "asrTransport") ?? ASRIPCTransport.stdio.rawValue
+            return ASRIPCTransport(rawValue: raw) ?? .stdio
+        }
+        set {
+            defaults.set(newValue.rawValue, forKey: "asrTransport")
         }
     }
 

@@ -1,3 +1,5 @@
+import ASRIPC
+import Darwin
 import Foundation
 
 private final class LockedBox<T>: @unchecked Sendable {
@@ -21,6 +23,200 @@ private final class LockedBox<T>: @unchecked Sendable {
     }
 }
 
+private final class NativeASRStdioBridge: @unchecked Sendable {
+    private enum BridgeError: Error {
+        case closed
+        case timeout
+        case invalidResponse(String)
+        case server(String)
+    }
+
+    private let inputHandle: FileHandle
+    private let outputHandle: FileHandle
+    private let queue = DispatchQueue(label: "yuwp.asr-stdio-bridge", qos: .userInitiated)
+
+    private var nextRequestID: UInt64 = 1
+    private var closed = false
+
+    init(inputHandle: FileHandle, outputHandle: FileHandle) {
+        self.inputHandle = inputHandle
+        self.outputHandle = outputHandle
+    }
+
+    deinit {
+        close()
+    }
+
+    func close() {
+        queue.sync {
+            guard !closed else { return }
+            closed = true
+            inputHandle.closeFile()
+            outputHandle.closeFile()
+        }
+    }
+
+    func isReady(timeout: TimeInterval = 2) -> Bool {
+        do {
+            let response = try request(command: .info, sessionID: nil, binary: Data(), timeout: timeout)
+            return response.status == "ready"
+        } catch {
+            return false
+        }
+    }
+
+    func createSession(timeout: TimeInterval = 10) -> String? {
+        perform(command: .create, sessionID: nil, binary: Data(), timeout: timeout)?.sessionID
+    }
+
+    func feed(sessionID: String, pcmData: Data, timeout: TimeInterval = 30) -> TranscriptUpdate? {
+        guard let response = perform(command: .feed, sessionID: sessionID, binary: pcmData, timeout: timeout) else {
+            return nil
+        }
+        return Self.makeTranscriptUpdate(from: response, fallbackKind: .partial)
+    }
+
+    func stop(sessionID: String, timeout: TimeInterval = 30) -> TranscriptUpdate? {
+        guard let response = perform(command: .stop, sessionID: sessionID, binary: Data(), timeout: timeout) else {
+            return nil
+        }
+        return Self.makeTranscriptUpdate(from: response, fallbackKind: .final)
+    }
+
+    private func perform(
+        command: ASRIPCCommand,
+        sessionID: String?,
+        binary: Data,
+        timeout: TimeInterval
+    ) -> ASRIPCResponse? {
+        do {
+            return try request(command: command, sessionID: sessionID, binary: binary, timeout: timeout)
+        } catch BridgeError.server(let message) {
+            yuwpLog("ASR stdio request failed (\(command.rawValue)): \(message)")
+            return nil
+        } catch {
+            close()
+            yuwpLog("ASR stdio transport failed (\(command.rawValue)): \(error)")
+            return nil
+        }
+    }
+
+    private func request(
+        command: ASRIPCCommand,
+        sessionID: String?,
+        binary: Data,
+        timeout: TimeInterval
+    ) throws -> ASRIPCResponse {
+        try queue.sync {
+            guard !closed else { throw BridgeError.closed }
+
+            let requestID = nextRequestID
+            nextRequestID &+= 1
+
+            let request = ASRIPCRequest(id: requestID, command: command, sessionID: sessionID)
+            let frame = try ASRIPCCodec.encode(request, binary: binary)
+            try writeAll(fd: inputHandle.fileDescriptor, data: frame)
+
+            let deadline = Date().addingTimeInterval(timeout)
+            while true {
+                let header = try readExact(fd: outputHandle.fileDescriptor, count: ASRIPCFrameCodec.headerSize, deadline: deadline)
+                guard let lengths = ASRIPCFrameCodec.decodeHeader(header) else {
+                    throw BridgeError.invalidResponse("invalid response header")
+                }
+                let metadata = try readExact(fd: outputHandle.fileDescriptor, count: lengths.metadataLength, deadline: deadline)
+                _ = try readExact(fd: outputHandle.fileDescriptor, count: lengths.binaryLength, deadline: deadline)
+
+                let response = try ASRIPCCodec.decodeResponse(metadata: metadata)
+                guard response.id == requestID else {
+                    yuwpLog("ASR stdio out-of-order response id=\(response.id), expected=\(requestID)")
+                    continue
+                }
+                if !response.ok {
+                    throw BridgeError.server(response.error ?? "request failed")
+                }
+                return response
+            }
+        }
+    }
+
+    private func writeAll(fd: Int32, data: Data) throws {
+        var offset = 0
+        let success = data.withUnsafeBytes { rawBuffer -> Bool in
+            guard let base = rawBuffer.baseAddress else { return true }
+
+            while offset < data.count {
+                let count = Darwin.write(fd, base.advanced(by: offset), data.count - offset)
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    return false
+                }
+                if count == 0 { return false }
+                offset += count
+            }
+            return true
+        }
+
+        guard success else { throw BridgeError.closed }
+    }
+
+    private func readExact(fd: Int32, count: Int, deadline: Date) throws -> Data {
+        guard count >= 0 else {
+            throw BridgeError.invalidResponse("negative length")
+        }
+        if count == 0 { return Data() }
+
+        var buffer = [UInt8](repeating: 0, count: count)
+        var offset = 0
+
+        while offset < count {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { throw BridgeError.timeout }
+            guard pollReadable(fd: fd, timeout: remaining) else { throw BridgeError.timeout }
+
+            let readCount = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
+                guard let base = rawBuffer.baseAddress else { return -1 }
+                return Darwin.read(fd, base.advanced(by: offset), count - offset)
+            }
+
+            if readCount == 0 { throw BridgeError.closed }
+            if readCount < 0 {
+                if errno == EINTR { continue }
+                throw BridgeError.closed
+            }
+            offset += readCount
+        }
+
+        return Data(buffer)
+    }
+
+    private func pollReadable(fd: Int32, timeout: TimeInterval) -> Bool {
+        let timeoutMS = Int32(min(Double(Int32.max), max(1, timeout * 1000.0)))
+        var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+
+        while true {
+            let result = Darwin.poll(&descriptor, 1, timeoutMS)
+            if result > 0 { return true }
+            if result == 0 { return false }
+            if errno == EINTR { continue }
+            return false
+        }
+    }
+
+    private static func makeTranscriptUpdate(
+        from response: ASRIPCResponse,
+        fallbackKind: TranscriptUpdateKind
+    ) -> TranscriptUpdate? {
+        guard let text = response.text else { return nil }
+        let kind = response.updateKind.flatMap(TranscriptUpdateKind.init(rawValue:)) ?? fallbackKind
+        return TranscriptUpdate(
+            kind: kind,
+            text: text,
+            committedText: response.committedText,
+            activeText: response.activeText
+        )
+    }
+}
+
 // MARK: - ASR Server State
 
 /// State of the ASR server process, observed by the menu bar.
@@ -38,13 +234,22 @@ private struct ASRServerConfiguration: Sendable, Equatable {
     var diagnosticLoggingEnabled: Bool = false
     var port: UInt16
     var serverMode: ServerMode = .localhost
+    var asrTransport: ASRIPCTransport = .stdio
 
     var bindHost: String? { serverMode.bindHost }
     var clientHost: String { serverMode.clientHost }
+
+    var launchTransport: ASRIPCTransport {
+        ServerRuntimePolicy.effectiveTransport(
+            serverMode: serverMode,
+            requestedTransport: asrTransport
+        )
+    }
 }
 
 private actor NativeASRServerLifecycle {
     private let stateSink: @Sendable (ASRServerState) -> Void
+    private let stdioBridgeBox: LockedBox<NativeASRStdioBridge?>
 
     private var process: Process?
     private var readyPollTask: Task<Void, Never>?
@@ -56,8 +261,12 @@ private actor NativeASRServerLifecycle {
 
     private static let maxRestartAttempts = 5
 
-    init(stateSink: @escaping @Sendable (ASRServerState) -> Void) {
+    init(
+        stateSink: @escaping @Sendable (ASRServerState) -> Void,
+        stdioBridgeBox: LockedBox<NativeASRStdioBridge?>
+    ) {
         self.stateSink = stateSink
+        self.stdioBridgeBox = stdioBridgeBox
     }
 
     func start(configuration: ASRServerConfiguration) -> ASRServerState {
@@ -68,10 +277,17 @@ private actor NativeASRServerLifecycle {
         isIntentionalShutdown = false
         cancelBackgroundTasks()
 
+        stdioBridgeBox.set(nil)
+
         guard let bindHost = configuration.bindHost else {
             process = nil
             yuwpLog("swift-mlx-asr-server disabled")
             return .disabled
+        }
+
+        let transport = configuration.launchTransport
+        if configuration.asrTransport == .stdio, configuration.serverMode != .localhost {
+            yuwpLog("ASR stdio transport requested but unavailable for \(configuration.serverMode.description); falling back to HTTP")
         }
 
         guard let transcriptionModelPath = NativeASRProvider.resolveModelPath(configuration.transcriptionModel) else {
@@ -86,18 +302,22 @@ private actor NativeASRServerLifecycle {
             return .error("swift-mlx-asr-server not found")
         }
 
-        NativeASRProvider.cleanupOrphanedManagedServerIfNeeded(
-            port: configuration.port,
-            serverBinaryPath: serverBin
-        )
+        if transport == .http {
+            NativeASRProvider.cleanupOrphanedManagedServerIfNeeded(
+                port: configuration.port,
+                serverBinaryPath: serverBin
+            )
+        }
 
         let proc = Process()
         let stderrPipe = Pipe()
-        let alignerModelPath = NativeASRProvider.resolveModelPath(NativeASRProvider.defaultAlignerModel)
+        let stdinPipe = transport == .stdio ? Pipe() : nil
+        let stdoutPipe = transport == .stdio ? Pipe() : nil
 
         proc.executableURL = URL(fileURLWithPath: serverBin)
         var arguments = [
             transcriptionModelPath,
+            "--transport", transport.rawValue,
             "--port", "\(configuration.port)",
             "--host", bindHost,
             "--parent-pid", "\(ProcessInfo.processInfo.processIdentifier)",
@@ -107,17 +327,12 @@ private actor NativeASRServerLifecycle {
         } else {
             arguments += ["--disable-batch-retranscribe"]
         }
-        if let alignerModelPath {
-            arguments += ["--aligner-model", alignerModelPath]
-        } else {
-            yuwpLog("Aligner model not found locally: \(NativeASRProvider.defaultAlignerModel) — subtitles disabled")
-        }
         proc.arguments = arguments
         var childEnvironment = ProcessInfo.processInfo.environment
         childEnvironment["YUWP_DIAGNOSTIC_LOGGING"] = configuration.diagnosticLoggingEnabled ? "1" : "0"
         proc.environment = childEnvironment
-        proc.standardInput = FileHandle.nullDevice
-        proc.standardOutput = FileHandle.nullDevice
+        proc.standardInput = stdinPipe ?? FileHandle.nullDevice
+        proc.standardOutput = stdoutPipe ?? FileHandle.nullDevice
         proc.standardError = stderrPipe
 
         stderrPipe.fileHandleForReading.readabilityHandler = { handle in
@@ -134,7 +349,8 @@ private actor NativeASRServerLifecycle {
                     processIdentifier: pid,
                     terminationStatus: status,
                     generation: generation,
-                    port: configuration.port
+                    port: configuration.port,
+                    transport: transport
                 )
             }
         }
@@ -143,19 +359,27 @@ private actor NativeASRServerLifecycle {
             try proc.run()
         } catch {
             process = nil
+            stdioBridgeBox.set(nil)
             yuwpLog("Failed to start swift-mlx-asr-server: \(error)")
             scheduleRestart(generation: generation)
             return .error("Failed to start server")
         }
 
         process = proc
-        if let alignerModelPath {
-            yuwpLog("swift-mlx-asr-server started (PID: \(proc.processIdentifier), aligner: \(URL(fileURLWithPath: alignerModelPath).lastPathComponent))")
+
+        if transport == .stdio, let stdinPipe, let stdoutPipe {
+            let bridge = NativeASRStdioBridge(
+                inputHandle: stdinPipe.fileHandleForWriting,
+                outputHandle: stdoutPipe.fileHandleForReading
+            )
+            stdioBridgeBox.set(bridge)
         } else {
-            yuwpLog("swift-mlx-asr-server started (PID: \(proc.processIdentifier))")
+            stdioBridgeBox.set(nil)
         }
 
-        scheduleReadyPoll(generation: generation, configuration: configuration)
+        yuwpLog("swift-mlx-asr-server started (PID: \(proc.processIdentifier), transport: \(transport.rawValue))")
+
+        scheduleReadyPoll(generation: generation, configuration: configuration, transport: transport)
         return .starting
     }
 
@@ -165,6 +389,11 @@ private actor NativeASRServerLifecycle {
         activeConfiguration = nil
         restartAttempts = 0
         cancelBackgroundTasks()
+
+        if let bridge = stdioBridgeBox.get() {
+            bridge.close()
+            stdioBridgeBox.set(nil)
+        }
 
         if let proc = process, proc.isRunning {
             kill(proc.processIdentifier, SIGTERM)
@@ -176,20 +405,36 @@ private actor NativeASRServerLifecycle {
         return targetState
     }
 
-    private func scheduleReadyPoll(generation: UInt64, configuration: ASRServerConfiguration) {
+    private func scheduleReadyPoll(
+        generation: UInt64,
+        configuration: ASRServerConfiguration,
+        transport: ASRIPCTransport
+    ) {
         readyPollTask?.cancel()
         readyPollTask = Task.detached { [weak self] in
             guard let self else { return }
             for _ in 0..<60 {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard !Task.isCancelled else { return }
-                if NativeASRProvider.checkReady(host: configuration.clientHost, port: configuration.port) {
+
+                let ready = await self.checkReady(configuration: configuration, transport: transport)
+                if ready {
                     await self.handleReady(generation: generation)
                     return
                 }
             }
             guard !Task.isCancelled else { return }
             await self.handleStartupTimeout(generation: generation)
+        }
+    }
+
+    private func checkReady(configuration: ASRServerConfiguration, transport: ASRIPCTransport) -> Bool {
+        switch transport {
+        case .http:
+            return NativeASRProvider.checkReady(host: configuration.clientHost, port: configuration.port)
+        case .stdio:
+            guard let bridge = stdioBridgeBox.get() else { return false }
+            return bridge.isReady(timeout: 1.5)
         }
     }
 
@@ -211,7 +456,8 @@ private actor NativeASRServerLifecycle {
         processIdentifier: Int32,
         terminationStatus: Int32,
         generation: UInt64,
-        port: UInt16
+        port: UInt16,
+        transport: ASRIPCTransport
     ) {
         guard generation == launchGeneration, !isIntentionalShutdown else { return }
 
@@ -220,9 +466,14 @@ private actor NativeASRServerLifecycle {
         if process?.processIdentifier == processIdentifier {
             process = nil
         }
+        if let bridge = stdioBridgeBox.get() {
+            bridge.close()
+            stdioBridgeBox.set(nil)
+        }
 
         let code = terminationStatus
-        if let listenerPID = NativeASRProvider.listeningPID(on: port), listenerPID != processIdentifier {
+        if transport == .http,
+           let listenerPID = NativeASRProvider.listeningPID(on: port), listenerPID != processIdentifier {
             let owner = NativeASRProvider.command(for: listenerPID) ?? "pid \(listenerPID)"
             yuwpLog("swift-mlx-asr-server failed to own port \(port); listener PID \(listenerPID): \(owner)")
             stateSink(.error("Port \(port) already in use"))
@@ -273,10 +524,9 @@ private actor NativeASRServerLifecycle {
 // MARK: - Native ASR Provider
 
 /// Manages the native ASR server process (swift-mlx-asr-server).
-/// Communicates via HTTP on localhost.
 ///
 /// Launches `swift-mlx-asr-server` as a child process, monitors its health,
-/// and provides STT sessions via the HTTP streaming API.
+/// and provides STT sessions over either localhost HTTP or stdio IPC.
 @MainActor
 final class NativeASRProvider: SttProvider {
     // SttProvider
@@ -321,11 +571,21 @@ final class NativeASRProvider: SttProvider {
         set { configuration.serverMode = newValue }
     }
 
-    private lazy var lifecycle = NativeASRServerLifecycle { [weak self] newState in
-        Task { @MainActor [weak self] in
-            self?.applyState(newState)
-        }
+    var asrTransport: ASRIPCTransport {
+        get { configuration.asrTransport }
+        set { configuration.asrTransport = newValue }
     }
+
+    private let stdioBridgeBox = LockedBox<NativeASRStdioBridge?>(nil)
+
+    private lazy var lifecycle = NativeASRServerLifecycle(
+        stateSink: { [weak self] newState in
+            Task { @MainActor [weak self] in
+                self?.applyState(newState)
+            }
+        },
+        stdioBridgeBox: stdioBridgeBox
+    )
 
     private var lifecycleCommandTask: Task<Void, Never>?
     private var latestLifecycleCommandID: UInt64 = 0
@@ -355,7 +615,17 @@ final class NativeASRProvider: SttProvider {
     // MARK: - SttProvider
 
     func makeSession() -> any SttSession {
-        NativeASRSession(host: configuration.clientHost, port: configuration.port)
+        switch configuration.launchTransport {
+        case .http:
+            return NativeASRSession(host: configuration.clientHost, port: configuration.port)
+        case .stdio:
+            if let bridge = stdioBridgeBox.get() {
+                return NativeASRStdioSession(bridge: bridge)
+            }
+            let message = "ASR stdio bridge unavailable — restart Yuwp or switch App Transport to HTTP"
+            yuwpLog(message)
+            return NativeASRUnavailableSession(reason: message)
+        }
     }
 
     // MARK: - State
@@ -507,6 +777,114 @@ final class NativeASRProvider: SttProvider {
     }
 }
 
+// MARK: - Native ASR Unavailable Session
+
+/// Fails immediately when a transport-specific session cannot be created.
+fileprivate final class NativeASRUnavailableSession: SttSession, @unchecked Sendable {
+    var onUpdate: ((TranscriptUpdate) -> Void)?
+    var onError: ((String) -> Void)?
+    var debugSessionID: String? { nil }
+
+    private let reason: String
+
+    init(reason: String) {
+        self.reason = reason
+    }
+
+    @MainActor
+    func begin(language: String?) {
+        onError?(reason)
+    }
+
+    func feedAudio(_ pcmData: Data) {
+        // Intentionally no-op: no backing transport is available.
+    }
+
+    func end() {
+        onUpdate?(TranscriptUpdate(kind: .final, text: ""))
+    }
+}
+
+// MARK: - Native ASR Stdio Session
+
+/// Stdio-based STT session communicating with swift-mlx-asr-server over framed stdin/stdout.
+/// Audio feeds are serialized on a background queue to avoid blocking the audio thread.
+fileprivate final class NativeASRStdioSession: SttSession, @unchecked Sendable {
+    var onUpdate: ((TranscriptUpdate) -> Void)?
+    var onError: ((String) -> Void)?
+    var debugSessionID: String? { sessionIDBox.get() }
+
+    private let bridge: NativeASRStdioBridge
+    private var sessionId: String?
+    private var pendingChunks: [Data] = []
+    private let maxPendingChunks = 8
+    private let sessionIDBox = LockedBox<String?>(nil)
+    private let queue = DispatchQueue(label: "yuwp.asr-stdio-session", qos: .userInitiated)
+
+    init(bridge: NativeASRStdioBridge) {
+        self.bridge = bridge
+    }
+
+    func begin(language: String?) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard let sid = self.bridge.createSession() else {
+                self.onError?("Failed to create ASR session")
+                return
+            }
+            self.sessionId = sid
+            self.sessionIDBox.set(sid)
+
+            if !self.pendingChunks.isEmpty {
+                let buffered = self.pendingChunks
+                self.pendingChunks.removeAll(keepingCapacity: true)
+                for chunk in buffered {
+                    _ = self.sendChunk(sid: sid, pcmData: chunk)
+                }
+            }
+        }
+    }
+
+    func feedAudio(_ pcmData: Data) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard let sid = self.sessionId else {
+                if self.pendingChunks.count >= self.maxPendingChunks {
+                    self.pendingChunks.removeFirst(self.pendingChunks.count - self.maxPendingChunks + 1)
+                }
+                self.pendingChunks.append(pcmData)
+                return
+            }
+            _ = self.sendChunk(sid: sid, pcmData: pcmData)
+        }
+    }
+
+    func end() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard let sid = self.sessionId else {
+                self.onUpdate?(TranscriptUpdate(kind: .final, text: ""))
+                return
+            }
+            self.sessionId = nil
+            self.pendingChunks.removeAll(keepingCapacity: false)
+            if let update = self.bridge.stop(sessionID: sid) {
+                self.onUpdate?(update)
+            } else {
+                self.onUpdate?(TranscriptUpdate(kind: .final, text: ""))
+            }
+        }
+    }
+
+    private func sendChunk(sid: String, pcmData: Data) -> Bool {
+        guard let update = bridge.feed(sessionID: sid, pcmData: pcmData), !update.text.isEmpty else {
+            return false
+        }
+        self.onUpdate?(update)
+        return true
+    }
+}
+
 // MARK: - Native ASR HTTP Session
 
 /// HTTP-based STT session communicating with swift-mlx-asr-server.
@@ -518,6 +896,8 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
 
     private let baseURL: String
     private var sessionId: String?
+    private var pendingChunks: [Data] = []
+    private let maxPendingChunks = 8
     private let sessionIDBox = LockedBox<String?>(nil)
     private let queue = DispatchQueue(label: "yuwp.asr-session", qos: .userInitiated)
 
@@ -536,17 +916,29 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
             }
             self.sessionId = sid
             self.sessionIDBox.set(sid)
+
+            // Flush audio captured while session creation was in flight.
+            if !self.pendingChunks.isEmpty {
+                let buffered = self.pendingChunks
+                self.pendingChunks.removeAll(keepingCapacity: true)
+                for chunk in buffered {
+                    _ = self.sendChunk(sid: sid, pcmData: chunk)
+                }
+            }
         }
     }
 
     func feedAudio(_ pcmData: Data) {
         queue.async { [weak self] in
-            guard let self, let sid = self.sessionId else { return }
-            guard let data = self.syncHTTP("POST", path: "\(self.baseURL)/\(sid)", body: pcmData),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let update = Self.parseTranscriptUpdate(json, fallbackKind: .partial),
-                  !update.text.isEmpty else { return }
-            self.onUpdate?(update)
+            guard let self else { return }
+            guard let sid = self.sessionId else {
+                if self.pendingChunks.count >= self.maxPendingChunks {
+                    self.pendingChunks.removeFirst(self.pendingChunks.count - self.maxPendingChunks + 1)
+                }
+                self.pendingChunks.append(pcmData)
+                return
+            }
+            _ = self.sendChunk(sid: sid, pcmData: pcmData)
         }
     }
 
@@ -558,6 +950,7 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
                 return
             }
             self.sessionId = nil
+            self.pendingChunks.removeAll(keepingCapacity: false)
             guard let data = self.syncHTTP("DELETE", path: "\(self.baseURL)/\(sid)"),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let update = Self.parseTranscriptUpdate(json, fallbackKind: .final) else {
@@ -589,6 +982,15 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
             committedText: json["committed_text"] as? String,
             activeText: json["active_text"] as? String
         )
+    }
+
+    private func sendChunk(sid: String, pcmData: Data) -> Bool {
+        guard let data = self.syncHTTP("POST", path: "\(self.baseURL)/\(sid)", body: pcmData),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let update = Self.parseTranscriptUpdate(json, fallbackKind: .partial),
+              !update.text.isEmpty else { return false }
+        self.onUpdate?(update)
+        return true
     }
 
     /// Synchronous HTTP request (always called on the serial background queue).

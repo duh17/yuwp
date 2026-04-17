@@ -1,3 +1,4 @@
+import ASRIPC
 import AppKit
 import AVFoundation
 import Sparkle
@@ -66,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let p = NativeASRProvider(port: runtimePort)
         p.serverMode = Config.shared.serverMode
+        p.asrTransport = Config.shared.asrTransport
         p.transcriptionModel = Config.shared.transcriptionModel
         p.batchCommitEnabled = Config.shared.batchCommitEnabled
         p.diagnosticLoggingEnabled = Config.shared.diagnosticLoggingEnabled
@@ -94,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setYuwpDiagnosticLoggingEnabled(Config.shared.diagnosticLoggingEnabled)
-        normalizeModelSelection()
+        normalizeStartupConfiguration()
         syncAppStateFromConfig()
         audioCapture.inputSelection = Config.shared.audioInputSelection
         micPanel.animationConfig = Config.shared.micPanelAnimation
@@ -196,7 +198,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func syncAppStateFromConfig() {
         appState.settings = AppSettingsState(
-            serverMode: Config.shared.serverMode
+            serverMode: Config.shared.serverMode,
+            asrTransport: Config.shared.asrTransport
         )
         appState.missingConfiguredModelLabels = missingConfiguredModelLabels()
     }
@@ -211,10 +214,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func syncRuntimeUI() {
         HotkeyManager.sessionActive = appState.sessionPhase.isCapturingAudio
-        statusItem?.button?.image = NSImage(
-            systemSymbolName: appState.statusItemSymbolName,
+        statusItem?.button?.image = statusBarIconImage(
+            listening: appState.sessionPhase == .listening,
             accessibilityDescription: appState.sessionPhase == .listening ? "Yuwp — Listening" : "Yuwp"
         )
+    }
+
+    private func statusBarIconImage(listening: Bool, accessibilityDescription: String) -> NSImage? {
+        guard let symbol = NSImage(
+            systemSymbolName: listening ? "waveform.circle.fill" : "waveform",
+            accessibilityDescription: accessibilityDescription
+        ) else {
+            return nil
+        }
+        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+        let configured = symbol.withSymbolConfiguration(config) ?? symbol
+        configured.isTemplate = true
+        return configured
     }
 
     private func run(_ effects: [AppEffect]) {
@@ -242,12 +258,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Hotkey Toggle
 
-    private func normalizeModelSelection() {
+    private func normalizeStartupConfiguration() {
         let shared = Config.shared
         shared.transcriptionModel = shared.transcriptionModel
         shared.batchCommitEnabled = shared.batchCommitEnabled
+        if shared.serverMode == .allInterfaces, shared.asrTransport == .stdio {
+            shared.asrTransport = .http
+        } else {
+            shared.asrTransport = shared.asrTransport
+        }
         asrProvider.transcriptionModel = shared.transcriptionModel
         asrProvider.batchCommitEnabled = shared.batchCommitEnabled
+        asrProvider.asrTransport = shared.asrTransport
     }
 
     private func setupMicPanelDismiss() {
@@ -287,8 +309,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Task { @MainActor in self?.send(.sessionStopRequested) }
         }
         session = s
+        let startChime = Config.shared.startChime
         chimePlayer.play(.start)
-        s.start()
+
+        // Give the start cue a brief head start before audio capture spins up.
+        // Capture startup can mask/cut the cue tail if we start immediately.
+        if startChime.selection == .none {
+            s.start()
+        } else {
+            let leadInMs: UInt64 = switch startChime.selection {
+            case .mechanical: 260
+            case .soft: 160
+            case .systemDefault: 180
+            case .custom: 200
+            case .none: 0
+            }
+            Task { @MainActor [weak self, weak s] in
+                try? await Task.sleep(for: .milliseconds(leadInMs))
+                guard let self, let s, self.session === s else { return }
+                s.start()
+            }
+        }
     }
 
     private func performStopDictation() {
@@ -457,7 +498,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         guard let button = statusItem.button else { return }
-        button.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Yuwp")
+        button.image = statusBarIconImage(listening: false, accessibilityDescription: "Yuwp")
 
         let menu = NSMenu()
         menu.delegate = self
@@ -573,6 +614,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             store.onServerModeChange = { [weak self] mode in
                 self?.applyServerMode(mode)
+            }
+            store.onASRTransportChange = { [weak self] transport in
+                self?.applyASRTransport(transport)
             }
             store.onServerPortChange = { [weak self] port in
                 self?.applyServerPort(port)
@@ -691,11 +735,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
+        let previousTransport = Config.shared.asrTransport
+        let effectiveTransport = ServerRuntimePolicy.effectiveTransport(
+            serverMode: mode,
+            requestedTransport: previousTransport
+        )
+
         Config.shared.serverMode = mode
         asrProvider.serverMode = mode
+        Config.shared.asrTransport = effectiveTransport
+        asrProvider.asrTransport = effectiveTransport
+
+        if effectiveTransport != previousTransport {
+            yuwpLog("ASR transport switched to HTTP because local network mode requires HTTP")
+        }
+
         syncAppStateFromConfig()
         restartProviderForSettingsChange()
         yuwpLog("Server mode changed to: \(mode.description)")
+    }
+
+    private func applyASRTransport(_ transport: ASRIPCTransport) {
+        guard transport != Config.shared.asrTransport else { return }
+
+        if !ServerRuntimePolicy.canUseTransport(transport, in: Config.shared.serverMode) {
+            showAlert(
+                title: "Standard I/O unavailable in Local network mode",
+                message: "Local network mode requires HTTP transport so other devices can connect. Switch Availability to This Mac only to use Standard I/O."
+            )
+            syncSettingsWindow()
+            return
+        }
+
+        Config.shared.asrTransport = transport
+        asrProvider.asrTransport = transport
+        syncAppStateFromConfig()
+        restartProviderForSettingsChange()
+        yuwpLog("ASR transport changed to: \(transport.settingsTitle)")
     }
 
     private func confirmLocalNetworkServerMode() -> Bool {
@@ -726,6 +802,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard port != Config.shared.serverPort else { return }
         Config.shared.serverPort = port
         asrProvider.port = port
+
+        if !ServerRuntimePolicy.shouldRestartProviderForPortChange(
+            serverMode: Config.shared.serverMode,
+            transport: Config.shared.asrTransport
+        ) {
+            syncSettingsWindow()
+            yuwpLog("Server port set to \(port) (applies when HTTP transport is active)")
+            return
+        }
+
         restartProviderForSettingsChange()
         yuwpLog("Server port changed to: \(port)")
     }
@@ -825,6 +911,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             experimentalDirectTerminalInsertionEnabled: Config.shared.experimentalDirectTerminalInsertionEnabled,
             serverMode: Config.shared.serverMode,
             serverPort: Config.shared.serverPort,
+            asrTransport: Config.shared.asrTransport,
             transcriptionModel: Config.shared.transcriptionModel,
             batchCommitEnabled: Config.shared.batchCommitEnabled,
             transcriptionDownloadStatus: transcriptionDownloadStatus,

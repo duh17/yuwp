@@ -1,3 +1,4 @@
+import ASRIPC
 import Foundation
 
 enum AppSessionPhase: String, Sendable, Equatable {
@@ -12,6 +13,7 @@ enum AppSessionPhase: String, Sendable, Equatable {
 
 struct AppSettingsState: Sendable, Equatable {
     var serverMode: ServerMode = .localhost
+    var asrTransport: ASRIPCTransport = .stdio
 }
 
 enum MicrophonePermissionState: Sendable, Equatable {
@@ -225,10 +227,14 @@ struct AppState: Sendable, Equatable {
             title = "Loading model..."
             symbolName = "arrow.trianglehead.clockwise"
         case .ready:
-            let endpoint = settings.serverMode == .allInterfaces
-                ? "0.0.0.0:\(port)"
-                : "127.0.0.1:\(port)"
-            title = "Ready (\(endpoint))"
+            if settings.serverMode == .allInterfaces || settings.asrTransport == .http {
+                let endpoint = settings.serverMode == .allInterfaces
+                    ? "0.0.0.0:\(port)"
+                    : "127.0.0.1:\(port)"
+                title = "Ready (\(endpoint))"
+            } else {
+                title = "Ready (stdio)"
+            }
             symbolName = "checkmark.circle.fill"
         case .error(let message):
             title = message

@@ -1,3 +1,4 @@
+import ASRIPC
 import Foundation
 import Testing
 @testable import Yuwp
@@ -17,6 +18,7 @@ struct ConfigMigrationTests {
         #expect(!config.experimentalDirectTerminalInsertionEnabled)
         #expect(config.serverMode == .localhost)
         #expect(config.serverPort == 9748)
+        #expect(config.asrTransport == .stdio)
         #expect(config.transcriptionModel == "mlx-community/Qwen3-ASR-0.6B-4bit")
         #expect(config.batchCommitEnabled)
         #expect(!config.diagnosticLoggingEnabled)
@@ -39,6 +41,7 @@ struct ConfigMigrationTests {
         config.experimentalDirectTerminalInsertionEnabled = true
         config.serverMode = .allInterfaces
         config.serverPort = 8899
+        config.asrTransport = .http
         config.transcriptionModel = "mlx-community/Qwen3-ASR-1.7B-bf16"
         config.batchCommitEnabled = false
         config.diagnosticLoggingEnabled = true
@@ -51,6 +54,7 @@ struct ConfigMigrationTests {
         #expect(config.experimentalDirectTerminalInsertionEnabled)
         #expect(config.serverMode == .allInterfaces)
         #expect(config.serverPort == 8899)
+        #expect(config.asrTransport == .http)
         #expect(config.transcriptionModel == "mlx-community/Qwen3-ASR-1.7B-bf16")
         #expect(!config.batchCommitEnabled)
         #expect(config.diagnosticLoggingEnabled)

@@ -1,3 +1,4 @@
+import ASRIPC
 import Foundation
 import Testing
 @testable import Yuwp
@@ -137,6 +138,23 @@ struct AppStateTests {
         ))
     }
 
+    @Test func statusDisplayShowsStdioWhenConfiguredForLocalhost() {
+        let state = AppState(
+            settings: AppSettingsState(serverMode: .localhost, asrTransport: .stdio),
+            hasAccessibilityPermission: true,
+            providerState: .ready
+        )
+
+        let status = state.statusDisplay(port: 9748)
+
+        #expect(status == AppStatusDisplay(
+            title: "Ready (stdio)",
+            symbolName: "checkmark.circle.fill",
+            isEnabled: false,
+            behavior: .none
+        ))
+    }
+
     @Test func statusDisplayShowsMicrophoneActionWhenDenied() {
         let state = AppState(
             settings: AppSettingsState(serverMode: .localhost),
@@ -202,5 +220,39 @@ struct AppStateTests {
 
         _ = state.send(.modelDownloadStatusChanged(repoId: "repo-a", status: nil))
         #expect(state.activeModelDownload == nil)
+    }
+
+    @Test func statusDisplayShowsHttpEndpointOnLocalhostWhenUsingHTTPTransport() {
+        let state = AppState(
+            settings: AppSettingsState(serverMode: .localhost, asrTransport: .http),
+            hasAccessibilityPermission: true,
+            providerState: .ready
+        )
+
+        let status = state.statusDisplay(port: 9748)
+
+        #expect(status == AppStatusDisplay(
+            title: "Ready (127.0.0.1:9748)",
+            symbolName: "checkmark.circle.fill",
+            isEnabled: false,
+            behavior: .none
+        ))
+    }
+
+    @Test func serverRuntimePolicyBehaviorIsConsistent() {
+        #expect(ServerRuntimePolicy.effectiveTransport(serverMode: .localhost, requestedTransport: .stdio) == .stdio)
+        #expect(ServerRuntimePolicy.effectiveTransport(serverMode: .localhost, requestedTransport: .http) == .http)
+        #expect(ServerRuntimePolicy.effectiveTransport(serverMode: .allInterfaces, requestedTransport: .stdio) == .http)
+        #expect(ServerRuntimePolicy.effectiveTransport(serverMode: .allInterfaces, requestedTransport: .http) == .http)
+
+        #expect(ServerRuntimePolicy.canUseTransport(.stdio, in: .localhost))
+        #expect(ServerRuntimePolicy.canUseTransport(.http, in: .localhost))
+        #expect(ServerRuntimePolicy.canUseTransport(.http, in: .allInterfaces))
+        #expect(!ServerRuntimePolicy.canUseTransport(.stdio, in: .allInterfaces))
+
+        #expect(!ServerRuntimePolicy.shouldRestartProviderForPortChange(serverMode: .localhost, transport: .stdio))
+        #expect(ServerRuntimePolicy.shouldRestartProviderForPortChange(serverMode: .localhost, transport: .http))
+        #expect(ServerRuntimePolicy.shouldRestartProviderForPortChange(serverMode: .allInterfaces, transport: .http))
+        #expect(ServerRuntimePolicy.shouldRestartProviderForPortChange(serverMode: .allInterfaces, transport: .stdio))
     }
 }
