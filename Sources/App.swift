@@ -1,6 +1,7 @@
 import ASRIPC
 import AppKit
 import AVFoundation
+import Carbon.HIToolbox
 import Sparkle
 import UniformTypeIdentifiers
 
@@ -299,10 +300,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             allowTerminalDirectInjection: Config.shared.experimentalDirectTerminalInsertionEnabled
         )
         let injector = TextInjectorFactory.capture(policy: injectorPolicy)
+        let languageHint = resolveDictationLanguageHint()
         let s = DictationSession(
             sttSession: asrProvider.makeSession(),
             textInjector: injector,
-            audioCapture: audioCapture
+            audioCapture: audioCapture,
+            languageHint: languageHint
         )
         s.onEvent = { [weak self] event in self?.handleSessionEvent(event) }
         s.onRequestStop = { [weak self] in
@@ -606,6 +609,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             store.onAudioInputSelectionChange = { [weak self] selection in
                 self?.applyAudioInputSelection(selection)
             }
+            store.onDictationLanguageModeChange = { [weak self] mode in
+                self?.applyDictationLanguageMode(mode)
+            }
+            store.onFixedDictationLanguageChange = { [weak self] language in
+                self?.applyFixedDictationLanguage(language)
+            }
             store.onExperimentalDirectTextFieldInsertionChange = { [weak self] enabled in
                 self?.applyExperimentalDirectTextFieldInsertion(enabled)
             }
@@ -722,6 +731,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         syncSettingsWindow()
         yuwpLog("Input device changed to: \(selection.summary(using: devices))")
+    }
+
+    private func applyDictationLanguageMode(_ mode: DictationLanguageMode) {
+        guard Config.shared.dictationLanguageMode != mode else { return }
+        Config.shared.dictationLanguageMode = mode
+        syncSettingsWindow()
+        yuwpLog("Dictation language mode changed to: \(mode.title)")
+    }
+
+    private func applyFixedDictationLanguage(_ language: String) {
+        guard Config.shared.fixedDictationLanguage != language else { return }
+        Config.shared.fixedDictationLanguage = language
+        syncSettingsWindow()
+        yuwpLog("Fixed dictation language changed to: \(Config.shared.fixedDictationLanguage)")
+    }
+
+    private func resolveDictationLanguageHint() -> String? {
+        let supported = Config.shared.supportedDictationLanguages
+
+        let hint: String? = switch Config.shared.dictationLanguageMode {
+        case .mixed:
+            nil
+        case .fixed:
+            Config.shared.fixedDictationLanguage
+        case .followInputSource:
+            currentInputSourceLanguage(supportedLanguages: supported)
+        }
+
+        if let hint {
+            yuwpLog("Dictation language hint: \(hint)")
+        } else {
+            yuwpLog("Dictation language hint: auto")
+        }
+
+        return hint
+    }
+
+    private func currentInputSourceLanguage(supportedLanguages: [String]) -> String? {
+        guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else {
+            return nil
+        }
+
+        let sourceID = Self.tisStringProperty(source, key: kTISPropertyInputSourceID)
+        let modeID = Self.tisStringProperty(source, key: kTISPropertyInputModeID)
+        let tags = Self.tisStringArrayProperty(source, key: kTISPropertyInputSourceLanguages) ?? []
+
+        return DictationLanguageCatalog.languageForInputSource(
+            languageTags: tags,
+            sourceID: sourceID,
+            inputModeID: modeID,
+            supportedLanguages: supportedLanguages
+        )
+    }
+
+    private static func tisStringProperty(_ source: TISInputSource, key: CFString) -> String? {
+        guard let raw = TISGetInputSourceProperty(source, key) else { return nil }
+        return Unmanaged<CFTypeRef>.fromOpaque(raw).takeUnretainedValue() as? String
+    }
+
+    private static func tisStringArrayProperty(_ source: TISInputSource, key: CFString) -> [String]? {
+        guard let raw = TISGetInputSourceProperty(source, key) else { return nil }
+        return Unmanaged<CFTypeRef>.fromOpaque(raw).takeUnretainedValue() as? [String]
     }
 
     private func applyServerMode(_ mode: ServerMode) {
@@ -907,6 +978,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             dictationBinding: Config.shared.dictationBinding,
             audioInputSelection: Config.shared.audioInputSelection,
             availableAudioInputs: inputs,
+            dictationLanguageMode: Config.shared.dictationLanguageMode,
+            fixedDictationLanguage: Config.shared.fixedDictationLanguage,
+            supportedDictationLanguages: Config.shared.supportedDictationLanguages,
             experimentalDirectTextFieldInsertionEnabled: Config.shared.experimentalDirectTextFieldInsertionEnabled,
             experimentalDirectTerminalInsertionEnabled: Config.shared.experimentalDirectTerminalInsertionEnabled,
             serverMode: Config.shared.serverMode,

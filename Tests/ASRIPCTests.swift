@@ -17,7 +17,7 @@ struct ASRIPCTests {
     }
 
     @Test func requestAndResponseCodecRoundTrip() throws {
-        let request = ASRIPCRequest(id: 42, command: .feed, sessionID: "abc123")
+        let request = ASRIPCRequest(id: 42, command: .feed, sessionID: "abc123", language: "Chinese")
         let binary = Data([0x10, 0x20])
         let encodedRequest = try ASRIPCCodec.encode(request, binary: binary)
         let requestHeader = try #require(

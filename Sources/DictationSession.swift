@@ -119,6 +119,7 @@ final class DictationSession {
     private var finalTimeoutTask: Task<Void, Never>?
     private var maxDurationTask: Task<Void, Never>?
     private var didFinalize = false
+    private let languageHint: String?
     private static let maxDurationSeconds: UInt64 = 5 * 60 // 5 minutes
 
     /// Callback for events — set by AppDelegate to update UI.
@@ -137,11 +138,14 @@ final class DictationSession {
     init(
         sttSession: any SttSession,
         textInjector: any TextInjecting,
-        audioCapture: any AudioCapturing
+        audioCapture: any AudioCapturing,
+        languageHint: String? = nil
     ) {
         self.sttSession = sttSession
         self.textInjector = textInjector
         self.audioCapture = audioCapture
+        let trimmed = languageHint?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.languageHint = (trimmed?.isEmpty == false) ? trimmed : nil
     }
 
     /// Start a dictation session. Captures the focused element, begins audio + STT.
@@ -161,7 +165,7 @@ final class DictationSession {
         sttSession.onError = { [weak self] msg in
             Task { @MainActor in self?.handleFailure(msg) }
         }
-        sttSession.begin(language: nil)
+        sttSession.begin(language: languageHint)
 
         audioCapture.onAudioLevel = { [weak self] level in
             Task { @MainActor in

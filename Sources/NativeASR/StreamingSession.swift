@@ -56,6 +56,7 @@ public final class StreamingSession: @unchecked Sendable {
     private let transcriber: Qwen3ASRTranscriber
     private let batchTranscriber: Qwen3ASRTranscriber?
     private let config: StreamConfig
+    private let language: String?
     private var audioBuffer: [Float] = []
     private var sessionAudioBuffer: [Float] = []
     private var encWindowCache: [MLXArray] = []
@@ -94,11 +95,13 @@ public final class StreamingSession: @unchecked Sendable {
     public init(
         transcriber: Qwen3ASRTranscriber,
         batchTranscriber: Qwen3ASRTranscriber? = nil,
-        config: StreamConfig = StreamConfig()
+        config: StreamConfig = StreamConfig(),
+        language: String? = nil
     ) {
         self.transcriber = transcriber
         self.batchTranscriber = batchTranscriber
         self.config = config
+        self.language = language?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.encWindowSamples = transcriber.model.config.audioConfig.nWindowInfer * ASRAudio.hopLength
         self.kvCache = transcriber.model.makeCache()
     }
@@ -459,7 +462,7 @@ public final class StreamingSession: @unchecked Sendable {
     private func buildInputEmbeds(
         encOutput: MLXArray, numEncTokens: Int, prefixTokens: [Int]
     ) -> MLXArray {
-        let promptIds = transcriber.tokenizer.buildPrompt(numAudioTokens: numEncTokens)
+        let promptIds = transcriber.tokenizer.buildPrompt(numAudioTokens: numEncTokens, language: language)
         let inputIds = MLXArray(promptIds.map { Int32($0) }).expandedDimensions(axis: 0)
 
         var embeds = transcriber.model.buildInputsEmbeds(
@@ -580,7 +583,7 @@ public final class StreamingSession: @unchecked Sendable {
 
         do {
             let batcher = batchTranscriber ?? transcriber
-            let result = try batcher.transcribe(audio: audioBuffer)
+            let result = try batcher.transcribe(audio: audioBuffer, language: language)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
                 rawTokens = transcriber.tokenizer.encode(text)
@@ -671,7 +674,7 @@ public final class StreamingSession: @unchecked Sendable {
 
         do {
             let batcher = batchTranscriber ?? transcriber
-            let result = try batcher.transcribe(audio: sessionAudioBuffer)
+            let result = try batcher.transcribe(audio: sessionAudioBuffer, language: language)
             let fullText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if let activeText = Self.deriveActiveText(fromSessionText: fullText, committedText: committedText) {
                 return activeText
@@ -690,7 +693,7 @@ public final class StreamingSession: @unchecked Sendable {
     private func batchRetranscribeFullSession() -> String? {
         do {
             let batcher = batchTranscriber ?? transcriber
-            let result = try batcher.transcribe(audio: sessionAudioBuffer)
+            let result = try batcher.transcribe(audio: sessionAudioBuffer, language: language)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             fputs("[StreamingSession] Final full-session batch: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s audio → \(text.count) chars\n", stderr)
             return text

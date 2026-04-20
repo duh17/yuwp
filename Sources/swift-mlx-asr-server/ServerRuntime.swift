@@ -179,12 +179,13 @@ final class StreamingSessionManager: @unchecked Sendable {
         }
     }
 
-    func create() -> String {
+    func create(language: String? = nil) -> String {
         let sid = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12).lowercased()
         let session = StreamingSession(
             transcriber: transcriber,
             batchTranscriber: batchTranscriber,
-            config: StreamConfig(batchRetranscribe: batchRetranscribeEnabled)
+            config: StreamConfig(batchRetranscribe: batchRetranscribeEnabled),
+            language: language
         )
         stateLock.lock()
         sessions[String(sid)] = session
@@ -630,7 +631,7 @@ func startStdioServer(
                     finalAccuracyPassEnabled: batchRetranscribeEnabled
                 )
             case .create:
-                response = ASRIPCResponse(id: request.id, ok: true, sessionID: mgr.create())
+                response = ASRIPCResponse(id: request.id, ok: true, sessionID: mgr.create(language: request.language))
             case .feed:
                 guard let sid = request.sessionID else {
                     response = ASRIPCResponse(id: request.id, ok: false, error: "missing session_id")

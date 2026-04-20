@@ -67,6 +67,22 @@ struct DictationSessionTests {
         #expect(stt.beginCallCount == 1)
     }
 
+    @Test func startPassesLanguageHintToSttSession() {
+        let stt = MockSttSession()
+        let audio = MockAudioCapture()
+        let injector = MockTextInjector()
+        let session = DictationSession(
+            sttSession: stt,
+            textInjector: injector,
+            audioCapture: audio,
+            languageHint: "Chinese"
+        )
+
+        session.start()
+
+        #expect(stt.beginLanguage == "Chinese")
+    }
+
     @Test func debugSessionIDPassesThroughFromSttSession() {
         let (session, stt, _, _, _) = makeSession()
         stt.debugSessionID = "abc123"

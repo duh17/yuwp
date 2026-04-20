@@ -17,6 +17,203 @@ enum KeyBindingTiming {
     static let doubleTapTimeout: TimeInterval = 0.4
 }
 
+enum DictationLanguageMode: String, Sendable, Codable, CaseIterable {
+    case mixed
+    case followInputSource
+    case fixed
+
+    var title: String {
+        switch self {
+        case .mixed: "Mixed (auto detect)"
+        case .followInputSource: "Follow Input Method"
+        case .fixed: "Fixed language"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .mixed:
+            "Auto-detect language for each dictation. Best for mixed-language speech, but may occasionally drift."
+        case .followInputSource:
+            "Force language based on your current macOS input method (for example, U.S. → English, Pinyin → Chinese)."
+        case .fixed:
+            "Always force one language for every dictation session."
+        }
+    }
+}
+
+enum DictationLanguageCatalog {
+    static let fallbackSupportedLanguages: [String] = [
+        "Chinese",
+        "English",
+        "Cantonese",
+        "Arabic",
+        "German",
+        "French",
+        "Spanish",
+        "Portuguese",
+        "Indonesian",
+        "Italian",
+        "Korean",
+        "Russian",
+        "Thai",
+        "Vietnamese",
+        "Japanese",
+        "Turkish",
+        "Hindi",
+        "Malay",
+        "Dutch",
+        "Swedish",
+        "Danish",
+        "Finnish",
+        "Polish",
+        "Czech",
+        "Filipino",
+        "Persian",
+        "Greek",
+        "Romanian",
+        "Hungarian",
+        "Macedonian",
+    ]
+
+    private static let tagToLanguage: [String: String] = [
+        "zh": "Chinese",
+        "zh-cn": "Chinese",
+        "zh-hans": "Chinese",
+        "zh-hant": "Chinese",
+        "en": "English",
+        "yue": "Cantonese",
+        "ar": "Arabic",
+        "de": "German",
+        "fr": "French",
+        "es": "Spanish",
+        "pt": "Portuguese",
+        "id": "Indonesian",
+        "it": "Italian",
+        "ko": "Korean",
+        "ru": "Russian",
+        "th": "Thai",
+        "vi": "Vietnamese",
+        "ja": "Japanese",
+        "tr": "Turkish",
+        "hi": "Hindi",
+        "ms": "Malay",
+        "nl": "Dutch",
+        "sv": "Swedish",
+        "da": "Danish",
+        "fi": "Finnish",
+        "pl": "Polish",
+        "cs": "Czech",
+        "fil": "Filipino",
+        "fa": "Persian",
+        "el": "Greek",
+        "ro": "Romanian",
+        "hu": "Hungarian",
+        "mk": "Macedonian",
+    ]
+
+    private struct ModelConfig: Decodable {
+        let supportLanguages: [String]?
+
+        enum CodingKeys: String, CodingKey {
+            case supportLanguages = "support_languages"
+        }
+    }
+
+    static func supportedLanguages(forModelSpec spec: String) -> [String] {
+        guard let modelDir = ModelLocator.resolve(spec) else {
+            return fallbackSupportedLanguages
+        }
+
+        let configURL = modelDir.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL),
+              let config = try? JSONDecoder().decode(ModelConfig.self, from: data),
+              let listed = config.supportLanguages,
+              !listed.isEmpty
+        else {
+            return fallbackSupportedLanguages
+        }
+
+        var deduped: [String] = []
+        var seen = Set<String>()
+        for language in listed {
+            let trimmed = language.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let key = trimmed.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            deduped.append(trimmed)
+        }
+
+        return deduped.isEmpty ? fallbackSupportedLanguages : deduped
+    }
+
+    static func canonicalLanguage(_ value: String?, supportedLanguages: [String]) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let exact = supportedLanguages.first(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            return exact
+        }
+
+        let normalizedTag = trimmed
+            .replacingOccurrences(of: "_", with: "-")
+            .lowercased()
+        if let mapped = tagToLanguage[normalizedTag],
+           let exact = supportedLanguages.first(where: { $0.caseInsensitiveCompare(mapped) == .orderedSame }) {
+            return exact
+        }
+
+        if let primary = normalizedTag.split(separator: "-").first,
+           let mapped = tagToLanguage[String(primary)],
+           let exact = supportedLanguages.first(where: { $0.caseInsensitiveCompare(mapped) == .orderedSame }) {
+            return exact
+        }
+
+        return nil
+    }
+
+    static func defaultLanguage(from supportedLanguages: [String]) -> String {
+        if let english = supportedLanguages.first(where: { $0.caseInsensitiveCompare("English") == .orderedSame }) {
+            return english
+        }
+        return supportedLanguages.first ?? "English"
+    }
+
+    static func languageForInputSource(
+        languageTags: [String],
+        sourceID: String?,
+        inputModeID: String?,
+        supportedLanguages: [String]
+    ) -> String? {
+        for tag in languageTags {
+            if let language = canonicalLanguage(tag, supportedLanguages: supportedLanguages) {
+                return language
+            }
+        }
+
+        let hints = [sourceID?.lowercased(), inputModeID?.lowercased()].compactMap { $0 }
+
+        if hints.contains(where: { $0.contains("pinyin") || $0.contains("scim") || $0.contains("zh") }) {
+            return canonicalLanguage("Chinese", supportedLanguages: supportedLanguages)
+        }
+
+        if hints.contains(where: { $0.contains("kotoeri") || $0.contains("japanese") || $0.contains("ja") }) {
+            return canonicalLanguage("Japanese", supportedLanguages: supportedLanguages)
+        }
+
+        if hints.contains(where: { $0.contains("hangul") || $0.contains("korean") || $0.contains("ko") }) {
+            return canonicalLanguage("Korean", supportedLanguages: supportedLanguages)
+        }
+
+        if hints.contains(where: { $0.contains("us") || $0.contains("abc") || $0.contains("english") }) {
+            return canonicalLanguage("English", supportedLanguages: supportedLanguages)
+        }
+
+        return nil
+    }
+}
+
 /// Whether the bundled ASR server is disabled, local-only, or LAN-visible.
 enum ServerMode: String, Sendable, CaseIterable {
     case off
@@ -395,6 +592,38 @@ final class Config {
         }
     }
 
+    var dictationLanguageMode: DictationLanguageMode {
+        get {
+            let raw = defaults.string(forKey: "dictationLanguageMode") ?? DictationLanguageMode.mixed.rawValue
+            return DictationLanguageMode(rawValue: raw) ?? .mixed
+        }
+        set {
+            defaults.set(newValue.rawValue, forKey: "dictationLanguageMode")
+        }
+    }
+
+    var supportedDictationLanguages: [String] {
+        DictationLanguageCatalog.supportedLanguages(forModelSpec: transcriptionModel)
+    }
+
+    var fixedDictationLanguage: String {
+        get {
+            let supported = supportedDictationLanguages
+            if let stored = defaults.string(forKey: "fixedDictationLanguage"),
+               let canonical = DictationLanguageCatalog.canonicalLanguage(stored, supportedLanguages: supported)
+            {
+                return canonical
+            }
+            return DictationLanguageCatalog.defaultLanguage(from: supported)
+        }
+        set {
+            let supported = supportedDictationLanguages
+            let canonical = DictationLanguageCatalog.canonicalLanguage(newValue, supportedLanguages: supported)
+                ?? DictationLanguageCatalog.defaultLanguage(from: supported)
+            defaults.set(canonical, forKey: "fixedDictationLanguage")
+        }
+    }
+
     /// Experimental: when enabled, Yuwp may inject directly into editable AX fields.
     /// Default is off — bubble preview + paste commit is safer and more predictable.
     var experimentalDirectTextFieldInsertionEnabled: Bool {
@@ -499,7 +728,13 @@ final class Config {
                 ?? defaults.string(forKey: "batchModel")
                 ?? "mlx-community/Qwen3-ASR-0.6B-4bit"
         }
-        set { defaults.set(newValue, forKey: "transcriptionModel") }
+        set {
+            defaults.set(newValue, forKey: "transcriptionModel")
+            if defaults.object(forKey: "fixedDictationLanguage") != nil {
+                // Re-canonicalize against the newly selected model's language list.
+                fixedDictationLanguage = fixedDictationLanguage
+            }
+        }
     }
 
     /// Whether Yuwp runs a batch pass whenever it commits a segment.

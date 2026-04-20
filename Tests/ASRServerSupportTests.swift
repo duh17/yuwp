@@ -354,6 +354,7 @@ struct ASRServerSupportTests {
         let createJSON = try #require(try JSONSerialization.jsonObject(with: create.body) as? [String: Any])
         let sid = try #require(createJSON["session_id"] as? String)
         #expect(sid == manager.createdSessionID)
+        #expect(manager.lastCreatedLanguage == nil)
 
         let feed = routeRequest(HTTPRequest(method: "POST", path: "/v1/audio/transcriptions/stream/abc123", headers: [:], body: Data([1, 2])), context: context)
         let feedJSON = try #require(try JSONSerialization.jsonObject(with: feed.body) as? [String: Any])
@@ -366,6 +367,32 @@ struct ASRServerSupportTests {
         #expect(stop.status == 200)
         #expect(stopJSON["text"] as? String == "final")
         #expect(manager.lastStoppedSessionID == "abc123")
+    }
+
+    @Test func streamCreatePassesLanguageQueryToManager() throws {
+        let manager = FakeManager()
+        let context = ASRRouteContext(
+            manager: manager,
+            aligner: nil,
+            vad: nil,
+            streamingModelName: "stream",
+            batchModelName: nil,
+            batchRetranscribeEnabled: true,
+            loadAudio: { _ in [] }
+        )
+
+        let create = routeRequest(
+            HTTPRequest(
+                method: "POST",
+                path: "/v1/audio/transcriptions/stream?language=Chinese",
+                headers: [:],
+                body: Data()
+            ),
+            context: context
+        )
+
+        #expect(create.status == 200)
+        #expect(manager.lastCreatedLanguage == "Chinese")
     }
 
     @Test func batchRouteFallsBackToLowEnergyChunksWithoutVAD() throws {
@@ -454,9 +481,11 @@ private final class FakeManager: ASRServing, @unchecked Sendable {
     var lastTemperature: Float?
     var lastFedSessionID: String?
     var lastStoppedSessionID: String?
+    var lastCreatedLanguage: String?
 
-    func create() -> String {
-        createdSessionID
+    func create(language: String?) -> String {
+        lastCreatedLanguage = language
+        return createdSessionID
     }
 
     func feed(_ sid: String, pcmData: Data) -> [String: Any]? {

@@ -8,7 +8,7 @@ let internalDiagnosticsEnabled = false
 #endif
 
 public protocol ASRServing: BatchTranscriptionServing, AnyObject, Sendable {
-    func create() -> String
+    func create(language: String?) -> String
     func feed(_ sid: String, pcmData: Data) -> [String: Any]?
     func stop(_ sid: String) -> [String: Any]?
     func transcribeAudio(audio: [Float], language: String?, temperature: Float) throws -> TranscriptionResult
@@ -53,6 +53,14 @@ private let batchRoutePaths = Set(["/v1/audio/transcriptions", "/audio/transcrip
 
 private func normalizedPath(_ rawPath: String) -> String {
     rawPath.split(separator: "?").first.map(String.init) ?? rawPath
+}
+
+private func queryValue(named name: String, in rawPath: String) -> String? {
+    guard let queryStart = rawPath.firstIndex(of: "?") else { return nil }
+    let query = String(rawPath[rawPath.index(after: queryStart)...])
+    var components = URLComponents()
+    components.percentEncodedQuery = query
+    return components.queryItems?.first(where: { $0.name == name })?.value
 }
 
 public func routeRequest(_ req: HTTPRequest, context: ASRRouteContext) -> HTTPResponse {
@@ -104,7 +112,10 @@ private func handleInfoRoute(_ req: HTTPRequest, context: ASRRouteContext) -> HT
 private func handleStreamRoute(_ req: HTTPRequest, path: String, context: ASRRouteContext) -> HTTPResponse {
     if path == streamRoutePrefix {
         guard req.method == "POST" else { return jsonResponse(status: 405, ["error": "method not allowed"]) }
-        return jsonResponse(status: 200, ["session_id": context.manager.create()])
+        let requestedLanguage = queryValue(named: "language", in: req.path)
+            .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        return jsonResponse(status: 200, ["session_id": context.manager.create(language: requestedLanguage)])
     }
 
     let sid = String(path.dropFirst(streamRoutePrefix.count + 1))

@@ -32,6 +32,22 @@ struct SettingsStoreTests {
         #expect(value == true)
     }
 
+    @Test @MainActor func dictationLanguageSettingsUpdateSnapshotAndCallbacks() {
+        let store = SettingsStore(snapshot: makeSnapshot())
+        var mode: DictationLanguageMode?
+        var language: String?
+        store.onDictationLanguageModeChange = { mode = $0 }
+        store.onFixedDictationLanguageChange = { language = $0 }
+
+        store.setDictationLanguageMode(.fixed)
+        store.setFixedDictationLanguage("Chinese")
+
+        #expect(store.snapshot.dictationLanguageMode == .fixed)
+        #expect(store.snapshot.fixedDictationLanguage == "Chinese")
+        #expect(mode == .fixed)
+        #expect(language == "Chinese")
+    }
+
     @Test @MainActor func selectingCustomMicPanelSeedsDefaultCustomValues() {
         let store = SettingsStore(snapshot: makeSnapshot())
         var received: MicPanelAnimationConfig?
@@ -181,6 +197,9 @@ struct SettingsStoreTests {
             dictationBinding: .ctrlBacktick,
             audioInputSelection: .systemDefault,
             availableAudioInputs: [],
+            dictationLanguageMode: .mixed,
+            fixedDictationLanguage: "English",
+            supportedDictationLanguages: DictationLanguageCatalog.fallbackSupportedLanguages,
             serverMode: .localhost,
             serverPort: 7936,
             asrTransport: .http,

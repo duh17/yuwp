@@ -58,26 +58,26 @@ private final class NativeASRStdioBridge: @unchecked Sendable {
 
     func isReady(timeout: TimeInterval = 2) -> Bool {
         do {
-            let response = try request(command: .info, sessionID: nil, binary: Data(), timeout: timeout)
+            let response = try request(command: .info, sessionID: nil, language: nil, binary: Data(), timeout: timeout)
             return response.status == "ready"
         } catch {
             return false
         }
     }
 
-    func createSession(timeout: TimeInterval = 10) -> String? {
-        perform(command: .create, sessionID: nil, binary: Data(), timeout: timeout)?.sessionID
+    func createSession(language: String? = nil, timeout: TimeInterval = 10) -> String? {
+        perform(command: .create, sessionID: nil, language: language, binary: Data(), timeout: timeout)?.sessionID
     }
 
     func feed(sessionID: String, pcmData: Data, timeout: TimeInterval = 30) -> TranscriptUpdate? {
-        guard let response = perform(command: .feed, sessionID: sessionID, binary: pcmData, timeout: timeout) else {
+        guard let response = perform(command: .feed, sessionID: sessionID, language: nil, binary: pcmData, timeout: timeout) else {
             return nil
         }
         return Self.makeTranscriptUpdate(from: response, fallbackKind: .partial)
     }
 
     func stop(sessionID: String, timeout: TimeInterval = 30) -> TranscriptUpdate? {
-        guard let response = perform(command: .stop, sessionID: sessionID, binary: Data(), timeout: timeout) else {
+        guard let response = perform(command: .stop, sessionID: sessionID, language: nil, binary: Data(), timeout: timeout) else {
             return nil
         }
         return Self.makeTranscriptUpdate(from: response, fallbackKind: .final)
@@ -86,11 +86,12 @@ private final class NativeASRStdioBridge: @unchecked Sendable {
     private func perform(
         command: ASRIPCCommand,
         sessionID: String?,
+        language: String?,
         binary: Data,
         timeout: TimeInterval
     ) -> ASRIPCResponse? {
         do {
-            return try request(command: command, sessionID: sessionID, binary: binary, timeout: timeout)
+            return try request(command: command, sessionID: sessionID, language: language, binary: binary, timeout: timeout)
         } catch BridgeError.server(let message) {
             yuwpLog("ASR stdio request failed (\(command.rawValue)): \(message)")
             return nil
@@ -104,6 +105,7 @@ private final class NativeASRStdioBridge: @unchecked Sendable {
     private func request(
         command: ASRIPCCommand,
         sessionID: String?,
+        language: String?,
         binary: Data,
         timeout: TimeInterval
     ) throws -> ASRIPCResponse {
@@ -113,7 +115,7 @@ private final class NativeASRStdioBridge: @unchecked Sendable {
             let requestID = nextRequestID
             nextRequestID &+= 1
 
-            let request = ASRIPCRequest(id: requestID, command: command, sessionID: sessionID)
+            let request = ASRIPCRequest(id: requestID, command: command, sessionID: sessionID, language: language)
             let frame = try ASRIPCCodec.encode(request, binary: binary)
             try writeAll(fd: inputHandle.fileDescriptor, data: frame)
 
@@ -828,7 +830,9 @@ fileprivate final class NativeASRStdioSession: SttSession, @unchecked Sendable {
     func begin(language: String?) {
         queue.async { [weak self] in
             guard let self else { return }
-            guard let sid = self.bridge.createSession() else {
+            let trimmedLanguage = language?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedLanguage = (trimmedLanguage?.isEmpty == false) ? trimmedLanguage : nil
+            guard let sid = self.bridge.createSession(language: normalizedLanguage) else {
                 self.onError?("Failed to create ASR session")
                 return
             }
@@ -908,7 +912,8 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
     func begin(language: String?) {
         queue.async { [weak self] in
             guard let self else { return }
-            guard let data = self.syncHTTP("POST", path: self.baseURL),
+            let createPath = self.createSessionPath(language: language)
+            guard let data = self.syncHTTP("POST", path: createPath),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let sid = json["session_id"] as? String else {
                 self.onError?("Failed to create ASR session")
@@ -991,6 +996,18 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
               !update.text.isEmpty else { return false }
         self.onUpdate?(update)
         return true
+    }
+
+    private func createSessionPath(language: String?) -> String {
+        let trimmed = language?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let language = trimmed, !language.isEmpty,
+              var components = URLComponents(string: baseURL)
+        else {
+            return baseURL
+        }
+
+        components.queryItems = [URLQueryItem(name: "language", value: language)]
+        return components.string ?? baseURL
     }
 
     /// Synchronous HTTP request (always called on the serial background queue).

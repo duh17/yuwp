@@ -6,6 +6,9 @@ struct SettingsSnapshot: Sendable, Equatable {
     var dictationBinding: KeyBinding
     var audioInputSelection: AudioInputSelection
     var availableAudioInputs: [AudioInputDeviceDescriptor]
+    var dictationLanguageMode: DictationLanguageMode
+    var fixedDictationLanguage: String
+    var supportedDictationLanguages: [String]
     var experimentalDirectTextFieldInsertionEnabled: Bool = false
     var experimentalDirectTerminalInsertionEnabled: Bool = false
 
@@ -48,6 +51,8 @@ final class SettingsStore: ObservableObject {
     var onDictationBindingChange: ((KeyBinding) -> Void)?
     var onDictationBindingRecordingChange: ((Bool) -> Void)?
     var onAudioInputSelectionChange: ((AudioInputSelection) -> Void)?
+    var onDictationLanguageModeChange: ((DictationLanguageMode) -> Void)?
+    var onFixedDictationLanguageChange: ((String) -> Void)?
     var onExperimentalDirectTextFieldInsertionChange: ((Bool) -> Void)?
     var onExperimentalDirectTerminalInsertionChange: ((Bool) -> Void)?
     var onServerModeChange: ((ServerMode) -> Void)?
@@ -112,6 +117,21 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    var dictationLanguageModeSummaryText: String {
+        snapshot.dictationLanguageMode.summary
+    }
+
+    var fixedDictationLanguageDescriptionText: String {
+        "Choose a supported language from the active model."
+    }
+
+    var dictationLanguageModes: [DictationLanguageMode] {
+        DictationLanguageMode.allCases
+    }
+
+    var supportedDictationLanguages: [String] {
+        snapshot.supportedDictationLanguages
+    }
 
     var serverModeDescriptionText: String {
         switch snapshot.serverMode {
@@ -285,6 +305,17 @@ final class SettingsStore: ObservableObject {
     func setAudioInputSelection(_ selection: AudioInputSelection) {
         snapshot.audioInputSelection = selection
         onAudioInputSelectionChange?(selection)
+    }
+
+    func setDictationLanguageMode(_ mode: DictationLanguageMode) {
+        snapshot.dictationLanguageMode = mode
+        onDictationLanguageModeChange?(mode)
+    }
+
+    func setFixedDictationLanguage(_ language: String) {
+        guard snapshot.fixedDictationLanguage != language else { return }
+        snapshot.fixedDictationLanguage = language
+        onFixedDictationLanguageChange?(language)
     }
 
     func setExperimentalDirectTextFieldInsertionEnabled(_ enabled: Bool) {

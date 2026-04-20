@@ -258,6 +258,50 @@ struct SettingsView: View {
 
             SettingsDivider()
 
+            SettingsControlRow(
+                title: "Language Mode",
+                subtitle: store.dictationLanguageModeSummaryText,
+                topAligned: true
+            ) {
+                Picker("Language mode", selection: Binding(
+                    get: { store.snapshot.dictationLanguageMode.rawValue },
+                    set: { rawValue in
+                        if let mode = DictationLanguageMode(rawValue: rawValue) {
+                            store.setDictationLanguageMode(mode)
+                        }
+                    }
+                )) {
+                    ForEach(store.dictationLanguageModes, id: \.rawValue) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 260, alignment: .trailing)
+            }
+
+            if store.snapshot.dictationLanguageMode == .fixed {
+                SettingsDivider()
+
+                SettingsControlRow(
+                    title: "Fixed Language",
+                    subtitle: store.fixedDictationLanguageDescriptionText,
+                    topAligned: true
+                ) {
+                    Picker("Fixed language", selection: Binding(
+                        get: { store.snapshot.fixedDictationLanguage },
+                        set: { store.setFixedDictationLanguage($0) }
+                    )) {
+                        ForEach(store.supportedDictationLanguages, id: \.self) { language in
+                            Text(language).tag(language)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 220, alignment: .trailing)
+                }
+            }
+
+            SettingsDivider()
+
             SettingsBlockRow(
                 title: "Download",
                 subtitle: store.downloadRowStatusText

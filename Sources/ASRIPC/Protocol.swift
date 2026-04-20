@@ -30,17 +30,20 @@ public struct ASRIPCRequest: Sendable, Codable, Equatable {
     public let id: UInt64
     public let command: ASRIPCCommand
     public let sessionID: String?
+    public let language: String?
 
-    public init(id: UInt64, command: ASRIPCCommand, sessionID: String? = nil) {
+    public init(id: UInt64, command: ASRIPCCommand, sessionID: String? = nil, language: String? = nil) {
         self.id = id
         self.command = command
         self.sessionID = sessionID
+        self.language = language
     }
 
     private enum CodingKeys: String, CodingKey {
         case id
         case command
         case sessionID = "session_id"
+        case language
     }
 }
 
