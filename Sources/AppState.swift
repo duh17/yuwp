@@ -189,17 +189,6 @@ struct AppState: Sendable, Equatable {
         }
 
         if !missingConfiguredModelLabels.isEmpty {
-            if providerState == .ready,
-               missingConfiguredModelLabels.count == 1,
-               missingConfiguredModelLabels.first == "Word-level Alignment" {
-                return AppStatusDisplay(
-                    title: "Ready (word-level alignment missing)",
-                    symbolName: "exclamationmark.triangle.fill",
-                    isEnabled: true,
-                    behavior: .openSettings
-                )
-            }
-
             let title: String
             if missingConfiguredModelLabels.count == 1, let label = missingConfiguredModelLabels.first {
                 title = "\(label) missing"

@@ -191,24 +191,6 @@ struct AppStateTests {
         ))
     }
 
-    @Test func statusDisplayShowsReadyWithWarningWhenOnlyAlignmentModelMissing() {
-        let state = AppState(
-            settings: AppSettingsState(serverMode: .localhost),
-            hasAccessibilityPermission: true,
-            providerState: .ready,
-            missingConfiguredModelLabels: ["Word-level Alignment"]
-        )
-
-        let status = state.statusDisplay(port: 7936)
-
-        #expect(status == AppStatusDisplay(
-            title: "Ready (word-level alignment missing)",
-            symbolName: "exclamationmark.triangle.fill",
-            isEnabled: true,
-            behavior: .openSettings
-        ))
-    }
-
     @Test func modelDownloadStatusTracksRepoLifecycle() {
         var state = AppState()
 
@@ -255,4 +237,27 @@ struct AppStateTests {
         #expect(ServerRuntimePolicy.shouldRestartProviderForPortChange(serverMode: .allInterfaces, transport: .http))
         #expect(ServerRuntimePolicy.shouldRestartProviderForPortChange(serverMode: .allInterfaces, transport: .stdio))
     }
+}
+
+@Suite("App model requirements")
+struct AppModelRequirementsTests {
+    @Test func requiredDictationModelLabelsOnlyGateOnTranscriptionModel() throws {
+        let modelDir = try makeTemporaryModelDirectory()
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+
+        #expect(AppDelegate.requiredDictationModelLabels(transcriptionModel: modelDir.path).isEmpty)
+        #expect(AppDelegate.requiredDictationModelLabels(
+            transcriptionModel: "missing-model-\(UUID().uuidString)"
+        ) == ["Model"])
+    }
+}
+
+private func makeTemporaryModelDirectory() throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("yuwp-model-test-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    for file in ModelLocator.requiredFiles {
+        _ = FileManager.default.createFile(atPath: url.appendingPathComponent(file).path, contents: Data())
+    }
+    return url
 }

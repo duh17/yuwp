@@ -136,7 +136,7 @@ struct SettingsView: View {
         case .dictation:
             "Choose how Yuwp starts dictation and which shortcut triggers it."
         case .transcription:
-            "Choose the transcription model, manage downloads, and install the optional word-level alignment model for timestamped output."
+            "Choose the transcription model, manage downloads, and install the optional word-level alignment model for subtitles and timestamped transcription."
         case .recordings:
             "Keep source audio if you want a paper trail for debugging, QA, or re-transcription later."
         case .network:

@@ -207,7 +207,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             serverMode: Config.shared.serverMode,
             asrTransport: Config.shared.asrTransport
         )
-        appState.missingConfiguredModelLabels = missingConfiguredModelLabels()
+        appState.missingConfiguredModelLabels = Self.requiredDictationModelLabels(
+            transcriptionModel: Config.shared.transcriptionModel
+        )
     }
 
     private func send(_ action: AppAction) {
@@ -1113,15 +1115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func missingConfiguredModelLabels() -> [String] {
-        var labels: [String] = []
-        if ModelLocator.resolve(Config.shared.transcriptionModel) == nil {
-            labels.append("Model")
-        }
-        if ModelLocator.resolve(NativeASRProvider.defaultAlignerModel) == nil {
-            labels.append("Word-level Alignment")
-        }
-        return labels
+    nonisolated static func requiredDictationModelLabels(transcriptionModel: String) -> [String] {
+        ModelLocator.resolve(transcriptionModel) == nil ? ["Model"] : []
     }
 
     // MARK: - Models

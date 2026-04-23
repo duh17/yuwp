@@ -250,9 +250,9 @@ final class SettingsStore: ObservableObject {
             return status
         }
         if snapshot.alignerInstalled {
-            return "Installed locally and ready for word-level timestamping/subtitles."
+            return "Installed locally and ready for timestamped transcription and subtitles."
         }
-        return "Not bundled. Download to enable word-level subtitle alignment for timestamped outputs (SRT/VTT/verbose JSON)."
+        return "Not bundled. Download to enable timestamped transcription and subtitles (SRT/VTT/verbose JSON)."
     }
 
     var alignerDownloadButtonTitle: String {
