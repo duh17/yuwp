@@ -26,7 +26,7 @@ enum DictationLanguageMode: String, Sendable, Codable, CaseIterable {
         switch self {
         case .mixed: "Mixed (auto detect)"
         case .followInputSource: "Follow Input Method"
-        case .fixed: "Fixed language"
+        case .fixed: "Fixed language hint"
         }
     }
 
@@ -35,9 +35,9 @@ enum DictationLanguageMode: String, Sendable, Codable, CaseIterable {
         case .mixed:
             "Auto-detect language for each dictation. Best for mixed-language speech, but may occasionally drift."
         case .followInputSource:
-            "Force language based on your current macOS input method (for example, U.S. → English, Pinyin → Chinese)."
+            "Hint recognition based on your current macOS input method (for example, U.S. → English, Pinyin → Chinese)."
         case .fixed:
-            "Always force one language for every dictation session."
+            "Use the same model language hint for every dictation session."
         }
     }
 }

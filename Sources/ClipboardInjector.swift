@@ -47,8 +47,10 @@ final class ClipboardInjector: TextInjecting, ClipboardPasting {
     enum CommitMode {
         /// Write dictated text to clipboard and trigger Cmd+V, then restore prior clipboard.
         case pasteAndRestore
-        /// Write dictated text to clipboard only. Used when no target was focused
-        /// at capture time, so we never lose the dictated text.
+        /// Write dictated text to clipboard and trigger Cmd+V, but leave the
+        /// dictated text available if the target ignores the paste event.
+        case pasteAndKeep
+        /// Write dictated text to clipboard only.
         case copyOnly
     }
 
@@ -110,12 +112,17 @@ final class ClipboardInjector: TextInjecting, ClipboardPasting {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
-        guard commitMode == .pasteAndRestore else {
+        if commitMode == .copyOnly {
             yuwpLog("Copied dictated text to clipboard (no focused target)")
             return
         }
 
         postPasteShortcut()
+
+        guard commitMode == .pasteAndRestore else {
+            yuwpLog("Pasted via clipboard; kept dictated text on clipboard")
+            return
+        }
 
         scheduleRestore { [pasteboard] in
             if pasteboard.changeCount == savedChangeCount + 1 {

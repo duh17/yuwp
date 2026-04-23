@@ -261,6 +261,25 @@ struct DictationSessionTests {
         #expect(events.events.contains(.finished))
     }
 
+    @Test func finalResultReportsTranscriptBeforeCommit() async {
+        let (session, stt, _, injector, _) = makeSession()
+        var callbackTranscript: String?
+        var commitHadCallback = false
+        injector.onCommit = {
+            commitHadCallback = callbackTranscript != nil
+        }
+        session.onFinalTranscript = { callbackTranscript = $0 }
+
+        session.start()
+        _ = session.stop()
+
+        stt.simulateFinal("Hello world")
+        await Task.yield()
+
+        #expect(callbackTranscript == "Hello world")
+        #expect(commitHadCallback)
+    }
+
     @Test func finalResultAfterStopReleasesInjector() async {
         let (session, stt, _, injector, _) = makeSession()
         session.start()

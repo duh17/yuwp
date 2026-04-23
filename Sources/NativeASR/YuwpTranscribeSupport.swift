@@ -94,7 +94,7 @@ private func printUsage(programName: String) {
       --model <path>                Model path or repo id (optional; defaults to Yuwp app config)
       --format <text|json|srt|vtt>  Output format (default: text)
       --output <path>               Write output to a file instead of stdout
-      --language <lang>             Force language hint
+      --language <lang>             Language hint
       --debug                       Include chunk/alignment debug metadata in JSON output
 
     Examples:

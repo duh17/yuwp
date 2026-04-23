@@ -10,7 +10,7 @@ func printUsage() {
 
     Options:
       --warmup          Warm up Metal shaders before transcribing (eliminates JIT latency)
-      --language <lang> Force language hint
+      --language <lang> Language hint
       --no-language     Auto-detect language (default)
       --max-tokens <n>  Maximum tokens to generate (default: 4096)
 

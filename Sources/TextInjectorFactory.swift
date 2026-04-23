@@ -79,8 +79,8 @@ enum TextInjectorFactory {
     /// Must be called before any UI panel appears — focus changes after that.
     static func capture(policy: InjectionPolicy = .fromConfig) -> any TextInjecting {
         guard let focused = focusedElement() else {
-            yuwpLog("No focused element — copy-only clipboard fallback to avoid losing dictated text")
-            return ClipboardInjector(screenPoint: NSEvent.mouseLocation, commitMode: .copyOnly)
+            yuwpLog("No focused element — clipboard paste fallback; dictated text remains on clipboard")
+            return ClipboardInjector(screenPoint: NSEvent.mouseLocation, commitMode: .pasteAndKeep)
         }
 
         let point = readTargetScreenPoint(from: focused) ?? NSEvent.mouseLocation

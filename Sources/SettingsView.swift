@@ -287,7 +287,7 @@ struct SettingsView: View {
                     subtitle: store.fixedDictationLanguageDescriptionText,
                     topAligned: true
                 ) {
-                    Picker("Fixed language", selection: Binding(
+                    Picker("Fixed language hint", selection: Binding(
                         get: { store.snapshot.fixedDictationLanguage },
                         set: { store.setFixedDictationLanguage($0) }
                     )) {

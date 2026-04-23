@@ -125,6 +125,9 @@ final class DictationSession {
     /// Callback for events — set by AppDelegate to update UI.
     var onEvent: ((DictationEvent) -> Void)?
 
+    /// Called with the resolved final transcript before target commit/finalization.
+    var onFinalTranscript: ((String) -> Void)?
+
     /// Called when session needs external stop (e.g., max duration).
     /// Set by AppDelegate to trigger stopDictation().
     var onRequestStop: (() -> Void)?
@@ -259,6 +262,7 @@ final class DictationSession {
             finalTimeoutTask = nil
 
             typewriter.commitCurrentAnimation()
+            onFinalTranscript?(text)
             textInjector.commit(text)
             finalize()
             return

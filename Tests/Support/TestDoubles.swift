@@ -97,6 +97,7 @@ final class MockTextInjector: TextInjecting {
     var releaseCallCount = 0
     var lastInjected: String?
     var lastCommitted: String?
+    var onCommit: (() -> Void)?
 
     func captureTarget() {
         captureCallCount += 1
@@ -110,6 +111,7 @@ final class MockTextInjector: TextInjecting {
     func commit(_ text: String) {
         commitCallCount += 1
         lastCommitted = text
+        onCommit?()
     }
 
     func release() {

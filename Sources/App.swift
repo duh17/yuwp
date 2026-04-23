@@ -80,6 +80,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // Per-dictation session (created on start, torn down on stop)
     private var session: DictationSession?
+    private var activeDictationLanguageMode: DictationLanguageMode?
+    private var activeDictationLanguageHint: String?
+    private var activeTranscriptionModel: String?
+    private var pendingRecordingArtifact: RecordingArtifactHandle?
+    private var pendingRecordingTranscript: String?
     private var appState = AppState()
 
     // Menu bar state
@@ -301,6 +306,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         let injector = TextInjectorFactory.capture(policy: injectorPolicy)
         let languageHint = resolveDictationLanguageHint()
+        activeDictationLanguageMode = Config.shared.dictationLanguageMode
+        activeDictationLanguageHint = languageHint
+        activeTranscriptionModel = Config.shared.transcriptionModel
+        pendingRecordingArtifact = nil
+        pendingRecordingTranscript = nil
         let s = DictationSession(
             sttSession: asrProvider.makeSession(),
             textInjector: injector,
@@ -308,6 +318,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             languageHint: languageHint
         )
         s.onEvent = { [weak self] event in self?.handleSessionEvent(event) }
+        s.onFinalTranscript = { [weak self] transcript in
+            self?.handleFinalTranscript(transcript)
+        }
         s.onRequestStop = { [weak self] in
             Task { @MainActor in self?.send(.sessionStopRequested) }
         }
@@ -342,7 +355,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         chimePlayer.play(.stop)
 
         if Config.shared.saveRecordings, let pcmData, !pcmData.isEmpty {
-            saveRecording(pcmData, sessionID: sessionID)
+            pendingRecordingArtifact = saveRecording(pcmData, sessionID: sessionID)
+            flushPendingRecordingTranscriptIfPossible()
         }
     }
 
@@ -351,8 +365,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func handleSessionEvent(_ event: DictationEvent) {
         if case .finished = event {
             session = nil
+            activeDictationLanguageMode = nil
+            activeDictationLanguageHint = nil
+            activeTranscriptionModel = nil
         }
         send(.sessionEvent(event))
+    }
+
+    private func handleFinalTranscript(_ transcript: String) {
+        pendingRecordingTranscript = transcript
+        flushPendingRecordingTranscriptIfPossible()
+    }
+
+    private func flushPendingRecordingTranscriptIfPossible() {
+        guard let artifact = pendingRecordingArtifact,
+              let transcript = pendingRecordingTranscript else { return }
+
+        do {
+            try RecordingArtifactWriter.writeTranscript(transcript, for: artifact)
+            pendingRecordingTranscript = nil
+            yuwpLog("Transcript saved: path=\(artifact.transcriptURL.path)")
+        } catch {
+            yuwpLog("Failed to save transcript artifact: \(error)")
+        }
     }
 
     // MARK: - STT Provider
@@ -1302,23 +1337,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Recording
 
-    private func saveRecording(_ pcmData: Data, sessionID: String?) {
+    private func saveRecording(_ pcmData: Data, sessionID: String?) -> RecordingArtifactHandle? {
         let dir = Config.shared.recordingsDir
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let filename = "yuwp-\(formatter.string(from: Date())).wav"
-        let url = dir.appendingPathComponent(filename)
+        let context = RecordingArtifactContext(
+            sessionID: sessionID,
+            transcriptionModel: activeTranscriptionModel ?? Config.shared.transcriptionModel,
+            dictationLanguageMode: activeDictationLanguageMode ?? Config.shared.dictationLanguageMode,
+            languageHint: activeDictationLanguageHint
+        )
 
         do {
-            try WAVWriter.write(pcmData, to: url)
+            let artifact = try RecordingArtifactWriter.writeRecording(
+                pcmData: pcmData,
+                directory: dir,
+                context: context
+            )
             let sid = sessionID ?? "unknown"
             yuwpLog(
-                "Recording saved: sid=\(sid) path=\(url.path) "
+                "Recording saved: sid=\(sid) path=\(artifact.audioURL.path) "
                     + "(\(String(format: "%.1f", Double(pcmData.count) / 32000))s)"
             )
+            return artifact
         } catch {
             yuwpLog("Failed to save recording: \(error)")
+            return nil
         }
     }
 }
-
