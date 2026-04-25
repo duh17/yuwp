@@ -48,6 +48,7 @@ Build CLIs:
 
 ```bash
 swift build -c release --product yuwp-asr
+swift build -c release --product yuwp-tts
 swift build -c release --product swift-mlx-asr-server
 bash scripts/build_mlx_metallib.sh release
 ```
@@ -58,12 +59,21 @@ Transcribe a file:
 .build/arm64-apple-macosx/release/yuwp-asr transcribe Tests/fixtures/jfk.wav
 ```
 
-Run standalone HTTP server (default transport is stdio, so pass `--transport http`):
+Run standalone ASR HTTP server (default transport is stdio, so pass `--transport http`):
 
 ```bash
 .build/arm64-apple-macosx/release/swift-mlx-asr-server <model-dir> --transport http --host 127.0.0.1 --port 7936
 curl -sf http://127.0.0.1:7936/v1/info | jq .
 ```
+
+Run standalone TTS HTTP server:
+
+```bash
+.build/arm64-apple-macosx/release/yuwp-tts serve --transport http --model <qwen3-tts-model-dir> --host 127.0.0.1 --port 7937
+curl -sf http://127.0.0.1:7937/v1/info | jq .
+```
+
+TTS exposes `POST /v1/audio/speech` for full WAV responses and `POST /v1/audio/speech/stream` for chunked NDJSON audio events (`metadata`, `audio`, `done`, `error`) with base64 `pcm_s16le` chunks.
 
 ## Development
 

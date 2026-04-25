@@ -27,6 +27,32 @@ The packaged macOS app also ships these notices plus the vendored license files 
 - License: MIT
 - Vendored license text: `third_party/licenses/mlx-swift-LICENSE.txt`
 
+### MLX Swift LM
+
+- Upstream: <https://github.com/ml-explore/mlx-swift-lm>
+- What Yuwp ships: Swift helper code linked into the native TTS test/tooling path via SwiftPM
+- License: MIT
+- Vendored license text: `third_party/licenses/mlx-swift-lm-LICENSE.txt`
+
+### MLX Audio Swift Qwen3-TTS Port
+
+- Upstream: <https://github.com/Blaizzy/mlx-audio-swift>
+- What Yuwp ships: selected Swift source files ported into `Sources/NativeTTS` as the initial Qwen3-TTS implementation reference
+- License: MIT
+- Vendored license text: `third_party/licenses/mlx-audio-swift-LICENSE.txt`
+
+### Swift Transformers / Hugging Face Swift
+
+- Upstreams:
+  - <https://github.com/huggingface/swift-transformers>
+  - <https://github.com/huggingface/swift-huggingface>
+- What Yuwp ships: tokenizer / Hugging Face support code linked through SwiftPM for NativeTTS
+- License: Apache License 2.0
+- Vendored license text:
+  - `third_party/licenses/swift-transformers-LICENSE.txt`
+  - `third_party/licenses/swift-huggingface-LICENSE.txt`
+  - `third_party/licenses/Apache-2.0.txt`
+
 ### Swift Numerics
 
 - Upstream: <https://github.com/apple/swift-numerics>

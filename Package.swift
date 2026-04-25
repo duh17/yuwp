@@ -6,12 +6,15 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "yuwp-asr", targets: ["yuwp_asr"]),
+        .executable(name: "yuwp-tts", targets: ["yuwp_tts"]),
     ],
     dependencies: [
         .package(
             url: "https://github.com/ml-explore/mlx-swift",
             revision: "3b11207d4870fc2b703fc6c7931741aa196ec914"
         ),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm", from: "3.31.3"),
+        .package(url: "https://github.com/huggingface/swift-transformers", from: "1.1.6"),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.8.0"),
     ],
     targets: [
@@ -22,7 +25,11 @@ let package = Package(
                 "ASRIPC",
             ],
             path: "Sources",
-            exclude: ["NativeASR", "ASRServerSupport", "ASRIPC", "asr-test", "asr-bench", "asr-stream-test", "swift-mlx-asr-server", "yuwp-asr", "align-test", "asr-stitch-debug"]
+            exclude: ["NativeASR", "NativeTTS", "YuwpHTTPServerSupport", "ASRServerSupport", "ASRIPC", "asr-test", "tts-test", "yuwp-tts", "asr-bench", "asr-stream-test", "swift-mlx-asr-server", "yuwp-asr", "align-test", "asr-stitch-debug"]
+        ),
+        .target(
+            name: "YuwpHTTPServerSupport",
+            path: "Sources/YuwpHTTPServerSupport"
         ),
         .target(
             name: "NativeASR",
@@ -38,10 +45,40 @@ let package = Package(
                 .copy("Resources")
             ]
         ),
+        .target(
+            name: "NativeTTS",
+            dependencies: [
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXFast", package: "mlx-swift"),
+                .product(name: "MLXFFT", package: "mlx-swift"),
+                .product(name: "MLXRandom", package: "mlx-swift"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "Transformers", package: "swift-transformers"),
+            ],
+            path: "Sources/NativeTTS"
+        ),
         .executableTarget(
             name: "asr-test",
             dependencies: ["NativeASR"],
             path: "Sources/asr-test"
+        ),
+        .executableTarget(
+            name: "tts-test",
+            dependencies: [
+                "NativeTTS",
+                .product(name: "MLX", package: "mlx-swift"),
+            ],
+            path: "Sources/tts-test"
+        ),
+        .executableTarget(
+            name: "yuwp_tts",
+            dependencies: [
+                "NativeTTS",
+                .product(name: "MLX", package: "mlx-swift"),
+                "YuwpHTTPServerSupport",
+            ],
+            path: "Sources/yuwp-tts"
         ),
         .executableTarget(
             name: "asr-bench",
