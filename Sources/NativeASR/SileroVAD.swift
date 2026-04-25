@@ -247,9 +247,6 @@ extension SileroVAD {
     /// come exclusively from detected silence gaps, with only short-chunk merges.
     public func chunk(audio: [Float], config: VADChunkingConfig = VADChunkingConfig()) throws -> [VADAudioChunk] {
         let audioDuration = Double(audio.count) / Double(Self.sampleRate)
-        if let maxChunkDuration = config.maxChunkDuration, audioDuration <= maxChunkDuration {
-            return [VADAudioChunk(audio: audio, startTime: 0, endTime: audioDuration)]
-        }
 
         let speechSpans = try detectSpeechSpans(in: audio, config: config)
         guard !speechSpans.isEmpty else {

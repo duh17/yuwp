@@ -38,6 +38,80 @@ public struct SpeechActivityHint: Sendable {
     }
 }
 
+struct AudioEnergyStats: Sendable, Equatable {
+    let rms: Float
+    let peakAmplitude: Float
+    let durationSec: Double
+    let speechLikeDurationSec: Double
+
+    init(
+        rms: Float,
+        peakAmplitude: Float,
+        durationSec: Double,
+        speechLikeDurationSec: Double? = nil
+    ) {
+        self.rms = rms
+        self.peakAmplitude = peakAmplitude
+        self.durationSec = durationSec
+        self.speechLikeDurationSec = min(
+            durationSec,
+            max(0, speechLikeDurationSec ?? durationSec)
+        )
+    }
+}
+
+struct SpeechEvidence: Sendable, Equatable {
+    static let minimumVADSpeechDurationSec = 0.18
+    static let minimumEnergySpeechDurationSec = 0.30
+    static let energySpeechRMS: Float = 0.008
+    static let minimumPeakAmplitude: Float = 0.015
+    static let energyWindowSamples = ASRAudio.sampleRate / 50  // 20 ms
+
+    var hasSpeechActivityHints: Bool
+    var vadSpeechDurationSec: Double
+    var energySpeechDurationSec: Double
+    var peakAmplitude: Float
+
+    init(
+        hasSpeechActivityHints: Bool = false,
+        vadSpeechDurationSec: Double = 0,
+        energySpeechDurationSec: Double = 0,
+        peakAmplitude: Float = 0
+    ) {
+        self.hasSpeechActivityHints = hasSpeechActivityHints
+        self.vadSpeechDurationSec = vadSpeechDurationSec
+        self.energySpeechDurationSec = energySpeechDurationSec
+        self.peakAmplitude = peakAmplitude
+    }
+
+    var hasRecoverableEnergySpeech: Bool {
+        energySpeechDurationSec >= Self.minimumEnergySpeechDurationSec
+            && peakAmplitude >= Self.minimumPeakAmplitude
+    }
+
+    var hasEnoughSpeech: Bool {
+        if vadSpeechDurationSec >= Self.minimumVADSpeechDurationSec {
+            return true
+        }
+        if hasSpeechActivityHints {
+            return false
+        }
+        return hasRecoverableEnergySpeech
+    }
+
+    mutating func ingest(stats: AudioEnergyStats, speechHint: SpeechActivityHint?) {
+        if let speechHint {
+            hasSpeechActivityHints = true
+            if speechHint.hasSpeech {
+                vadSpeechDurationSec += max(0, speechHint.speechDurationSec)
+            }
+        }
+
+        peakAmplitude = max(peakAmplitude, stats.peakAmplitude)
+        energySpeechDurationSec += stats.speechLikeDurationSec
+    }
+}
+
 public struct ChunkResult: Sendable {
     public let text: String
     public let isPartial: Bool
@@ -70,6 +144,7 @@ public final class StreamingSession: @unchecked Sendable {
     private var consecutiveSilence: Int = 0
     private var batchDoneForPause: Bool = false
     private var hasSpeech: Bool = false
+    private var activeSpeechEvidence = SpeechEvidence()
     private var consecutiveSpeechNoGrowth: Int = 0
     private var lastStallBatchAttemptChunk: Int = -1_000_000
     /// Concatenated text from all previously committed segments. Frozen — never
@@ -110,7 +185,9 @@ public final class StreamingSession: @unchecked Sendable {
     public func processChunk(_ audioChunk: [Float], speechHint: SpeechActivityHint? = nil) -> ChunkResult {
         let t0 = Date()
         sessionAudioBuffer.append(contentsOf: audioChunk)
-        let rms = Self.computeRMS(audioChunk)
+        let stats = Self.computeAudioStats(audioChunk)
+        activeSpeechEvidence.ingest(stats: stats, speechHint: speechHint)
+        let rms = stats.rms
         let chunkHasSpeech = speechHint?.hasSpeech ?? (rms >= Self.speechStartRMS)
 
         if chunkHasSpeech { consecutiveSilence = 0; batchDoneForPause = false }
@@ -121,6 +198,7 @@ public final class StreamingSession: @unchecked Sendable {
         // chunks build a fresh active segment. Committed text is never rewritten.
         if config.batchRetranscribe
             && consecutiveSilence >= Self.pauseChunks && !batchDoneForPause && !rawTokens.isEmpty
+            && activeSpeechEvidence.hasEnoughSpeech
         {
             batchDoneForPause = true
             if let segmentText = batchCommitSegmentText() {
@@ -295,6 +373,7 @@ public final class StreamingSession: @unchecked Sendable {
         consecutiveSilence = 0
         batchDoneForPause = false
         hasSpeech = false
+        activeSpeechEvidence = SpeechEvidence()
         consecutiveSpeechNoGrowth = 0
         lastStallBatchAttemptChunk = -1_000_000
     }
@@ -319,8 +398,7 @@ public final class StreamingSession: @unchecked Sendable {
             config: config,
             sessionAudioSampleCount: sessionAudioBuffer.count,
             activeAudioSampleCount: audioBuffer.count,
-            committedText: committedText,
-            hasSpeechInActiveSegment: hasSpeech
+            activeSpeechEvidence: activeSpeechEvidence
         ) {
         case .fullSession:
             if let fullText = batchRetranscribeFullSession() {
@@ -342,7 +420,13 @@ public final class StreamingSession: @unchecked Sendable {
         }
 
         let activeText = rawTokens.isEmpty ? "" : extractText(rawTokens)
-        committedText = Self.appendSegment(committedText, activeText)
+        if Self.shouldAppendActiveTextFallback(
+            config: config,
+            activeText: activeText,
+            activeSpeechEvidence: activeSpeechEvidence
+        ) {
+            committedText = Self.appendSegment(committedText, activeText)
+        }
         lastText = committedText
         return committedText
     }
@@ -351,8 +435,7 @@ public final class StreamingSession: @unchecked Sendable {
         config: StreamConfig,
         sessionAudioSampleCount: Int,
         activeAudioSampleCount: Int,
-        committedText: String,
-        hasSpeechInActiveSegment: Bool
+        activeSpeechEvidence: SpeechEvidence = SpeechEvidence()
     ) -> StopBatchStrategy {
         guard config.batchRetranscribe else { return .none }
 
@@ -362,19 +445,39 @@ public final class StreamingSession: @unchecked Sendable {
 
         case .activeSegmentOnly:
             guard sessionAudioSampleCount >= ASRAudio.sampleRate else { return .none }
+            guard activeAudioSampleCount > 0 else { return .none }
 
-            // For the first segment of a session (no commits yet), match the old
-            // behavior: batch any audio >= 1s, no speech check. This preserves
-            // transcription of quiet speech that never crosses pauseRMS.
-            if committedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if activeSpeechEvidence.hasEnoughSpeech {
                 return .activeSegmentOnly
             }
 
-            // For post-commit trailing segments, require speech in the active
-            // segment to avoid hallucinating over silence while preserving the
-            // committed prefix verbatim.
-            return hasSpeechInActiveSegment ? .activeSegmentOnly : .none
+            let isFirstSegment = sessionAudioSampleCount == activeAudioSampleCount
+
+            // Preserve the first-utterance recovery path when Silero misses a
+            // soft start. In the live server path every chunk carries a VAD
+            // hint, so `hasEnoughSpeech` becomes VAD-gated. If we have at least
+            // one second of the very first segment plus strong energy evidence,
+            // still allow the final batch pass on stop.
+            if isFirstSegment,
+               activeAudioSampleCount >= ASRAudio.sampleRate,
+               activeSpeechEvidence.hasRecoverableEnergySpeech {
+                return .activeSegmentOnly
+            }
+
+            // For later segments, keep the stricter speech gate so trailing
+            // room noise does not trigger a batch hallucination.
+            return .none
         }
+    }
+
+    static func shouldAppendActiveTextFallback(
+        config: StreamConfig,
+        activeText: String,
+        activeSpeechEvidence: SpeechEvidence
+    ) -> Bool {
+        guard !activeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        guard config.batchRetranscribe else { return true }
+        return activeSpeechEvidence.hasEnoughSpeech
     }
 
     /// Concatenate two segment texts with a single space, handling empty inputs
@@ -703,10 +806,59 @@ public final class StreamingSession: @unchecked Sendable {
         }
     }
 
-    private static func computeRMS(_ audio: [Float]) -> Float {
-        guard !audio.isEmpty else { return 0 }
+    static func computeAudioStats(_ audio: [Float]) -> AudioEnergyStats {
+        guard !audio.isEmpty else {
+            return AudioEnergyStats(rms: 0, peakAmplitude: 0, durationSec: 0, speechLikeDurationSec: 0)
+        }
+
         var sum: Float = 0
-        for s in audio { sum += s * s }
-        return sqrt(sum / Float(audio.count))
+        var peak: Float = 0
+        var speechLikeSamples = 0
+
+        var windowSum: Float = 0
+        var windowPeak: Float = 0
+        var windowSampleCount = 0
+
+        for sample in audio {
+            let amplitude = Swift.abs(sample)
+            sum += sample * sample
+            peak = max(peak, amplitude)
+
+            windowSum += sample * sample
+            windowPeak = max(windowPeak, amplitude)
+            windowSampleCount += 1
+
+            if windowSampleCount == SpeechEvidence.energyWindowSamples {
+                if isEnergySpeechWindow(sumSquares: windowSum, peakAmplitude: windowPeak, sampleCount: windowSampleCount) {
+                    speechLikeSamples += windowSampleCount
+                }
+                windowSum = 0
+                windowPeak = 0
+                windowSampleCount = 0
+            }
+        }
+
+        if windowSampleCount > 0,
+           isEnergySpeechWindow(sumSquares: windowSum, peakAmplitude: windowPeak, sampleCount: windowSampleCount) {
+            speechLikeSamples += windowSampleCount
+        }
+
+        return AudioEnergyStats(
+            rms: sqrt(sum / Float(audio.count)),
+            peakAmplitude: peak,
+            durationSec: Double(audio.count) / Double(ASRAudio.sampleRate),
+            speechLikeDurationSec: Double(speechLikeSamples) / Double(ASRAudio.sampleRate)
+        )
+    }
+
+    private static func isEnergySpeechWindow(
+        sumSquares: Float,
+        peakAmplitude: Float,
+        sampleCount: Int
+    ) -> Bool {
+        guard sampleCount > 0 else { return false }
+        let rms = sqrt(sumSquares / Float(sampleCount))
+        return rms >= SpeechEvidence.energySpeechRMS
+            && peakAmplitude >= SpeechEvidence.minimumPeakAmplitude
     }
 }

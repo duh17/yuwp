@@ -189,8 +189,8 @@ struct ASRServerTests {
 
     @Test func silenceProducesMinimalText() async throws {
         let result = try await streamFixture("silence.wav")
-        #expect(result.final.count < 20,
-                Comment(rawValue: "Silence produced too much text: '\(result.final)'"))
+        #expect(result.final.isEmpty,
+                Comment(rawValue: "Silence produced text: '\(result.final)'"))
     }
 
     @Test func batchEndpointAcceptsMultipartUpload() async throws {
@@ -590,8 +590,7 @@ struct StreamingSessionUnitTests {
             config: StreamConfig(),
             sessionAudioSampleCount: ASRAudio.sampleRate * 6,
             activeAudioSampleCount: ASRAudio.sampleRate * 2,
-            committedText: "already committed",
-            hasSpeechInActiveSegment: true
+            activeSpeechEvidence: SpeechEvidence(vadSpeechDurationSec: SpeechEvidence.minimumVADSpeechDurationSec)
         )
 
         #expect(strategy == .activeSegmentOnly)
@@ -601,24 +600,103 @@ struct StreamingSessionUnitTests {
         let strategy = StreamingSession.stopBatchStrategy(
             config: StreamConfig(),
             sessionAudioSampleCount: ASRAudio.sampleRate * 8,
-            activeAudioSampleCount: ASRAudio.sampleRate * 2,
-            committedText: "already committed",
-            hasSpeechInActiveSegment: false
+            activeAudioSampleCount: ASRAudio.sampleRate * 2
         )
 
         #expect(strategy == .none)
     }
 
-    @Test func stopBatchStrategyAllowsFirstSegmentBatchWithoutSpeechFlag() {
+    @Test func stopBatchStrategySkipsFirstSegmentWithoutSpeechEvidence() {
+        let strategy = StreamingSession.stopBatchStrategy(
+            config: StreamConfig(),
+            sessionAudioSampleCount: ASRAudio.sampleRate * 2,
+            activeAudioSampleCount: ASRAudio.sampleRate * 2
+        )
+
+        #expect(strategy == .none)
+    }
+
+    @Test func stopBatchStrategySkipsSilentFirstSegmentWithSpeechHints() {
+        let strategy = StreamingSession.stopBatchStrategy(
+            config: StreamConfig(),
+            sessionAudioSampleCount: ASRAudio.sampleRate * 2,
+            activeAudioSampleCount: 0,
+            activeSpeechEvidence: SpeechEvidence(hasSpeechActivityHints: true)
+        )
+
+        #expect(strategy == .none)
+    }
+
+    @Test func stopBatchStrategyAllowsVADDetectedFirstSegment() {
         let strategy = StreamingSession.stopBatchStrategy(
             config: StreamConfig(),
             sessionAudioSampleCount: ASRAudio.sampleRate * 2,
             activeAudioSampleCount: ASRAudio.sampleRate * 2,
-            committedText: "",
-            hasSpeechInActiveSegment: false
+            activeSpeechEvidence: SpeechEvidence(
+                hasSpeechActivityHints: true,
+                vadSpeechDurationSec: SpeechEvidence.minimumVADSpeechDurationSec
+            )
         )
 
         #expect(strategy == .activeSegmentOnly)
+    }
+
+    @Test func stopBatchStrategyAllowsEnergyDetectedFirstSegment() {
+        let strategy = StreamingSession.stopBatchStrategy(
+            config: StreamConfig(),
+            sessionAudioSampleCount: ASRAudio.sampleRate * 2,
+            activeAudioSampleCount: ASRAudio.sampleRate * 2,
+            activeSpeechEvidence: SpeechEvidence(
+                energySpeechDurationSec: SpeechEvidence.minimumEnergySpeechDurationSec,
+                peakAmplitude: SpeechEvidence.minimumPeakAmplitude
+            )
+        )
+
+        #expect(strategy == .activeSegmentOnly)
+    }
+
+    @Test func stopBatchStrategyAllowsFirstSegmentBatchRecoveryWhenVADMissesSoftSpeech() {
+        let strategy = StreamingSession.stopBatchStrategy(
+            config: StreamConfig(),
+            sessionAudioSampleCount: ASRAudio.sampleRate * 2,
+            activeAudioSampleCount: ASRAudio.sampleRate * 2,
+            activeSpeechEvidence: SpeechEvidence(
+                hasSpeechActivityHints: true,
+                energySpeechDurationSec: SpeechEvidence.minimumEnergySpeechDurationSec,
+                peakAmplitude: SpeechEvidence.minimumPeakAmplitude
+            )
+        )
+
+        #expect(strategy == .activeSegmentOnly)
+    }
+
+    @Test func stopBatchStrategyKeepsEnergyOnlyRecoveryFirstSegmentOnly() {
+        let strategy = StreamingSession.stopBatchStrategy(
+            config: StreamConfig(),
+            sessionAudioSampleCount: ASRAudio.sampleRate * 5,
+            activeAudioSampleCount: ASRAudio.sampleRate * 2,
+            activeSpeechEvidence: SpeechEvidence(
+                hasSpeechActivityHints: true,
+                energySpeechDurationSec: SpeechEvidence.minimumEnergySpeechDurationSec,
+                peakAmplitude: SpeechEvidence.minimumPeakAmplitude
+            )
+        )
+
+        #expect(strategy == .none)
+    }
+
+    @Test func stopBatchStrategySkipsLowEnergyNoise() {
+        let strategy = StreamingSession.stopBatchStrategy(
+            config: StreamConfig(),
+            sessionAudioSampleCount: ASRAudio.sampleRate * 2,
+            activeAudioSampleCount: ASRAudio.sampleRate * 2,
+            activeSpeechEvidence: SpeechEvidence(
+                energySpeechDurationSec: SpeechEvidence.minimumEnergySpeechDurationSec,
+                peakAmplitude: SpeechEvidence.minimumPeakAmplitude * 0.5
+            )
+        )
+
+        #expect(strategy == .none)
     }
 
     @Test func stopBatchStrategyUsesSessionContextForShortTrailingSpeech() {
@@ -626,8 +704,7 @@ struct StreamingSessionUnitTests {
             config: StreamConfig(),
             sessionAudioSampleCount: ASRAudio.sampleRate * 5,
             activeAudioSampleCount: ASRAudio.sampleRate / 2,
-            committedText: "already committed",
-            hasSpeechInActiveSegment: true
+            activeSpeechEvidence: SpeechEvidence(vadSpeechDurationSec: SpeechEvidence.minimumVADSpeechDurationSec)
         )
 
         #expect(strategy == .activeSegmentOnly)
@@ -637,12 +714,101 @@ struct StreamingSessionUnitTests {
         let strategy = StreamingSession.stopBatchStrategy(
             config: StreamConfig(finalizationPass: .fullSessionRetranscribe),
             sessionAudioSampleCount: ASRAudio.sampleRate * 5,
-            activeAudioSampleCount: ASRAudio.sampleRate / 2,
-            committedText: "already committed",
-            hasSpeechInActiveSegment: false
+            activeAudioSampleCount: ASRAudio.sampleRate / 2
         )
 
         #expect(strategy == .fullSession)
+    }
+
+    @Test func speechEvidenceAccumulatesVADAndEnergySeparately() {
+        var vadEvidence = SpeechEvidence()
+        vadEvidence.ingest(
+            stats: AudioEnergyStats(rms: 0, peakAmplitude: 0, durationSec: 0.2),
+            speechHint: SpeechActivityHint(hasSpeech: true, speechDurationSec: SpeechEvidence.minimumVADSpeechDurationSec)
+        )
+
+        var energyEvidence = SpeechEvidence()
+        energyEvidence.ingest(
+            stats: AudioEnergyStats(
+                rms: SpeechEvidence.energySpeechRMS,
+                peakAmplitude: SpeechEvidence.minimumPeakAmplitude,
+                durationSec: SpeechEvidence.minimumEnergySpeechDurationSec,
+                speechLikeDurationSec: SpeechEvidence.minimumEnergySpeechDurationSec
+            ),
+            speechHint: nil
+        )
+
+        #expect(vadEvidence.hasEnoughSpeech)
+        #expect(energyEvidence.hasEnoughSpeech)
+    }
+
+    @Test func speechEvidenceOnlyCreditsSpeechLikeWindowsForEnergy() {
+        let chunkSamples = Int(1.75 * Double(ASRAudio.sampleRate))
+        let burstSamples = SpeechEvidence.energyWindowSamples * 2
+        var audio = Array(repeating: Float.zero, count: chunkSamples)
+        for index in 0..<burstSamples {
+            audio[index] = SpeechEvidence.minimumPeakAmplitude * 2
+        }
+
+        let stats = StreamingSession.computeAudioStats(audio)
+        #expect(stats.durationSec > SpeechEvidence.minimumEnergySpeechDurationSec)
+        #expect(stats.speechLikeDurationSec < SpeechEvidence.minimumEnergySpeechDurationSec)
+
+        var evidence = SpeechEvidence()
+        evidence.ingest(stats: stats, speechHint: nil)
+
+        #expect(evidence.energySpeechDurationSec == stats.speechLikeDurationSec)
+        #expect(!evidence.hasEnoughSpeech)
+    }
+
+    @Test func speechEvidenceRejectsSilenceAndLowNoise() {
+        var silence = SpeechEvidence()
+        silence.ingest(
+            stats: AudioEnergyStats(rms: 0, peakAmplitude: 0, durationSec: 2),
+            speechHint: SpeechActivityHint(hasSpeech: false, speechDurationSec: 0)
+        )
+
+        var lowNoise = SpeechEvidence()
+        lowNoise.ingest(
+            stats: AudioEnergyStats(
+                rms: SpeechEvidence.energySpeechRMS * 0.5,
+                peakAmplitude: SpeechEvidence.minimumPeakAmplitude * 0.5,
+                durationSec: 2,
+                speechLikeDurationSec: 0
+            ),
+            speechHint: nil
+        )
+
+        #expect(!silence.hasEnoughSpeech)
+        #expect(!lowNoise.hasEnoughSpeech)
+    }
+
+    @Test func speechEvidenceTrustsNegativeVADOverEnergy() {
+        var evidence = SpeechEvidence()
+        evidence.ingest(
+            stats: AudioEnergyStats(
+                rms: SpeechEvidence.energySpeechRMS * 2,
+                peakAmplitude: SpeechEvidence.minimumPeakAmplitude * 2,
+                durationSec: SpeechEvidence.minimumEnergySpeechDurationSec,
+                speechLikeDurationSec: SpeechEvidence.minimumEnergySpeechDurationSec
+            ),
+            speechHint: SpeechActivityHint(hasSpeech: false, speechDurationSec: 0)
+        )
+
+        #expect(!evidence.hasEnoughSpeech)
+    }
+
+    @Test func activeTextFallbackRequiresSpeechEvidenceWhenBatchingEnabled() {
+        #expect(!StreamingSession.shouldAppendActiveTextFallback(
+            config: StreamConfig(),
+            activeText: "Okay.",
+            activeSpeechEvidence: SpeechEvidence()
+        ))
+        #expect(StreamingSession.shouldAppendActiveTextFallback(
+            config: StreamConfig(),
+            activeText: "Real words",
+            activeSpeechEvidence: SpeechEvidence(vadSpeechDurationSec: SpeechEvidence.minimumVADSpeechDurationSec)
+        ))
     }
 
     @Test func deriveActiveTextReturnsTailForExactCommittedPrefix() {

@@ -10,7 +10,10 @@ public enum BatchTranscriptionDefaults {
         speechPad: 0.02,
         splitMinSilenceDuration: 0.5,
         maxChunkDuration: maxChunkDurationSec,
-        minChunkDuration: 30.0
+        // Keep clearly separated utterances as distinct chunks so batch ASR
+        // does not flatten mixed-language segments into a single dominant
+        // language when the clip is still well under the hard max length.
+        minChunkDuration: 2.0
     )
 
     public static let energyConfig = EnergyChunkingConfig(

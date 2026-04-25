@@ -74,6 +74,29 @@ struct SileroVADTests {
         }
     }
 
+    @Test func shortAudioAlsoSplitsNearLongSilenceGapWhenUnderMaxChunkDuration() throws {
+        let vad = try SileroVAD()
+        let speech = Array(try loadFixtureAudio("jfk.wav").prefix(SileroVAD.sampleRate * 4))
+        let silence = [Float](repeating: 0, count: SileroVAD.sampleRate * 3)
+        let audio = speech + silence + speech
+
+        let chunks = try vad.chunk(audio: audio, config: VADChunkingConfig(
+            threshold: 0.5,
+            minSpeechDuration: 0.25,
+            minSilenceDuration: 0.1,
+            speechPad: 0.03,
+            splitMinSilenceDuration: 1.0,
+            maxChunkDuration: 120.0,
+            minChunkDuration: 1.0
+        ))
+
+        #expect(chunks.count >= 2,
+                Comment(rawValue: "Expected silence-guided chunking under the max duration, got \(chunks.count) chunk(s)"))
+        let boundaries = chunks.dropLast().map(\.endTime)
+        #expect(boundaries.contains(where: { $0 > 4.5 && $0 < 6.5 }),
+                Comment(rawValue: "Expected a boundary near the long silence gap, got boundaries: \(boundaries)"))
+    }
+
     @Test func energyChunkingSplitsNearSilenceAroundTargetBoundary() throws {
         let speech = Array(try loadFixtureAudio("jfk.wav").prefix(SileroVAD.sampleRate * 4))
         let speechBed = Array(repeating: speech, count: 29).flatMap { $0 }
