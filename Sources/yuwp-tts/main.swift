@@ -242,6 +242,18 @@ func codableJSONObject<T: Encodable>(_ value: T) -> Any? {
     return try? JSONSerialization.jsonObject(with: data)
 }
 
+private let longFormChunkTargetCharacters = 220
+private let longFormChunkHardCharacterLimit = 320
+
+func synthesisTextChunks(for text: String) -> [String] {
+    let chunks = LongFormTTSChunker.chunk(
+        text,
+        targetCharacters: longFormChunkTargetCharacters,
+        hardCharacterLimit: longFormChunkHardCharacterLimit
+    )
+    return chunks.isEmpty ? [text] : chunks
+}
+
 actor AsyncGate {
     private var isOccupied = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -329,24 +341,30 @@ final class TTSHTTPState: @unchecked Sendable {
         do {
             let voiceContext = try resolveVoiceContext(for: speechRequest)
             let generationParameters = generationParameters(for: speechRequest, voice: voiceContext.record)
-            let audio = if let conditioning = voiceContext.conditioning {
-                try await model.generate(
-                    text: speechRequest.input,
-                    conditioning: conditioning,
-                    generationParameters: generationParameters
-                )
-            } else {
-                try await model.generate(
-                    text: speechRequest.input,
-                    voice: voiceContext.voice,
-                    refAudio: voiceContext.refAudio,
-                    refText: voiceContext.refText,
-                    language: voiceContext.language,
-                    generationParameters: generationParameters
-                )
+            let textChunks = synthesisTextChunks(for: speechRequest.input)
+            var samples: [Float] = []
+
+            for textChunk in textChunks {
+                let audio = if let conditioning = voiceContext.conditioning {
+                    try await model.generate(
+                        text: textChunk,
+                        conditioning: conditioning,
+                        generationParameters: generationParameters
+                    )
+                } else {
+                    try await model.generate(
+                        text: textChunk,
+                        voice: voiceContext.voice,
+                        refAudio: voiceContext.refAudio,
+                        refText: voiceContext.refText,
+                        language: voiceContext.language,
+                        generationParameters: generationParameters
+                    )
+                }
+                MLX.eval(audio)
+                samples.append(contentsOf: audio.asArray(Float.self))
             }
-            MLX.eval(audio)
-            let samples = audio.asArray(Float.self)
+
             let outputPath = "/tmp/yuwp-tts-http-\(UUID().uuidString).wav"
             try AudioUtils.writeWavFile(
                 samples: samples,
@@ -498,49 +516,52 @@ final class TTSHTTPState: @unchecked Sendable {
             var generationInfo: AudioGenerationInfo?
             let voiceContext = try resolveVoiceContext(for: speechRequest)
             let generationParameters = generationParameters(for: speechRequest, voice: voiceContext.record)
+            let textChunks = synthesisTextChunks(for: speechRequest.input)
 
-            let stream = if let conditioning = voiceContext.conditioning {
-                model.generateStream(
-                    text: speechRequest.input,
-                    conditioning: conditioning,
-                    generationParameters: generationParameters,
-                    streamingInterval: streamingInterval
-                )
-            } else {
-                model.generateStream(
-                    text: speechRequest.input,
-                    voice: voiceContext.voice,
-                    refAudio: voiceContext.refAudio,
-                    refText: voiceContext.refText,
-                    language: voiceContext.language,
-                    generationParameters: generationParameters,
-                    streamingInterval: streamingInterval
-                )
-            }
+            for textChunk in textChunks {
+                let stream = if let conditioning = voiceContext.conditioning {
+                    model.generateStream(
+                        text: textChunk,
+                        conditioning: conditioning,
+                        generationParameters: generationParameters,
+                        streamingInterval: streamingInterval
+                    )
+                } else {
+                    model.generateStream(
+                        text: textChunk,
+                        voice: voiceContext.voice,
+                        refAudio: voiceContext.refAudio,
+                        refText: voiceContext.refText,
+                        language: voiceContext.language,
+                        generationParameters: generationParameters,
+                        streamingInterval: streamingInterval
+                    )
+                }
 
-            for try await event in stream {
-                switch event {
-                case .token:
-                    tokenCount += 1
-                case .info(let info):
-                    generationInfo = info
-                case .audio(let audioChunk):
-                    MLX.eval(audioChunk)
-                    let samples = audioChunk.asArray(Float.self)
-                    guard !samples.isEmpty else { continue }
-                    if firstAudioTime == nil {
-                        firstAudioTime = Date().timeIntervalSince(synthStart)
+                for try await event in stream {
+                    switch event {
+                    case .token:
+                        tokenCount += 1
+                    case .info(let info):
+                        generationInfo = info
+                    case .audio(let audioChunk):
+                        MLX.eval(audioChunk)
+                        let samples = audioChunk.asArray(Float.self)
+                        guard !samples.isEmpty else { continue }
+                        if firstAudioTime == nil {
+                            firstAudioTime = Date().timeIntervalSince(synthStart)
+                        }
+                        chunkCount += 1
+                        totalSamples += samples.count
+                        writeJSONLine([
+                            "event": "audio",
+                            "chunk": chunkCount,
+                            "samples": samples.count,
+                            "seconds": Double(samples.count) / Double(model.sampleRate),
+                            "elapsed_seconds": Date().timeIntervalSince(synthStart),
+                            "audio": pcm16Base64(samples: samples),
+                        ], to: writer)
                     }
-                    chunkCount += 1
-                    totalSamples += samples.count
-                    writeJSONLine([
-                        "event": "audio",
-                        "chunk": chunkCount,
-                        "samples": samples.count,
-                        "seconds": Double(samples.count) / Double(model.sampleRate),
-                        "elapsed_seconds": Date().timeIntervalSince(synthStart),
-                        "audio": pcm16Base64(samples: samples),
-                    ], to: writer)
                 }
             }
 
@@ -672,7 +693,17 @@ final class TTSHTTPState: @unchecked Sendable {
             let previewURL = try voiceLibrary.previewURL(for: voiceID)
             try response.body.write(to: previewURL, options: [.atomic])
             _ = try voiceLibrary.markPreview(id: voiceID)
+            _ = try voiceLibrary.promotePreviewToReference(
+                id: voiceID,
+                referenceText: speechRequest.input,
+                overwriteExisting: false
+            )
+            voiceConditioningCache.removeValue(forKey: voiceID)
             return response
+        } catch VoiceLibraryError.notFound {
+            return jsonResponse(status: 404, ["error": "voice not found"])
+        } catch VoiceLibraryError.invalidReferenceAudio {
+            return jsonResponse(status: 400, ["error": "invalid preview reference audio"])
         } catch {
             return jsonResponse(status: 400, ["error": error.localizedDescription])
         }
@@ -882,50 +913,52 @@ func runServe(_ args: [String]) async throws {
             var tokenCount = 0
             var generationInfo: AudioGenerationInfo?
 
-            let stream = if let conditioning {
-                model.generateStream(
-                    text: request.text,
-                    conditioning: conditioning,
-                    generationParameters: generationParameters,
-                    streamingInterval: streamingInterval
-                )
-            } else {
-                model.generateStream(
-                    text: request.text,
-                    voice: options.voice,
-                    refAudio: refAudio,
-                    refText: options.referenceText,
-                    language: options.language,
-                    generationParameters: generationParameters,
-                    streamingInterval: streamingInterval
-                )
-            }
+            for textChunk in synthesisTextChunks(for: request.text) {
+                let stream = if let conditioning {
+                    model.generateStream(
+                        text: textChunk,
+                        conditioning: conditioning,
+                        generationParameters: generationParameters,
+                        streamingInterval: streamingInterval
+                    )
+                } else {
+                    model.generateStream(
+                        text: textChunk,
+                        voice: options.voice,
+                        refAudio: refAudio,
+                        refText: options.referenceText,
+                        language: options.language,
+                        generationParameters: generationParameters,
+                        streamingInterval: streamingInterval
+                    )
+                }
 
-            for try await event in stream {
-                switch event {
-                case .token:
-                    tokenCount += 1
-                case .info(let info):
-                    generationInfo = info
-                case .audio(let audioChunk):
-                    MLX.eval(audioChunk)
-                    let samples = audioChunk.asArray(Float.self)
-                    guard !samples.isEmpty else { continue }
-                    if firstAudioTime == nil {
-                        firstAudioTime = Date().timeIntervalSince(synthStart)
-                    }
-                    chunkCount += 1
-                    totalSamples += samples.count
-                    try writer.writeChunk(samples)
-                    if emitChunkEvents {
-                        emitJSON([
-                            "event": "chunk",
-                            "id": requestID,
-                            "chunk": chunkCount,
-                            "samples": samples.count,
-                            "seconds": Double(samples.count) / Double(model.sampleRate),
-                            "elapsedSeconds": Date().timeIntervalSince(synthStart),
-                        ])
+                for try await event in stream {
+                    switch event {
+                    case .token:
+                        tokenCount += 1
+                    case .info(let info):
+                        generationInfo = info
+                    case .audio(let audioChunk):
+                        MLX.eval(audioChunk)
+                        let samples = audioChunk.asArray(Float.self)
+                        guard !samples.isEmpty else { continue }
+                        if firstAudioTime == nil {
+                            firstAudioTime = Date().timeIntervalSince(synthStart)
+                        }
+                        chunkCount += 1
+                        totalSamples += samples.count
+                        try writer.writeChunk(samples)
+                        if emitChunkEvents {
+                            emitJSON([
+                                "event": "chunk",
+                                "id": requestID,
+                                "chunk": chunkCount,
+                                "samples": samples.count,
+                                "seconds": Double(samples.count) / Double(model.sampleRate),
+                                "elapsedSeconds": Date().timeIntervalSince(synthStart),
+                            ])
+                        }
                     }
                 }
             }
@@ -1005,35 +1038,37 @@ do {
         var tokenCount = 0
         var generationInfo: AudioGenerationInfo?
 
-        let stream = model.generateStream(
-            text: options.text,
-            voice: options.voice,
-            refAudio: refAudio,
-            refText: options.referenceText,
-            language: options.language,
-            generationParameters: generationParameters,
-            streamingInterval: options.streamingInterval
-        )
+        for textChunk in synthesisTextChunks(for: options.text) {
+            let stream = model.generateStream(
+                text: textChunk,
+                voice: options.voice,
+                refAudio: refAudio,
+                refText: options.referenceText,
+                language: options.language,
+                generationParameters: generationParameters,
+                streamingInterval: options.streamingInterval
+            )
 
-        for try await event in stream {
-            switch event {
-            case .token:
-                tokenCount += 1
-            case .info(let info):
-                generationInfo = info
-            case .audio(let audioChunk):
-                MLX.eval(audioChunk)
-                let samples = audioChunk.asArray(Float.self)
-                guard !samples.isEmpty else { continue }
-                if firstAudioTime == nil {
-                    firstAudioTime = Date().timeIntervalSince(synthStart)
+            for try await event in stream {
+                switch event {
+                case .token:
+                    tokenCount += 1
+                case .info(let info):
+                    generationInfo = info
+                case .audio(let audioChunk):
+                    MLX.eval(audioChunk)
+                    let samples = audioChunk.asArray(Float.self)
+                    guard !samples.isEmpty else { continue }
+                    if firstAudioTime == nil {
+                        firstAudioTime = Date().timeIntervalSince(synthStart)
+                    }
+                    chunkCount += 1
+                    totalSamples += samples.count
+                    try writer.writeChunk(samples)
+                    try player?.schedule(samples: samples)
+                    let chunkDuration = Double(samples.count) / Double(model.sampleRate)
+                    fputs("stream chunk \(chunkCount): \(String(format: "%.2f", chunkDuration))s audio at +\(String(format: "%.2f", Date().timeIntervalSince(synthStart)))s\n", stderr)
                 }
-                chunkCount += 1
-                totalSamples += samples.count
-                try writer.writeChunk(samples)
-                try player?.schedule(samples: samples)
-                let chunkDuration = Double(samples.count) / Double(model.sampleRate)
-                fputs("stream chunk \(chunkCount): \(String(format: "%.2f", chunkDuration))s audio at +\(String(format: "%.2f", Date().timeIntervalSince(synthStart)))s\n", stderr)
             }
         }
         _ = writer.finalize()
@@ -1050,17 +1085,20 @@ do {
             fputs(generationInfo.summary + "\n", stderr)
         }
     } else {
-        let audio = try await model.generate(
-            text: options.text,
-            voice: options.voice,
-            refAudio: refAudio,
-            refText: options.referenceText,
-            language: options.language,
-            generationParameters: generationParameters
-        )
-        MLX.eval(audio)
+        var samples: [Float] = []
+        for textChunk in synthesisTextChunks(for: options.text) {
+            let audio = try await model.generate(
+                text: textChunk,
+                voice: options.voice,
+                refAudio: refAudio,
+                refText: options.referenceText,
+                language: options.language,
+                generationParameters: generationParameters
+            )
+            MLX.eval(audio)
+            samples.append(contentsOf: audio.asArray(Float.self))
+        }
         let synthTime = Date().timeIntervalSince(synthStart)
-        let samples = audio.asArray(Float.self)
         try AudioUtils.writeWavFile(
             samples: samples,
             sampleRate: Double(model.sampleRate),

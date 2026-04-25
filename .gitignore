@@ -22,3 +22,4 @@ benchmarks/**/__pycache__/
 benchmarks/**/*.py[cod]
 release/
 release-local/
+demo-audio/

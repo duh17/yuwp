@@ -240,6 +240,28 @@ final class VoiceLibrary: @unchecked Sendable {
         return record
     }
 
+    func promotePreviewToReference(id: String, referenceText: String, overwriteExisting: Bool = false) throws -> VoiceRecord {
+        guard Self.isValidID(id) else { throw VoiceLibraryError.invalidID }
+        lock.lock()
+        defer { lock.unlock() }
+        guard var record = try readRecordUnlocked(id) else { throw VoiceLibraryError.notFound }
+        let previewURL = voiceDirectoryUnlocked(id).appendingPathComponent("preview.wav")
+        guard FileManager.default.fileExists(atPath: previewURL.path) else { throw VoiceLibraryError.invalidReferenceAudio }
+
+        let trimmedText = referenceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { throw VoiceLibraryError.invalidReferenceAudio }
+
+        if overwriteExisting || record.referenceAudioFilename == nil {
+            record.referenceAudioFilename = "preview.wav"
+        }
+        if overwriteExisting || record.referenceText == nil || record.referenceText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+            record.referenceText = trimmedText
+        }
+        record.updatedAt = Self.nowString()
+        try writeRecordUnlocked(record)
+        return record
+    }
+
     private func readRecordUnlocked(_ id: String) throws -> VoiceRecord? {
         let url = voiceDirectoryUnlocked(id).appendingPathComponent("voice.json")
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }

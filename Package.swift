@@ -121,7 +121,7 @@ let package = Package(
         ),
         .testTarget(
             name: "YuwpTests",
-            dependencies: ["Yuwp", "NativeASR", "ASRServerSupport", "ASRIPC"],
+            dependencies: ["Yuwp", "NativeASR", "NativeTTS", "ASRServerSupport", "ASRIPC"],
             path: "Tests",
             exclude: ["fixtures"]
         ),
