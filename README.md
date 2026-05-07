@@ -1,11 +1,16 @@
 # Yuwp
 
-Yuwp is a small on-device dictation app for macOS.
+Yuwp is local dictation for macOS. Press a hotkey, speak, and Yuwp inserts the text into the app you were already using.
 
-- Runs locally with Swift + MLX (Qwen3-ASR)
+- Runs locally on Apple Silicon with Swift + MLX (Qwen3-ASR)
 - Uses a global hotkey to start/stop dictation
 - Injects text into most apps (AX API, terminal key events, clipboard fallback)
 - No cloud API required after model download
+
+## Demo
+
+- Product page and demo: https://chaosdonkey.dev/yuwp/
+- Latest release: https://github.com/duh17/yuwp/releases/latest
 
 ## Requirements
 
@@ -49,20 +54,28 @@ Build CLIs:
 ```bash
 swift build -c release --product yuwp-asr
 swift build -c release --product yuwp-tts
-swift build -c release --product swift-mlx-asr-server
 bash scripts/build_mlx_metallib.sh release
+```
+
+Fresh app-bundle / DMG installs also include:
+
+```bash
+/Applications/Yuwp.app/Contents/MacOS/yuwp-asr
+/Applications/Yuwp.app/Contents/MacOS/yuwp-tts
 ```
 
 Transcribe a file:
 
 ```bash
 .build/arm64-apple-macosx/release/yuwp-asr transcribe Tests/fixtures/jfk.wav
+# or from an installed app bundle / DMG
+/Applications/Yuwp.app/Contents/MacOS/yuwp-asr transcribe Tests/fixtures/jfk.wav
 ```
 
 Run standalone ASR HTTP server (default transport is stdio, so pass `--transport http`):
 
 ```bash
-.build/arm64-apple-macosx/release/swift-mlx-asr-server <model-dir> --transport http --host 127.0.0.1 --port 7936
+.build/arm64-apple-macosx/release/yuwp-asr serve --model <asr-model-dir> --transport http --host 127.0.0.1 --port 7936
 curl -sf http://127.0.0.1:7936/v1/info | jq .
 ```
 
@@ -71,6 +84,14 @@ Run standalone TTS HTTP server:
 ```bash
 .build/arm64-apple-macosx/release/yuwp-tts serve --transport http --model <qwen3-tts-model-dir> --host 127.0.0.1 --port 7937
 curl -sf http://127.0.0.1:7937/v1/info | jq .
+```
+
+Generate speech directly from the CLI:
+
+```bash
+.build/arm64-apple-macosx/release/yuwp-tts --model <qwen3-tts-model-dir> --text "Hello from Yuwp" --out /tmp/hello.wav
+# or from an installed app bundle / DMG
+/Applications/Yuwp.app/Contents/MacOS/yuwp-tts --model <qwen3-tts-model-dir> --text "Hello from Yuwp" --out /tmp/hello.wav
 ```
 
 TTS exposes `POST /v1/audio/speech` for full WAV responses and `POST /v1/audio/speech/stream` for chunked NDJSON audio events (`metadata`, `audio`, `done`, `error`) with base64 `pcm_s16le` chunks.

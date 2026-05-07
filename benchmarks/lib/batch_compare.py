@@ -18,13 +18,13 @@ Interface note:
 
 Examples:
   # Yuwp server vs mlx-audio on one long file, with transcript diffs
-  uv run benchmarks/cli.py compare \
+  uv run benchmarks/cli.py asr compare \
     --audio /tmp/yuwp-subtitle-bench/video-32k.m4a \
     --tool yuwp --tool mlx-audio \
     --compare-text
 
   # VAD vs low-energy fallback on the same Yuwp model
-  uv run benchmarks/cli.py compare \
+  uv run benchmarks/cli.py asr compare \
     --audio /tmp/yuwp-subtitle-bench/video-32k.m4a \
     --tool yuwp \
     --yuwp-chunking vad \
@@ -32,7 +32,7 @@ Examples:
     --compare-text
 
   # Reproduce the practical comparison, but explicitly
-  uv run benchmarks/cli.py compare \
+  uv run benchmarks/cli.py asr compare \
     --audio /path/to/qwen-asr/samples/jfk.wav \
     --audio /tmp/yuwp-subtitle-bench/video-4m.m4a \
     --audio /tmp/yuwp-subtitle-bench/video-32k.m4a \
@@ -65,7 +65,6 @@ from urllib.request import Request, urlopen
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRACKED_FIXTURES_DIR = REPO_ROOT / "Tests" / "fixtures"
 QWEN_REPO = Path.home() / "workspace" / "qwen-asr"
-YUWP_SERVER_BIN = REPO_ROOT / ".build" / "arm64-apple-macosx" / "release" / "swift-mlx-asr-server"
 YUWP_CANONICAL_CLI_BIN = REPO_ROOT / ".build" / "arm64-apple-macosx" / "release" / "yuwp-asr"
 YUWP_METALLIB = REPO_ROOT / ".build" / "arm64-apple-macosx" / "release" / "mlx.metallib"
 DEFAULT_YUWP_MODEL = Path.home() / ".cache" / "huggingface" / "hub" / "models--mlx-community--Qwen3-ASR-0.6B-bf16" / "snapshots" / "eae2b51f96265328f1e7beced788adb0e4536f92"
@@ -289,9 +288,7 @@ def parse_qwen_stderr(stderr: str) -> tuple[float, float]:
 
 
 def resolve_yuwp_server_bin() -> Path:
-    if YUWP_CANONICAL_CLI_BIN.exists():
-        return YUWP_CANONICAL_CLI_BIN
-    return YUWP_SERVER_BIN
+    return YUWP_CANONICAL_CLI_BIN
 
 
 def start_yuwp_server(model_dir: Path, disable_vad: bool) -> PreparedYuwpServer:
@@ -299,11 +296,16 @@ def start_yuwp_server(model_dir: Path, disable_vad: bool) -> PreparedYuwpServer:
     log_file.close()
     port = find_free_port()
     server_bin = resolve_yuwp_server_bin()
-    command = [str(server_bin)]
-    if server_bin.name == "yuwp-asr":
-        command += ["serve", "--model", str(model_dir), "--port", str(port)]
-    else:
-        command += [str(model_dir), "--port", str(port)]
+    command = [
+        str(server_bin),
+        "serve",
+        "--model",
+        str(model_dir),
+        "--transport",
+        "http",
+        "--port",
+        str(port),
+    ]
     if disable_vad:
         command.append("--disable-vad")
 
@@ -353,10 +355,7 @@ def resolve_yuwp_cli_bin() -> Path:
 
 def run_yuwp_cli(audio_path: Path, model_dir: Path) -> tuple[str, float, float]:
     cli_bin = resolve_yuwp_cli_bin()
-    command = [str(cli_bin)]
-    if cli_bin.name == "yuwp-asr":
-        command += ["transcribe"]
-    command += [str(audio_path), "--model", str(model_dir), "--format", "json"]
+    command = [str(cli_bin), "transcribe", str(audio_path), "--model", str(model_dir), "--format", "json"]
     started = time.perf_counter()
     process = subprocess.run(command, capture_output=True, text=True, cwd=REPO_ROOT)
     wall_s = time.perf_counter() - started

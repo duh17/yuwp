@@ -1,4 +1,7 @@
 #!/usr/bin/env -S uv run --python 3.14 --script
+# /// script
+# dependencies = ["numpy", "psutil", "requests", "matplotlib"]
+# ///
 """Front door for repo-local benchmark tooling."""
 
 from __future__ import annotations
@@ -13,13 +16,9 @@ if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
 
 COMMANDS = {
-    "compare": ("lib.batch_compare", "Cross-tool batch transcription comparisons"),
-    "server-load": ("lib.native_server", "Concurrent HTTP server benchmark"),
-    "stream-quality": ("lib.stream_quality", "Streaming quality canary benchmark"),
-    "subtitles": ("lib.subtitles", "Timed subtitle-output benchmark"),
-    "plot-native": ("lib.plot_native", "Plot native server benchmark JSON"),
+    "asr": ("lib.asr", "Unified ASR benchmark scenarios: load, quality, compare, remote, subtitles"),
+    "plot": ("lib.plot_native", "Plot benchmark JSON from `asr load --json`"),
 }
-
 
 def print_usage() -> None:
     print("Usage: benchmarks/cli.py <command> [options]\n")

@@ -7,8 +7,8 @@
 Render comparison plots from native server benchmark JSON output.
 
 Examples:
-  uv run benchmarks/cli.py plot-native /tmp/yuwp-bench.json
-  uv run benchmarks/cli.py plot-native /tmp/yuwp-bench.json --out-dir /tmp/yuwp-bench-plots
+  uv run benchmarks/cli.py plot /tmp/yuwp-bench.json
+  uv run benchmarks/cli.py plot /tmp/yuwp-bench.json --out-dir /tmp/yuwp-bench-plots
 """
 
 from __future__ import annotations
@@ -297,7 +297,7 @@ def write_index(results_path: Path, images: list[Path], out_dir: Path, payload: 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot results from the native server benchmark")
-    parser.add_argument("json", help="Path to benchmark JSON from `benchmarks/cli.py server-load`")
+    parser.add_argument("json", help="Path to benchmark JSON from `benchmarks/cli.py asr load --json`")
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help=f"Output directory (default: {DEFAULT_OUT_DIR})")
     return parser.parse_args()
 

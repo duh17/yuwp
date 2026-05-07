@@ -231,8 +231,8 @@ def main() -> int:
         json.dumps(
             {
                 "status": server_info.get("status"),
-                "streaming_model": server_info.get("streaming_model"),
-                "batch_model": server_info.get("batch_model"),
+                "model": server_info.get("model"),
+                "final_accuracy_pass_model": server_info.get("final_accuracy_pass_model"),
                 "aligner": server_info.get("aligner"),
                 "vad": server_info.get("vad"),
             },

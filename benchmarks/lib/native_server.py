@@ -15,14 +15,14 @@ Interface note:
 
 Examples:
   # Compare the two built-in single-model presets on a balanced corpus.
-  uv run benchmarks/cli.py server-load small large --balanced 5 --concurrency 1 2 4
+  uv run benchmarks/cli.py asr load small large --balanced 5 --concurrency 1 2 4
 
   # Stress one model with real-time pacing and save JSON for later review.
-  uv run benchmarks/cli.py server-load large --balanced 5 --concurrency 1 2 4 \
+  uv run benchmarks/cli.py asr load large --balanced 5 --concurrency 1 2 4 \
     --pace realtime --capture-text --json /tmp/native-bench.json
 
   # Run on explicit files.
-  uv run benchmarks/cli.py server-load small large \
+  uv run benchmarks/cli.py asr load small large \
     --files path/to/audio1.flac path/to/audio2.flac
 """
 
@@ -189,13 +189,11 @@ def find_server_binary() -> Path:
     candidates = [
         Path(".build/arm64-apple-macosx/release/yuwp-asr"),
         Path(".build/release/yuwp-asr"),
-        Path(".build/arm64-apple-macosx/release/swift-mlx-asr-server"),
-        Path(".build/release/swift-mlx-asr-server"),
     ]
     for candidate in candidates:
         if candidate.exists():
             return candidate.resolve()
-    raise FileNotFoundError("server binary not found — run: swift build -c release --product swift-mlx-asr-server or --product yuwp-asr")
+    raise FileNotFoundError("server binary not found — run: swift build -c release --product yuwp-asr")
 
 
 def count_cjk(text: str) -> int:
@@ -349,29 +347,20 @@ def process_tree_rss_mb(pid: int) -> float:
 
 
 def launch_server(server_bin: Path, model: PreparedModel, port: int, warmup: bool) -> tuple[subprocess.Popen[str], float, dict[str, Any]]:
-    cmd = [str(server_bin)]
-    if server_bin.name == "yuwp-asr":
-        cmd += [
-            "serve",
-            "--model",
-            str(model.resolved_path),
-            "--batch-model",
-            str(model.resolved_path),
-            "--port",
-            str(port),
-            "--host",
-            "127.0.0.1",
-        ]
-    else:
-        cmd += [
-            str(model.resolved_path),
-            "--batch-model",
-            str(model.resolved_path),
-            "--port",
-            str(port),
-            "--host",
-            "127.0.0.1",
-        ]
+    cmd = [
+        str(server_bin),
+        "serve",
+        "--model",
+        str(model.resolved_path),
+        "--batch-model",
+        str(model.resolved_path),
+        "--transport",
+        "http",
+        "--port",
+        str(port),
+        "--host",
+        "127.0.0.1",
+    ]
     if warmup:
         cmd.append("--warmup")
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
@@ -566,7 +555,7 @@ def print_summary(results: list[dict[str, Any]]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark native swift-mlx-asr-server with single-model presets and concurrent clients.",
+        description="Benchmark native yuwp-asr serve with single-model presets and concurrent clients.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -584,7 +573,7 @@ Examples:
     parser.add_argument("--concurrency", nargs="+", type=int, default=[1], help="Concurrent client counts to test (default: 1)")
     parser.add_argument("--repeats", type=int, default=1, help="Repeat the selected corpus this many times per concurrency level")
     parser.add_argument("--pace", choices=["none", "realtime"], default="none", help="Send chunks as fast as possible or at real-time pace")
-    parser.add_argument("--warmup", action="store_true", help="Pass --warmup when launching swift-mlx-asr-server")
+    parser.add_argument("--warmup", action="store_true", help="Pass --warmup when launching yuwp-asr serve")
     parser.add_argument("--port-base", type=int, default=9790, help="Base TCP port for launched servers (default: 9790)")
     parser.add_argument("--capture-text", action="store_true", help="Store saved/stream/final text in JSON output")
     parser.add_argument("--json", metavar="PATH", help="Write full JSON results to PATH")
