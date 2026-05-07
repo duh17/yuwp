@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build Yuwp + native swift-mlx-asr-server and compile mlx.metallib.
+# Build Yuwp, yuwp-asr, yuwp-tts, and compile mlx.metallib.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -17,12 +17,14 @@ fi
 
 if [ ${#SWIFT_FLAGS[@]} -gt 0 ]; then
     swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product Yuwp
-    swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product swift-mlx-asr-server
+    swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product yuwp-asr
+    swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product yuwp-tts
 else
     swift build -c "$CONFIGURATION" --product Yuwp
-    swift build -c "$CONFIGURATION" --product swift-mlx-asr-server
+    swift build -c "$CONFIGURATION" --product yuwp-asr
+    swift build -c "$CONFIGURATION" --product yuwp-tts
 fi
 bash scripts/build_mlx_metallib.sh "$CONFIGURATION"
 
-echo "[yuwp] Built Yuwp + swift-mlx-asr-server ($CONFIGURATION)"
-echo "[yuwp] Binaries: .build/arm64-apple-macosx/$CONFIGURATION/{Yuwp,swift-mlx-asr-server,mlx.metallib}"
+echo "[yuwp] Built Yuwp + yuwp-asr + yuwp-tts ($CONFIGURATION)"
+echo "[yuwp] Binaries: .build/arm64-apple-macosx/$CONFIGURATION/{Yuwp,yuwp-asr,yuwp-tts,mlx.metallib}"

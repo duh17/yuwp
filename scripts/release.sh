@@ -63,7 +63,8 @@ rm -rf "$RELEASE_DIR"
 mkdir -p "$MACOS_DIR" "$RES_DIR" "$FRAMEWORKS_DIR"
 
 cp -f "$BIN_DIR/Yuwp" "$MACOS_DIR/Yuwp"
-cp -f "$BIN_DIR/swift-mlx-asr-server" "$MACOS_DIR/swift-mlx-asr-server"
+cp -f "$BIN_DIR/yuwp-asr" "$MACOS_DIR/yuwp-asr"
+cp -f "$BIN_DIR/yuwp-tts" "$MACOS_DIR/yuwp-tts"
 cp -f "$BIN_DIR/mlx.metallib" "$MACOS_DIR/mlx.metallib"
 cp -f "Resources/Yuwp.icns" "$RES_DIR/Yuwp.icns"
 
@@ -151,10 +152,15 @@ codesign --force --sign "$SIGN_IDENTITY" --options runtime \
 codesign --force --sign "$SIGN_IDENTITY" --options runtime \
     --identifier com.yuwp.app.metallib "$MACOS_DIR/mlx.metallib"
 
-# swift-mlx-asr-server (needs allow-unsigned-executable-memory for MLX)
+# yuwp-asr (needs allow-unsigned-executable-memory for MLX)
 codesign --force --sign "$SIGN_IDENTITY" --options runtime \
-    --entitlements swift-mlx-asr-server.entitlements \
-    --identifier com.yuwp.app.server "$MACOS_DIR/swift-mlx-asr-server"
+    --entitlements YuwpMLXHelper.entitlements \
+    --identifier com.yuwp.app.asr "$MACOS_DIR/yuwp-asr"
+
+# yuwp-tts (needs allow-unsigned-executable-memory for MLX)
+codesign --force --sign "$SIGN_IDENTITY" --options runtime \
+    --entitlements YuwpMLXHelper.entitlements \
+    --identifier com.yuwp.app.tts "$MACOS_DIR/yuwp-tts"
 
 # Main binary
 codesign --force --sign "$SIGN_IDENTITY" --options runtime \

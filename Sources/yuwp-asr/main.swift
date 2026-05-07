@@ -53,31 +53,11 @@ private func findCompanionBinary(named binaryName: String) -> String? {
 
 private func runServe(arguments: [String]) -> Int32 {
     if arguments.contains("--help") || arguments.contains("-h") {
-        let usage = asrServerUsage.replacingOccurrences(of: "Usage: swift-mlx-asr-server", with: "Usage: yuwp-asr serve")
-        fputs("\(usage)\n", stderr)
+        fputs("\(asrServerUsage)\n", stderr)
         return 0
     }
 
-    guard let serverBinary = findCompanionBinary(named: "swift-mlx-asr-server") else {
-        fputs("Error: could not find swift-mlx-asr-server. Build it with `swift build --product swift-mlx-asr-server`.\n", stderr)
-        return 1
-    }
-
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: serverBinary)
-    process.arguments = arguments
-    process.standardInput = FileHandle.standardInput
-    process.standardOutput = FileHandle.standardOutput
-    process.standardError = FileHandle.standardError
-
-    do {
-        try process.run()
-        process.waitUntilExit()
-        return process.terminationStatus
-    } catch {
-        fputs("Error: failed to launch swift-mlx-asr-server: \(error.localizedDescription)\n", stderr)
-        return 1
-    }
+    return runASRServer(arguments: arguments)
 }
 
 private func runCompanion(commandName: String, command: CompanionCommand, arguments: [String]) -> Int32 {

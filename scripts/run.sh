@@ -2,7 +2,8 @@
 # Build a self-contained Yuwp.app, sign it, install to /Applications, then launch.
 # The app bundle embeds:
 #   - Yuwp
-#   - swift-mlx-asr-server
+#   - yuwp-asr
+#   - yuwp-tts
 #   - mlx.metallib
 #   - Sparkle.framework
 set -euo pipefail
@@ -59,9 +60,13 @@ sleep 1
 # Update the app bundle in place to keep TCC identity stable across dev runs.
 mkdir -p "$MACOS_DIR" "$RES_DIR" "$FRAMEWORKS_DIR"
 rm -f "$MACOS_DIR/asr-server"
+rm -f "$MACOS_DIR/yuwp-asr"
+rm -f "$MACOS_DIR/yuwp-tts"
+rm -f "$MACOS_DIR"/swift-*asr-server
 rm -rf "$RES_DIR/Yuwp_NativeASR.bundle"
 cp -f "$BIN_DIR/Yuwp" "$MACOS_DIR/Yuwp"
-cp -f "$BIN_DIR/swift-mlx-asr-server" "$MACOS_DIR/swift-mlx-asr-server"
+cp -f "$BIN_DIR/yuwp-asr" "$MACOS_DIR/yuwp-asr"
+cp -f "$BIN_DIR/yuwp-tts" "$MACOS_DIR/yuwp-tts"
 cp -f "$BIN_DIR/mlx.metallib" "$MACOS_DIR/mlx.metallib"
 cp -f "Resources/Yuwp.icns" "$RES_DIR/Yuwp.icns"
 
@@ -137,7 +142,7 @@ ENTITLEMENTS_SERVER=""
 if [ "$SIGN_IDENTITY" != "-" ]; then
     RUNTIME_FLAG="--options runtime"
     ENTITLEMENTS_APP="--entitlements Yuwp.entitlements"
-    ENTITLEMENTS_SERVER="--entitlements swift-mlx-asr-server.entitlements"
+    ENTITLEMENTS_SERVER="--entitlements YuwpMLXHelper.entitlements"
 fi
 
 # Sparkle framework (XPC services, helpers, then the framework itself)
@@ -159,7 +164,10 @@ codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAG \
     --identifier com.yuwp.app.metallib "$MACOS_DIR/mlx.metallib"
 
 codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAG $ENTITLEMENTS_SERVER \
-    --identifier com.yuwp.app.server "$MACOS_DIR/swift-mlx-asr-server"
+    --identifier com.yuwp.app.asr "$MACOS_DIR/yuwp-asr"
+
+codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAG $ENTITLEMENTS_SERVER \
+    --identifier com.yuwp.app.tts "$MACOS_DIR/yuwp-tts"
 
 codesign --force --sign "$SIGN_IDENTITY" $RUNTIME_FLAG $ENTITLEMENTS_APP \
     --identifier com.yuwp.app "$MACOS_DIR/Yuwp"

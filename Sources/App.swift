@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 
 // Yuwp — system-wide voice dictation for macOS
 // Press hotkey → speak → text streams into any focused text field
-// Powered by Qwen3-ASR via native swift-mlx-asr-server
+// Powered by Qwen3-ASR via native yuwp-asr serve
 
 private final class DiagnosticLogState: @unchecked Sendable {
     private let lock = NSLock()

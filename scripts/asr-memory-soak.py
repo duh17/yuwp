@@ -4,7 +4,7 @@ Soak-test Yuwp's streaming HTTP server for memory growth.
 
 Why this exists:
 - `asr-stream-test` benchmarks in-process StreamingSession behavior.
-- This harness exercises the real HTTP server path (`swift-mlx-asr-server`)
+- This harness exercises the real HTTP server path (`yuwp-asr serve`)
   and samples the live server process RSS over time.
 
 Usage examples:
@@ -101,7 +101,7 @@ def resolve_server_pid(host: str, port: int) -> int:
     ]
     out = subprocess.check_output(cmd, text=True).strip()
     if not out:
-        raise RuntimeError(f"No LISTEN pid found on {host}:{port}. Is swift-mlx-asr-server running?")
+        raise RuntimeError(f"No LISTEN pid found on {host}:{port}. Is `yuwp-asr serve --transport http` running?")
     first = out.splitlines()[0].strip()
     return int(first)
 

@@ -13,7 +13,7 @@ import Testing
 /// Run with: ASR_TEST=1 swift test --filter "ASR Server"
 @Suite("ASR Server", .tags(.integration),
        .enabled(if: ProcessInfo.processInfo.environment["ASR_TEST"] != nil,
-               "Set ASR_TEST=1 with swift-mlx-asr-server running on :7936"))
+               "Set ASR_TEST=1 with `yuwp-asr serve --transport http` running on :7936"))
 struct ASRServerTests {
     let host: String
     let port: String

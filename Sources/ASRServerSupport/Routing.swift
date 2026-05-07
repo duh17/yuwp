@@ -88,11 +88,9 @@ private func handleInfoRoute(_ req: HTTPRequest, context: ASRRouteContext) -> HT
 
     var info: [String: Any] = [
         "model": context.streamingModelName,
-        "streaming_model": context.streamingModelName, // backward compatibility
         "sample_rate": ASRAudio.sampleRate,
         "chunk_sec": 1.75,
         "final_accuracy_pass_enabled": context.batchRetranscribeEnabled,
-        "batch_retranscribe": context.batchRetranscribeEnabled, // backward compatibility
         "internal_diagnostics": internalDiagnosticsEnabled,
         "status": "ready",
     ]
@@ -102,7 +100,6 @@ private func handleInfoRoute(_ req: HTTPRequest, context: ASRRouteContext) -> HT
     if let batchModelName = context.batchModelName,
        batchModelName != context.streamingModelName {
         info["final_accuracy_pass_model"] = batchModelName
-        info["batch_model"] = batchModelName // backward compatibility
     }
     info["aligner"] = context.aligner != nil
     info["vad"] = context.vad != nil

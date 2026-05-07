@@ -25,7 +25,7 @@ let package = Package(
                 "ASRIPC",
             ],
             path: "Sources",
-            exclude: ["NativeASR", "NativeTTS", "YuwpHTTPServerSupport", "ASRServerSupport", "ASRIPC", "asr-test", "tts-test", "yuwp-tts", "asr-bench", "asr-stream-test", "swift-mlx-asr-server", "yuwp-asr", "align-test", "asr-stitch-debug"]
+            exclude: ["NativeASR", "NativeTTS", "YuwpHTTPServerSupport", "ASRServerSupport", "ASRIPC", "asr-test", "tts-test", "yuwp-tts", "asr-bench", "asr-stream-test", "yuwp-asr", "align-test", "asr-stitch-debug"]
         ),
         .target(
             name: "YuwpHTTPServerSupport",
@@ -98,11 +98,6 @@ let package = Package(
             name: "ASRServerSupport",
             dependencies: ["NativeASR", "ASRIPC"],
             path: "Sources/ASRServerSupport"
-        ),
-        .executableTarget(
-            name: "swift-mlx-asr-server",
-            dependencies: ["NativeASR", "ASRServerSupport", "ASRIPC"],
-            path: "Sources/swift-mlx-asr-server"
         ),
         .executableTarget(
             name: "yuwp_asr",

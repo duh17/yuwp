@@ -283,7 +283,7 @@ private actor NativeASRServerLifecycle {
 
         guard let bindHost = configuration.bindHost else {
             process = nil
-            yuwpLog("swift-mlx-asr-server disabled")
+            yuwpLog("yuwp-asr serve disabled")
             return .disabled
         }
 
@@ -299,9 +299,9 @@ private actor NativeASRServerLifecycle {
         }
 
         guard let serverBin = NativeASRProvider.findServerBinary() else {
-            yuwpLog("swift-mlx-asr-server binary not found — run: swift build -c release --product swift-mlx-asr-server")
+            yuwpLog("yuwp-asr binary not found — run: swift build -c release --product yuwp-asr")
             process = nil
-            return .error("swift-mlx-asr-server not found")
+            return .error("yuwp-asr not found")
         }
 
         if transport == .http {
@@ -318,7 +318,8 @@ private actor NativeASRServerLifecycle {
 
         proc.executableURL = URL(fileURLWithPath: serverBin)
         var arguments = [
-            transcriptionModelPath,
+            "serve",
+            "--model", transcriptionModelPath,
             "--transport", transport.rawValue,
             "--port", "\(configuration.port)",
             "--host", bindHost,
@@ -362,7 +363,7 @@ private actor NativeASRServerLifecycle {
         } catch {
             process = nil
             stdioBridgeBox.set(nil)
-            yuwpLog("Failed to start swift-mlx-asr-server: \(error)")
+            yuwpLog("Failed to start yuwp-asr serve: \(error)")
             scheduleRestart(generation: generation)
             return .error("Failed to start server")
         }
@@ -379,7 +380,7 @@ private actor NativeASRServerLifecycle {
             stdioBridgeBox.set(nil)
         }
 
-        yuwpLog("swift-mlx-asr-server started (PID: \(proc.processIdentifier), transport: \(transport.rawValue))")
+        yuwpLog("yuwp-asr serve started (PID: \(proc.processIdentifier), transport: \(transport.rawValue))")
 
         scheduleReadyPoll(generation: generation, configuration: configuration, transport: transport)
         return .starting
@@ -403,7 +404,7 @@ private actor NativeASRServerLifecycle {
         }
 
         process = nil
-        yuwpLog(targetState == .disabled ? "swift-mlx-asr-server disabled" : "swift-mlx-asr-server stopped")
+        yuwpLog(targetState == .disabled ? "yuwp-asr serve disabled" : "yuwp-asr serve stopped")
         return targetState
     }
 
@@ -450,7 +451,7 @@ private actor NativeASRServerLifecycle {
     private func handleStartupTimeout(generation: UInt64) {
         guard generation == launchGeneration, !isIntentionalShutdown else { return }
         readyPollTask = nil
-        yuwpLog("swift-mlx-asr-server failed to become ready within 30s")
+        yuwpLog("yuwp-asr serve failed to become ready within 30s")
         stateSink(.error("Server startup timeout"))
     }
 
@@ -477,12 +478,12 @@ private actor NativeASRServerLifecycle {
         if transport == .http,
            let listenerPID = NativeASRProvider.listeningPID(on: port), listenerPID != processIdentifier {
             let owner = NativeASRProvider.command(for: listenerPID) ?? "pid \(listenerPID)"
-            yuwpLog("swift-mlx-asr-server failed to own port \(port); listener PID \(listenerPID): \(owner)")
+            yuwpLog("yuwp-asr serve failed to own port \(port); listener PID \(listenerPID): \(owner)")
             stateSink(.error("Port \(port) already in use"))
             return
         }
 
-        yuwpLog("swift-mlx-asr-server exited unexpectedly (code \(code))")
+        yuwpLog("yuwp-asr serve exited unexpectedly (code \(code))")
         stateSink(.error("Server crashed (exit \(code))"))
         scheduleRestart(generation: generation)
     }
@@ -498,7 +499,7 @@ private actor NativeASRServerLifecycle {
 
         restartAttempts += 1
         let delay = min(Double(1 << restartAttempts), 30.0)
-        yuwpLog("Restarting swift-mlx-asr-server in \(Int(delay))s (\(restartAttempts)/\(Self.maxRestartAttempts))")
+        yuwpLog("Restarting yuwp-asr serve in \(Int(delay))s (\(restartAttempts)/\(Self.maxRestartAttempts))")
 
         restartTask?.cancel()
         restartTask = Task.detached { [weak self] in
@@ -525,9 +526,9 @@ private actor NativeASRServerLifecycle {
 
 // MARK: - Native ASR Provider
 
-/// Manages the native ASR server process (swift-mlx-asr-server).
+/// Manages the native ASR server process (`yuwp-asr serve`).
 ///
-/// Launches `swift-mlx-asr-server` as a child process, monitors its health,
+/// Launches `yuwp-asr serve` as a child process, monitors its health,
 /// and provides STT sessions over either localhost HTTP or stdio IPC.
 @MainActor
 final class NativeASRProvider: SttProvider {
@@ -651,7 +652,7 @@ final class NativeASRProvider: SttProvider {
             return .error("Transcription model not found")
         }
         guard Self.findServerBinary() != nil else {
-            return .error("swift-mlx-asr-server not found")
+            return .error("yuwp-asr not found")
         }
         return .starting
     }
@@ -680,20 +681,20 @@ final class NativeASRProvider: SttProvider {
         ModelLocator.resolve(spec)?.path
     }
 
-    /// Find the swift-mlx-asr-server binary in expected locations.
+    /// Find the yuwp-asr binary in expected locations.
     nonisolated static func findServerBinary() -> String? {
         let candidates = [
             // App bundle
-            Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/swift-mlx-asr-server").path,
+            Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/yuwp-asr").path,
             // Development: build directory (release preferred)
             URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
-                .appendingPathComponent(".build/arm64-apple-macosx/release/swift-mlx-asr-server").path,
+                .appendingPathComponent(".build/arm64-apple-macosx/release/yuwp-asr").path,
             URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
-                .appendingPathComponent(".build/arm64-apple-macosx/debug/swift-mlx-asr-server").path,
+                .appendingPathComponent(".build/arm64-apple-macosx/debug/yuwp-asr").path,
         ]
         return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
@@ -703,12 +704,12 @@ final class NativeASRProvider: SttProvider {
         guard let parentPID = Self.parentPID(for: listenerPID), parentPID == 1 else { return }
         guard let command = Self.command(for: listenerPID), command.contains(serverBinaryPath) else { return }
 
-        yuwpLog("Found orphaned swift-mlx-asr-server on port \(port) (PID: \(listenerPID)) — terminating")
+        yuwpLog("Found orphaned yuwp-asr serve on port \(port) (PID: \(listenerPID)) — terminating")
         kill(listenerPID, SIGTERM)
         Self.waitForListener(on: port, toExit: listenerPID, timeout: 1.5)
 
         if Self.listeningPID(on: port) == listenerPID {
-            yuwpLog("Orphaned swift-mlx-asr-server \(listenerPID) ignored SIGTERM — sending SIGKILL")
+            yuwpLog("Orphaned yuwp-asr serve \(listenerPID) ignored SIGTERM — sending SIGKILL")
             kill(listenerPID, SIGKILL)
             Self.waitForListener(on: port, toExit: listenerPID, timeout: 1.0)
         }
@@ -809,7 +810,7 @@ fileprivate final class NativeASRUnavailableSession: SttSession, @unchecked Send
 
 // MARK: - Native ASR Stdio Session
 
-/// Stdio-based STT session communicating with swift-mlx-asr-server over framed stdin/stdout.
+/// Stdio-based STT session communicating with yuwp-asr over framed stdin/stdout.
 /// Audio feeds are serialized on a background queue to avoid blocking the audio thread.
 fileprivate final class NativeASRStdioSession: SttSession, @unchecked Sendable {
     var onUpdate: ((TranscriptUpdate) -> Void)?
@@ -891,7 +892,7 @@ fileprivate final class NativeASRStdioSession: SttSession, @unchecked Sendable {
 
 // MARK: - Native ASR HTTP Session
 
-/// HTTP-based STT session communicating with swift-mlx-asr-server.
+/// HTTP-based STT session communicating with yuwp-asr.
 /// Audio feeds are serialized on a background queue to avoid blocking the audio thread.
 final class NativeASRSession: SttSession, @unchecked Sendable {
     var onUpdate: ((TranscriptUpdate) -> Void)?

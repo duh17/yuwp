@@ -1,7 +1,7 @@
 import ASRIPC
 import Foundation
 
-public let asrServerUsage = "Usage: swift-mlx-asr-server [--model <path-or-repo-id>] [--batch-model <dir>] [--aligner-model <dir>] [--transport <http|stdio> (default: stdio)] [--disable-vad] [--disable-batch-retranscribe] [--port \(ASRIPCDefaults.defaultHTTPPort)] [--host 127.0.0.1] [--parent-pid <pid>] [--warmup]"
+public let asrServerUsage = "Usage: yuwp-asr serve [--model <path-or-repo-id>] [--batch-model <dir>] [--aligner-model <dir>] [--transport <http|stdio> (default: stdio)] [--disable-vad] [--disable-batch-retranscribe] [--port \(ASRIPCDefaults.defaultHTTPPort)] [--host 127.0.0.1] [--parent-pid <pid>] [--warmup]"
 
 public struct ASRServerCLIConfiguration: Equatable {
     public let modelSpec: String?

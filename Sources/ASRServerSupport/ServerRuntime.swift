@@ -4,7 +4,6 @@ import Darwin
 import Glibc
 #endif
 import ASRIPC
-import ASRServerSupport
 import Foundation
 import MLX
 import NativeASR
@@ -758,5 +757,5 @@ private let diagnosticLoggingEnabled: Bool = {
 
 func log(_ message: String) {
     guard diagnosticLoggingEnabled else { return }
-    fputs("[swift-mlx-asr-server] \(message)\n", stderr)
+    fputs("[yuwp-asr] \(message)\n", stderr)
 }

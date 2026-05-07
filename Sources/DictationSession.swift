@@ -6,7 +6,7 @@ import Foundation
 /// One provider lives for the app's lifetime. Creates sessions for each dictation.
 ///
 /// Implementations:
-///   - `NativeASRProvider` — local swift-mlx-asr-server (Qwen3-ASR via MLX)
+///   - `NativeASRProvider` — local yuwp-asr serve (Qwen3-ASR via MLX)
 /// Provider lifecycle and visible state are app-owned, so the API is main-actor isolated.
 @MainActor
 protocol SttProvider: AnyObject, Sendable {

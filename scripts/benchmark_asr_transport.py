@@ -258,13 +258,13 @@ def resolve_server_binary(explicit: str | None) -> pathlib.Path:
         return path
 
     candidates = [
-        pathlib.Path(".build/arm64-apple-macosx/release/swift-mlx-asr-server"),
-        pathlib.Path(".build/arm64-apple-macosx/debug/swift-mlx-asr-server"),
+        pathlib.Path(".build/arm64-apple-macosx/release/yuwp-asr"),
+        pathlib.Path(".build/arm64-apple-macosx/debug/yuwp-asr"),
     ]
     for candidate in candidates:
         if candidate.exists():
             return candidate.resolve()
-    raise BenchError("Could not find swift-mlx-asr-server binary. Build it first.")
+    raise BenchError("Could not find yuwp-asr binary. Build it first with `swift build --product yuwp-asr`.")
 
 
 def load_wav_pcm16(path: pathlib.Path) -> tuple[bytes, int, float]:
@@ -311,6 +311,8 @@ def start_server(
     port = find_free_port()
     args = [
         str(server_binary),
+        "serve",
+        "--model",
         str(model_dir),
         "--transport",
         mode,
@@ -493,7 +495,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark ASR transport (HTTP vs stdio)")
     parser.add_argument("--audio", default="Tests/fixtures/jfk.wav", help="Path to WAV audio file")
     parser.add_argument("--model", default=None, help="Model directory path (auto-detect if omitted)")
-    parser.add_argument("--server-bin", default=None, help="Path to swift-mlx-asr-server binary")
+    parser.add_argument("--server-bin", default=None, help="Path to yuwp-asr binary")
     parser.add_argument("--runs", type=int, default=3, help="Sessions per transport")
     parser.add_argument("--chunk-ms", type=int, default=100, help="Audio chunk size in ms")
     parser.add_argument("--ready-timeout", type=float, default=90.0, help="Server ready timeout seconds")
