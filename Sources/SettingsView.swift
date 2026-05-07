@@ -6,7 +6,6 @@ private enum SettingsSidebarSection: String, CaseIterable, Identifiable {
     case transcription
     case recordings
     case network
-    case feedback
 
     var id: String { rawValue }
 
@@ -16,7 +15,6 @@ private enum SettingsSidebarSection: String, CaseIterable, Identifiable {
         case .transcription: "Model"
         case .recordings: "Recordings"
         case .network: "Network"
-        case .feedback: "Feedback"
         }
     }
 
@@ -26,7 +24,6 @@ private enum SettingsSidebarSection: String, CaseIterable, Identifiable {
         case .transcription: "waveform.and.magnifyingglass"
         case .recordings: "record.circle"
         case .network: "network"
-        case .feedback: "slider.horizontal.3"
         }
     }
 }
@@ -109,8 +106,6 @@ struct SettingsView: View {
                     recordingsContent
                 case .network:
                     networkContent
-                case .feedback:
-                    feedbackContent
                 }
             }
             .padding(24)
@@ -141,76 +136,109 @@ struct SettingsView: View {
             "Keep source audio if you want a paper trail for debugging, QA, or re-transcription later."
         case .network:
             "Choose whether Yuwp exposes its local transcription server only to this Mac or to other devices on your local network. Local network mode is unauthenticated and unencrypted."
-        case .feedback:
-            "Tune how the mic panel animates while dictation is active, and choose the sounds Yuwp plays when dictation starts and stops."
         }
     }
 
     private var dictationContent: some View {
-        SettingsGroup {
-            SettingsControlRow(
-                title: "Shortcut",
-                subtitle: "Global hotkey used to start and stop dictation. Record a modifier twice to use it as a double-tap shortcut.",
-                topAligned: true
-            ) {
-                ShortcutRecorderRepresentable(
-                    binding: Binding(
-                        get: { store.snapshot.dictationBinding },
-                        set: { store.setDictationBinding($0) }
-                    ),
-                    defaultBinding: .ctrlBacktick,
-                    onRecordingChange: { store.setDictationBindingRecording($0) }
-                )
-                .frame(minWidth: 360, idealWidth: 520, maxWidth: 620, minHeight: 30, alignment: .trailing)
-                .accessibilityLabel("Shortcut")
-            }
-
-            SettingsDivider()
-
-            SettingsControlRow(
-                title: "Microphone",
-                subtitle: store.audioInputDescriptionText,
-                topAligned: true
-            ) {
-                Picker("Microphone", selection: Binding(
-                    get: { store.snapshot.audioInputSelection.persistenceString },
-                    set: { store.setAudioInputSelection(AudioInputSelection(persistenceString: $0)) }
-                )) {
-                    ForEach(store.audioInputSelections, id: \.persistenceString) { selection in
-                        Text(audioInputTitle(for: selection)).tag(selection.persistenceString)
-                    }
+        VStack(alignment: .leading, spacing: 18) {
+            SettingsGroup {
+                SettingsControlRow(
+                    title: "Shortcut",
+                    subtitle: "Global hotkey used to start and stop dictation. Record a modifier twice to use it as a double-tap shortcut.",
+                    topAligned: true
+                ) {
+                    ShortcutRecorderRepresentable(
+                        binding: Binding(
+                            get: { store.snapshot.dictationBinding },
+                            set: { store.setDictationBinding($0) }
+                        ),
+                        defaultBinding: .ctrlBacktick,
+                        onRecordingChange: { store.setDictationBindingRecording($0) }
+                    )
+                    .frame(minWidth: 360, idealWidth: 520, maxWidth: 620, minHeight: 30, alignment: .trailing)
+                    .accessibilityLabel("Shortcut")
                 }
-                .labelsHidden()
-                .frame(width: 360, alignment: .trailing)
+
+                SettingsDivider()
+
+                SettingsControlRow(
+                    title: "Microphone",
+                    subtitle: store.audioInputDescriptionText,
+                    topAligned: true
+                ) {
+                    Picker("Microphone", selection: Binding(
+                        get: { store.snapshot.audioInputSelection.persistenceString },
+                        set: { store.setAudioInputSelection(AudioInputSelection(persistenceString: $0)) }
+                    )) {
+                        ForEach(store.audioInputSelections, id: \.persistenceString) { selection in
+                            Text(audioInputTitle(for: selection)).tag(selection.persistenceString)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 360, alignment: .trailing)
+                }
+
+                SettingsDivider()
+
+                SettingsControlRow(
+                    title: "Mic Panel",
+                    subtitle: store.micPanelAnimationSummaryText,
+                    topAligned: true
+                ) {
+                    Picker("Mic panel animation", selection: Binding(
+                        get: { store.micPanelAnimationSelection.rawValue },
+                        set: { rawValue in
+                            if let selection = MicPanelAnimationSelection(rawValue: rawValue) {
+                                store.setMicPanelAnimationSelection(selection)
+                            }
+                        }
+                    )) {
+                        ForEach(MicPanelAnimationSelection.allCases, id: \.rawValue) { selection in
+                            Text(selection.title).tag(selection.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 220, alignment: .trailing)
+                }
+
+                SettingsDivider()
+
+                chimeRow(for: .start)
+
+                SettingsDivider()
+
+                chimeRow(for: .stop)
+
+                SettingsDivider()
+
+                SettingsControlRow(
+                    title: "Direct text-field insertion (Experimental)",
+                    subtitle: "When off (recommended), Yuwp shows the growing preview bubble and pastes on commit instead of typing directly into AX-editable fields."
+                ) {
+                    Toggle("Direct text-field insertion", isOn: Binding(
+                        get: { store.snapshot.experimentalDirectTextFieldInsertionEnabled },
+                        set: { store.setExperimentalDirectTextFieldInsertionEnabled($0) }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                }
+
+                SettingsDivider()
+
+                SettingsControlRow(
+                    title: "Direct terminal insertion (Experimental)",
+                    subtitle: "When off (recommended), Yuwp avoids CGEvent keypress injection in terminals and uses preview bubble + paste on commit."
+                ) {
+                    Toggle("Direct terminal insertion", isOn: Binding(
+                        get: { store.snapshot.experimentalDirectTerminalInsertionEnabled },
+                        set: { store.setExperimentalDirectTerminalInsertionEnabled($0) }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                }
             }
 
-            SettingsDivider()
-
-            SettingsControlRow(
-                title: "Direct text-field insertion (Experimental)",
-                subtitle: "When off (recommended), Yuwp shows the growing preview bubble and pastes on commit instead of typing directly into AX-editable fields."
-            ) {
-                Toggle("Direct text-field insertion", isOn: Binding(
-                    get: { store.snapshot.experimentalDirectTextFieldInsertionEnabled },
-                    set: { store.setExperimentalDirectTextFieldInsertionEnabled($0) }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
-            }
-
-            SettingsDivider()
-
-            SettingsControlRow(
-                title: "Direct terminal insertion (Experimental)",
-                subtitle: "When off (recommended), Yuwp avoids CGEvent keypress injection in terminals and uses preview bubble + paste on commit."
-            ) {
-                Toggle("Direct terminal insertion", isOn: Binding(
-                    get: { store.snapshot.experimentalDirectTerminalInsertionEnabled },
-                    set: { store.setExperimentalDirectTerminalInsertionEnabled($0) }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
-            }
+            micPanelCustomAnimationCard
         }
     }
 
@@ -486,90 +514,60 @@ struct SettingsView: View {
         }
     }
 
-    private var feedbackContent: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            SettingsGroup {
-                SettingsControlRow(
-                    title: "Mic Panel",
-                    subtitle: store.micPanelAnimationSummaryText,
-                    topAligned: true
-                ) {
-                    Picker("Mic panel animation", selection: Binding(
-                        get: { store.micPanelAnimationSelection.rawValue },
-                        set: { rawValue in
-                            if let selection = MicPanelAnimationSelection(rawValue: rawValue) {
-                                store.setMicPanelAnimationSelection(selection)
-                            }
-                        }
-                    )) {
-                        ForEach(MicPanelAnimationSelection.allCases, id: \.rawValue) { selection in
-                            Text(selection.title).tag(selection.rawValue)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 220, alignment: .trailing)
+    @ViewBuilder
+    private var micPanelCustomAnimationCard: some View {
+        if store.micPanelAnimationSelection == .custom {
+            InsetSettingsCard(
+                title: "Custom animation tuning",
+                subtitle: "These controls adjust how quickly the panel responds, how much the bars drift at idle, and how strongly the border glow reacts to your voice."
+            ) {
+                VStack(spacing: 12) {
+                    SettingsSliderRow(
+                        label: "Attack",
+                        value: Binding(
+                            get: { store.micPanelAnimationCustom.smoothingAttack },
+                            set: { value in store.updateMicPanelAnimationCustom { $0.smoothingAttack = value } }
+                        ),
+                        range: 0.05...1.0,
+                        format: "%.2f"
+                    )
+                    SettingsSliderRow(
+                        label: "Decay",
+                        value: Binding(
+                            get: { store.micPanelAnimationCustom.smoothingDecay },
+                            set: { value in store.updateMicPanelAnimationCustom { $0.smoothingDecay = value } }
+                        ),
+                        range: 0.02...1.0,
+                        format: "%.2f"
+                    )
+                    SettingsSliderRow(
+                        label: "Motion",
+                        value: Binding(
+                            get: { store.micPanelAnimationCustom.idleBarAmplitude },
+                            set: { value in store.updateMicPanelAnimationCustom { $0.idleBarAmplitude = value } }
+                        ),
+                        range: 0.0...6.0,
+                        format: "%.1f"
+                    )
+                    SettingsSliderRow(
+                        label: "Energy",
+                        value: Binding(
+                            get: { store.micPanelAnimationCustom.levelBarScale },
+                            set: { value in store.updateMicPanelAnimationCustom { $0.levelBarScale = value } }
+                        ),
+                        range: 0.2...1.8,
+                        format: "%.2f"
+                    )
+                    SettingsSliderRow(
+                        label: "Glow",
+                        value: Binding(
+                            get: { store.micPanelAnimationCustom.glowAlphaScale },
+                            set: { value in store.updateMicPanelAnimationCustom { $0.glowAlphaScale = value } }
+                        ),
+                        range: 0.0...0.8,
+                        format: "%.2f"
+                    )
                 }
-            }
-
-            if store.micPanelAnimationSelection == .custom {
-                InsetSettingsCard(
-                    title: "Custom animation tuning",
-                    subtitle: "These controls adjust how quickly the panel responds, how much the bars drift at idle, and how strongly the border glow reacts to your voice."
-                ) {
-                    VStack(spacing: 12) {
-                        SettingsSliderRow(
-                            label: "Attack",
-                            value: Binding(
-                                get: { store.micPanelAnimationCustom.smoothingAttack },
-                                set: { value in store.updateMicPanelAnimationCustom { $0.smoothingAttack = value } }
-                            ),
-                            range: 0.05...1.0,
-                            format: "%.2f"
-                        )
-                        SettingsSliderRow(
-                            label: "Decay",
-                            value: Binding(
-                                get: { store.micPanelAnimationCustom.smoothingDecay },
-                                set: { value in store.updateMicPanelAnimationCustom { $0.smoothingDecay = value } }
-                            ),
-                            range: 0.02...1.0,
-                            format: "%.2f"
-                        )
-                        SettingsSliderRow(
-                            label: "Motion",
-                            value: Binding(
-                                get: { store.micPanelAnimationCustom.idleBarAmplitude },
-                                set: { value in store.updateMicPanelAnimationCustom { $0.idleBarAmplitude = value } }
-                            ),
-                            range: 0.0...6.0,
-                            format: "%.1f"
-                        )
-                        SettingsSliderRow(
-                            label: "Energy",
-                            value: Binding(
-                                get: { store.micPanelAnimationCustom.levelBarScale },
-                                set: { value in store.updateMicPanelAnimationCustom { $0.levelBarScale = value } }
-                            ),
-                            range: 0.2...1.8,
-                            format: "%.2f"
-                        )
-                        SettingsSliderRow(
-                            label: "Glow",
-                            value: Binding(
-                                get: { store.micPanelAnimationCustom.glowAlphaScale },
-                                set: { value in store.updateMicPanelAnimationCustom { $0.glowAlphaScale = value } }
-                            ),
-                            range: 0.0...0.8,
-                            format: "%.2f"
-                        )
-                    }
-                }
-            }
-
-            SettingsGroup {
-                chimeRow(for: .start)
-                SettingsDivider()
-                chimeRow(for: .stop)
             }
         }
     }
