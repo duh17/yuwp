@@ -187,6 +187,11 @@ struct OpenAISpeechRequest: Decodable, Sendable {
     var maxTokens: Int?
     var stream: Bool?
     var streamingInterval: Double?
+    var instructions: String?
+    var optimizeInstructions: Bool?
+    var lowLatency: Bool?
+    var chunkTargetCharacters: Int?
+    var chunkHardCharacterLimit: Int?
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -203,6 +208,11 @@ struct OpenAISpeechRequest: Decodable, Sendable {
         case maxTokens = "max_tokens"
         case stream
         case streamingInterval = "streaming_interval"
+        case instructions
+        case optimizeInstructions = "optimize_instructions"
+        case lowLatency = "low_latency"
+        case chunkTargetCharacters = "chunk_target_characters"
+        case chunkHardCharacterLimit = "chunk_hard_character_limit"
     }
 }
 
@@ -228,6 +238,54 @@ struct VoicePreviewRequest: Decodable, Sendable {
     }
 }
 
+struct QwenVoiceDesignRequest: Decodable, Sendable {
+    struct Input: Decodable, Sendable {
+        var action: String?
+        var targetModel: String?
+        var voicePrompt: String
+        var previewText: String?
+        var preferredName: String?
+        var language: String?
+
+        enum CodingKeys: String, CodingKey {
+            case action
+            case targetModel = "target_model"
+            case voicePrompt = "voice_prompt"
+            case previewText = "preview_text"
+            case preferredName = "preferred_name"
+            case language
+        }
+    }
+
+    struct Parameters: Decodable, Sendable {
+        var sampleRate: Int?
+        var responseFormat: String?
+        var temperature: Float?
+        var topP: Float?
+        var topK: Int?
+        var minP: Float?
+        var repetitionPenalty: Float?
+        var maxTokens: Int?
+        var streamingInterval: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case sampleRate = "sample_rate"
+            case responseFormat = "response_format"
+            case temperature
+            case topP = "top_p"
+            case topK = "top_k"
+            case minP = "min_p"
+            case repetitionPenalty = "repetition_penalty"
+            case maxTokens = "max_tokens"
+            case streamingInterval = "streaming_interval"
+        }
+    }
+
+    var model: String
+    var input: Input
+    var parameters: Parameters?
+}
+
 func codableJSONResponse<T: Encodable>(status: Int, _ value: T) -> HTTPResponse {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
@@ -245,13 +303,56 @@ func codableJSONObject<T: Encodable>(_ value: T) -> Any? {
 private let longFormChunkTargetCharacters = 220
 private let longFormChunkHardCharacterLimit = 320
 
-func synthesisTextChunks(for text: String) -> [String] {
-    let chunks = LongFormTTSChunker.chunk(
-        text,
-        targetCharacters: longFormChunkTargetCharacters,
-        hardCharacterLimit: longFormChunkHardCharacterLimit
-    )
+func combinedVoicePrompt(_ voice: String?, instructions: String?) -> String? {
+    let trimmedVoice = voice?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedInstructions = instructions?.trimmingCharacters(in: .whitespacesAndNewlines)
+    switch (trimmedVoice?.isEmpty == false ? trimmedVoice : nil, trimmedInstructions?.isEmpty == false ? trimmedInstructions : nil) {
+    case let (voice?, instructions?):
+        return "\(voice)\nDelivery instructions: \(instructions)"
+    case let (voice?, nil):
+        return voice
+    case let (nil, instructions?):
+        return instructions
+    case (nil, nil):
+        return nil
+    }
+}
+
+func synthesisTextChunks(for text: String, request: OpenAISpeechRequest? = nil) -> [String] {
+    let lowLatency = request?.lowLatency == true
+    let target = request?.chunkTargetCharacters ?? (lowLatency ? 80 : longFormChunkTargetCharacters)
+    let hardLimit = request?.chunkHardCharacterLimit ?? (lowLatency ? 140 : longFormChunkHardCharacterLimit)
+    let chunks = lowLatency
+        ? lowLatencyTextChunks(text, targetCharacters: target, hardCharacterLimit: hardLimit)
+        : LongFormTTSChunker.chunk(text, targetCharacters: target, hardCharacterLimit: hardLimit)
     return chunks.isEmpty ? [text] : chunks
+}
+
+func lowLatencyTextChunks(_ text: String, targetCharacters: Int, hardCharacterLimit: Int) -> [String] {
+    let normalized = text
+        .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalized.isEmpty else { return [] }
+
+    var chunks: [String] = []
+    var current = ""
+    let softBreaks: Set<Character> = [",", ";", ":", "—", "，", "；", "：", "、"]
+    let hardBreaks: Set<Character> = [".", "!", "?", "。", "！", "？", "\n"]
+
+    func flush() {
+        let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { chunks.append(trimmed) }
+        current = ""
+    }
+
+    for character in normalized {
+        current.append(character)
+        if hardBreaks.contains(character) || (softBreaks.contains(character) && current.count >= targetCharacters) || current.count >= hardCharacterLimit {
+            flush()
+        }
+    }
+    flush()
+    return chunks
 }
 
 actor AsyncGate {
@@ -341,7 +442,7 @@ final class TTSHTTPState: @unchecked Sendable {
         do {
             let voiceContext = try resolveVoiceContext(for: speechRequest)
             let generationParameters = generationParameters(for: speechRequest, voice: voiceContext.record)
-            let textChunks = synthesisTextChunks(for: speechRequest.input)
+            let textChunks = synthesisTextChunks(for: speechRequest.input, request: speechRequest)
             var samples: [Float] = []
 
             for textChunk in textChunks {
@@ -349,12 +450,13 @@ final class TTSHTTPState: @unchecked Sendable {
                     try await model.generate(
                         text: textChunk,
                         conditioning: conditioning,
+                        instruct: speechRequest.instructions,
                         generationParameters: generationParameters
                     )
                 } else {
                     try await model.generate(
                         text: textChunk,
-                        voice: voiceContext.voice,
+                        voice: voicePrompt(for: voiceContext, instructions: speechRequest.instructions),
                         refAudio: voiceContext.refAudio,
                         refText: voiceContext.refText,
                         language: voiceContext.language,
@@ -399,6 +501,14 @@ final class TTSHTTPState: @unchecked Sendable {
         var refText: String?
         var language: String?
         var conditioning: Qwen3TTSModel.Qwen3TTSReferenceConditioning?
+    }
+
+    private func voicePrompt(for voiceContext: VoiceContext, instructions: String?) -> String? {
+        if model.isCustomVoiceModel {
+            // CustomVoice checkpoints expect this field to be an exact speaker/style id.
+            return voiceContext.voice
+        }
+        return combinedVoicePrompt(voiceContext.voice, instructions: instructions)
     }
 
     private func generationParameters(for speechRequest: OpenAISpeechRequest, voice: VoiceRecord? = nil) -> GenerateParameters {
@@ -516,20 +626,21 @@ final class TTSHTTPState: @unchecked Sendable {
             var generationInfo: AudioGenerationInfo?
             let voiceContext = try resolveVoiceContext(for: speechRequest)
             let generationParameters = generationParameters(for: speechRequest, voice: voiceContext.record)
-            let textChunks = synthesisTextChunks(for: speechRequest.input)
+            let textChunks = synthesisTextChunks(for: speechRequest.input, request: speechRequest)
 
             for textChunk in textChunks {
                 let stream = if let conditioning = voiceContext.conditioning {
                     model.generateStream(
                         text: textChunk,
                         conditioning: conditioning,
+                        instruct: speechRequest.instructions,
                         generationParameters: generationParameters,
                         streamingInterval: streamingInterval
                     )
                 } else {
                     model.generateStream(
                         text: textChunk,
-                        voice: voiceContext.voice,
+                        voice: voicePrompt(for: voiceContext, instructions: speechRequest.instructions),
                         refAudio: voiceContext.refAudio,
                         refText: voiceContext.refText,
                         language: voiceContext.language,
@@ -656,6 +767,104 @@ final class TTSHTTPState: @unchecked Sendable {
         }
     }
 
+    func qwenVoiceDesignResponse(body: Data) async -> HTTPResponse {
+        do {
+            let request = try JSONDecoder().decode(QwenVoiceDesignRequest.self, from: body)
+            guard request.model == "qwen-voice-design" else {
+                return jsonResponse(status: 400, ["error": "model must be qwen-voice-design"])
+            }
+            guard (request.input.action ?? "create") == "create" else {
+                return jsonResponse(status: 400, ["error": "only action=create is supported"])
+            }
+
+            let responseFormat = request.parameters?.responseFormat?.lowercased() ?? "wav"
+            guard responseFormat == "wav" else {
+                return jsonResponse(status: 400, ["error": "unsupported response_format '\(responseFormat)'; only wav is currently supported"])
+            }
+            if let sampleRate = request.parameters?.sampleRate, sampleRate != model.sampleRate {
+                return jsonResponse(status: 400, ["error": "unsupported sample_rate \(sampleRate); only \(model.sampleRate) is currently supported"])
+            }
+
+            let id = request.input.preferredName ?? "designed-voice-\(String(UUID().uuidString.prefix(8)).lowercased())"
+            let previewText = request.input.previewText ?? "Hello. This is a short preview of this Yuwp voice."
+            let defaults = VoiceGenerationDefaults(
+                temperature: request.parameters?.temperature,
+                topP: request.parameters?.topP,
+                topK: request.parameters?.topK,
+                minP: request.parameters?.minP,
+                repetitionPenalty: request.parameters?.repetitionPenalty,
+                maxTokens: request.parameters?.maxTokens,
+                streamingInterval: request.parameters?.streamingInterval
+            )
+            let create = VoiceCreateRequest(
+                id: id,
+                name: id,
+                kind: "design",
+                prompt: request.input.voicePrompt,
+                voice: nil,
+                language: request.input.language,
+                referenceText: nil,
+                referenceAudioBase64: nil,
+                referenceAudioExtension: nil,
+                tags: ["qwen-voice-design", request.input.targetModel ?? "qwen3-tts-vd"],
+                defaults: defaults
+            )
+            let record = try voiceLibrary.create(create)
+
+            do {
+                let speechRequest = OpenAISpeechRequest(
+                    model: request.input.targetModel ?? request.model,
+                    input: previewText,
+                    voice: nil,
+                    voiceId: record.id,
+                    responseFormat: responseFormat,
+                    speed: nil,
+                    temperature: request.parameters?.temperature,
+                    topP: request.parameters?.topP,
+                    topK: request.parameters?.topK,
+                    minP: request.parameters?.minP,
+                    repetitionPenalty: request.parameters?.repetitionPenalty,
+                    maxTokens: request.parameters?.maxTokens,
+                    stream: false,
+                    streamingInterval: request.parameters?.streamingInterval,
+                    instructions: nil,
+                    optimizeInstructions: nil,
+                    lowLatency: nil,
+                    chunkTargetCharacters: nil,
+                    chunkHardCharacterLimit: nil
+                )
+                let response = await speechResponse(speechRequest)
+                guard response.status == 200 else {
+                    try? voiceLibrary.delete(id: record.id)
+                    return response
+                }
+                let previewURL = try voiceLibrary.previewURL(for: record.id)
+                try response.body.write(to: previewURL, options: [.atomic])
+                _ = try voiceLibrary.markPreview(id: record.id)
+                _ = try voiceLibrary.promotePreviewToReference(id: record.id, referenceText: previewText, overwriteExisting: false)
+                voiceConditioningCache.removeValue(forKey: record.id)
+                return jsonResponse(status: 200, [
+                    "output": [
+                        "voice": record.id,
+                        "preview_audio": [
+                            "data": response.body.base64EncodedString(),
+                            "format": responseFormat,
+                            "sample_rate": model.sampleRate,
+                        ],
+                    ],
+                    "usage": ["characters": previewText.count],
+                ])
+            } catch {
+                try? voiceLibrary.delete(id: record.id)
+                throw error
+            }
+        } catch VoiceLibraryError.conflict(let message) {
+            return jsonResponse(status: 409, ["error": message])
+        } catch {
+            return jsonResponse(status: 400, ["error": error.localizedDescription])
+        }
+    }
+
     func previewResponse(voiceID: String, body: Data) async -> HTTPResponse {
         do {
             let request = if body.isEmpty {
@@ -686,7 +895,12 @@ final class TTSHTTPState: @unchecked Sendable {
                 repetitionPenalty: request.repetitionPenalty,
                 maxTokens: request.maxTokens,
                 stream: false,
-                streamingInterval: request.streamingInterval
+                streamingInterval: request.streamingInterval,
+                instructions: nil,
+                optimizeInstructions: nil,
+                lowLatency: nil,
+                chunkTargetCharacters: nil,
+                chunkHardCharacterLimit: nil
             )
             let response = await speechResponse(speechRequest)
             guard response.status == 200 else { return response }
@@ -819,6 +1033,19 @@ func runServe(_ args: [String]) async throws {
                 }
 
                 let pathComponents = path.split(separator: "/").map(String.init)
+                if path == "/v1/services/audio/tts/customization" {
+                    guard request.method == "POST" else { return jsonResponse(status: 405, ["error": "method not allowed"]) }
+                    let semaphore = DispatchSemaphore(value: 0)
+                    final class VoiceDesignBox: @unchecked Sendable { var response: HTTPResponse? }
+                    let box = VoiceDesignBox()
+                    Task {
+                        box.response = await state.qwenVoiceDesignResponse(body: request.body)
+                        semaphore.signal()
+                    }
+                    semaphore.wait()
+                    return box.response ?? jsonResponse(status: 500, ["error": "voice design failed"])
+                }
+
                 if pathComponents.count == 4,
                    pathComponents[0] == "v1",
                    pathComponents[1] == "voices",

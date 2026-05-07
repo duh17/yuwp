@@ -24,6 +24,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     private var cachedReferenceAudioContext: ReferenceAudioContext?
 
     public var sampleRate: Int { config.sampleRate }
+    public var isCustomVoiceModel: Bool { config.ttsModelType == "custom_voice" }
 
     public var defaultGenerationParameters: GenerateParameters {
         GenerateParameters(
@@ -133,6 +134,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     public func generate(
         text: String,
         conditioning: Qwen3TTSReferenceConditioning,
+        instruct: String? = nil,
         generationParameters: GenerateParameters
     ) async throws -> MLXArray {
         try requireGenerationComponents()
@@ -143,7 +145,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
         return try generateVoiceDesign(
             text: text,
-            instruct: nil,
+            instruct: instruct,
             language: settings.language,
             conditioning: conditioning,
             refAudio: nil,
@@ -160,11 +162,13 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     public func generateStream(
         text: String,
         conditioning: Qwen3TTSReferenceConditioning,
+        instruct: String? = nil,
         generationParameters: GenerateParameters
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
         generateStream(
             text: text,
             conditioning: conditioning,
+            instruct: instruct,
             generationParameters: generationParameters,
             streamingInterval: 2.0
         )
@@ -173,6 +177,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
     public func generateStream(
         text: String,
         conditioning: Qwen3TTSReferenceConditioning,
+        instruct: String? = nil,
         generationParameters: GenerateParameters,
         streamingInterval: Double
     ) -> AsyncThrowingStream<AudioGeneration, Error> {
@@ -183,7 +188,7 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         return makeGenerationStream { model, onToken, onInfo, onAudioChunk in
             _ = try model.generateVoiceDesign(
                 text: text,
-                instruct: nil,
+                instruct: instruct,
                 language: settings.language,
                 conditioning: conditioning,
                 refAudio: nil,
@@ -336,7 +341,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         if let conditioning {
             let prepared = try prepareICLGenerationInputs(
                 text: text,
-                conditioning: conditioning
+                conditioning: conditioning,
+                instruct: instruct
             )
             inputEmbedsInit = prepared.0
             trailingTextHidden = prepared.1
@@ -720,7 +726,8 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
 
     func prepareICLGenerationInputs(
         text: String,
-        conditioning: Qwen3TTSReferenceConditioning
+        conditioning: Qwen3TTSReferenceConditioning,
+        instruct: String? = nil
     ) throws -> (MLXArray, MLXArray, MLXArray, MLXArray) {
         guard let tokenizer, let talkerConfig = config.talkerConfig else {
             throw AudioGenerationError.modelNotInitialized(
@@ -793,13 +800,24 @@ public final class Qwen3TTSModel: Module, SpeechGenerationModel, @unchecked Send
         }
 
         let roleEmbed = talker.textProjection(talker.getTextEmbeddings()(targetIds[0..., 0 ..< 3]))
+        let instructEmbed: MLXArray? = if let instruct, !instruct.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            talker.textProjection(talker.getTextEmbeddings()(MLXArray(
+                tokenizer.encode(text: "<|im_start|>user\n\(instruct)<|im_end|>\n").map { Int32($0) }
+            ).reshaped(1, -1)))
+        } else {
+            nil
+        }
 
         let padCount = codecPrefixEmbed.dim(1) - 2
         let padEmbeds = broadcast(ttsPadEmbed, to: [1, padCount, ttsPadEmbed.dim(-1)])
         var combinedPrefix = concatenated([padEmbeds, ttsBosEmbed], axis: 1)
         combinedPrefix = combinedPrefix + codecPrefixEmbed[0..., 0 ..< (codecPrefixEmbed.dim(1) - 1), 0...]
 
-        let inputEmbeds = concatenated([roleEmbed, combinedPrefix, iclInputEmbed], axis: 1)
+        let inputEmbeds = if let instructEmbed {
+            concatenated([instructEmbed, roleEmbed, combinedPrefix, iclInputEmbed], axis: 1)
+        } else {
+            concatenated([roleEmbed, combinedPrefix, iclInputEmbed], axis: 1)
+        }
 
         return (inputEmbeds, trailingTextHidden, ttsPadEmbed, refCodes)
     }
