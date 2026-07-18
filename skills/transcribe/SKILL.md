@@ -1,22 +1,33 @@
 ---
 name: transcribe
-description: Transcribe local audio or YouTube/video audio with Yuwp's native `yuwp-asr` CLI. Use for plain text, JSON, SRT, or VTT output.
+description: Transcribe local audio, video files, or YouTube audio with Yuwp ASR. Use for plain text, JSON, SRT, VTT, or YouTube transcript fallback chains.
 container: false
 ---
 
 # Transcribe
 
-Transcribe audio files with a single command. No wrappers, no API keys.
+Single transcription lane for local audio/video and YouTube. This skill owns the old `youtube-transcript` workflow.
 
-## Happy path
+## Choose the path
+
+| Source | Command | Notes |
+|---|---|---|
+| Local audio/video | `yuwp-asr transcribe <file>` | Plain text by default; supports JSON/SRT/VTT |
+| YouTube quick transcript | `{baseDir}/scripts/youtube/transcript.sh <url>` | Captions → yt-dlp captions → Yuwp audio ASR |
+| YouTube high quality | `{baseDir}/scripts/youtube/transcript.sh <url> --hq` | Skips captions and uses local ASR |
+| YouTube subtitles | `{baseDir}/scripts/youtube/transcript.sh <url> --srt` | Emits SRT with timestamps |
+
+YouTube transcripts are cached in `/tmp/youtube-transcripts/`.
+
+## Local audio happy path
 
 ```bash
 yuwp-asr transcribe recording.m4a
 ```
 
-Outputs plain text to stdout. Add `--format json`, `srt`, or `vtt` when you need structured output.
+Outputs plain text to stdout. Add `--format json`, `srt`, or `vtt` when structured output is needed.
 
-If the binary isn't on your PATH, use the full path.
+If the binary is not on `PATH`, use the full path.
 
 Fresh DMG install:
 
@@ -66,37 +77,25 @@ yuwp-asr transcribe talk.mp3 --format srt --output /tmp/talk.srt
 
 Without `--model`, yuwp-asr falls back to the saved app model, then its built-in default.
 
-## YouTube and video
+## YouTube workflow
 
-Fetch captions first. Fall back to audio download when captions are missing or the user wants higher-quality transcription.
-
-### Captions (fast, existing)
+Use the bundled wrapper instead of hand-rolling `yt-dlp` commands:
 
 ```bash
-mkdir -p /tmp/yuwp-video-transcripts
-yt-dlp --skip-download --write-subs --write-auto-subs \
-  --sub-lang en --sub-format srt --convert-subs srt \
-  --remote-components ejs:github \
-  --extractor-args 'youtube:player_client=android' \
-  -o '/tmp/yuwp-video-transcripts/%(id)s.%(ext)s' '<url>'
+{baseDir}/scripts/youtube/transcript.sh "https://youtube.com/watch?v=VIDEO_ID"
+{baseDir}/scripts/youtube/transcript.sh "https://youtube.com/watch?v=VIDEO_ID" --hq
+{baseDir}/scripts/youtube/transcript.sh "https://youtube.com/watch?v=VIDEO_ID" --srt
 ```
 
-### Audio download + Yuwp ASR (higher quality)
+Fallback order:
 
-```bash
-yt-dlp -f 'bestaudio[ext=m4a]/bestaudio/best' -x \
-  --audio-format m4a --audio-quality 0 \
-  --no-playlist --no-progress \
-  --remote-components ejs:github \
-  --extractor-args 'youtube:player_client=web' \
-  -o '/tmp/yuwp-video-transcripts/%(id)s_audio.%(ext)s' '<url>'
+1. YouTube captions via `youtube-transcript-plus`.
+2. `yt-dlp` auto-captions.
+3. Audio download with `yt-dlp`, then local `yuwp-asr` transcription.
 
-yuwp-asr transcribe /tmp/yuwp-video-transcripts/<id>_audio.m4a --language en
-```
+Set `YUWP_ASR_BIN` to override the ASR binary. Set `MLX_SERVER` only for the legacy SRT fallback endpoint.
 
-Replace `<id>` with the YouTube video ID (the string after `?v=` in the URL).
-
-### Quick clip from a long video
+## Quick clip from a long downloaded file
 
 ```bash
 ffmpeg -y -ss 00:05:00 -t 00:00:30 \
@@ -108,18 +107,17 @@ yuwp-asr transcribe /tmp/<id>_clip.m4a --language en --format json
 
 ## Decision tree
 
-```
+```text
 Audio source?
-├── Local file (.m4a, .wav, .mp3)
+├── Local file (.m4a, .wav, .mp3, video with audio)
 │   └── yuwp-asr transcribe <file> [--format json|srt|vtt]
-└── YouTube / online video
-    ├── Captions exist? → yt-dlp captions (fast)
-    └── No captions / want HQ? → yt-dlp audio → yuwp-asr transcribe
+└── YouTube URL
+    └── scripts/youtube/transcript.sh <url> [--hq|--srt]
 ```
 
 ## Notes
 
-- The binary must live alongside `mlx.metallib` — if you move one, move both.
+- The binary must live alongside `mlx.metallib`; if one moves, move both.
 - If `yt-dlp` hits `429`, `403`, or missing-format errors, upgrade `yt-dlp` first, then retry.
-- First run downloads the default model if none is saved. This can take minutes and produces no progress output.
-- `yuwp-asr serve` runs a persistent server for streaming / HTTP ASR. Only reach for this when doing iterative work on the same audio.
+- First local ASR run may download the default model and take minutes.
+- `yuwp-asr serve` runs a persistent server for streaming/HTTP ASR. Use it only for iterative work on the same audio.

@@ -23,3 +23,6 @@ benchmarks/**/*.py[cod]
 release/
 release-local/
 demo-audio/
+
+# Skill-local dependencies
+skills/**/node_modules/
