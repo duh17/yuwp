@@ -11,6 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIGURATION="release"
+VERSION="${YUWP_VERSION:-0.1.0}"
 : "${YUWP_INTERNAL_DIAGNOSTICS:=0}"
 export YUWP_INTERNAL_DIAGNOSTICS
 DEFAULT_SPARKLE_FEED_URL="https://github.com/duh17/yuwp/releases/latest/download/appcast.xml"
@@ -115,9 +116,9 @@ cat > "$APP/Contents/Info.plist" << EOF
     <key>CFBundleExecutable</key>
     <string>Yuwp</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$VERSION</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>$VERSION</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>
@@ -130,6 +131,10 @@ cat > "$APP/Contents/Info.plist" << EOF
     <string>$SPARKLE_FEED_URL</string>
     <key>SUPublicEDKey</key>
     <string>$SPARKLE_PUBLIC_ED_KEY</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
 </dict>
 </plist>
 EOF

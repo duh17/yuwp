@@ -20,6 +20,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION="${1:?Usage: release.sh <version>}"
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Error: version must use numeric SemVer form (for example, 0.1.3)"
+    exit 1
+fi
 SIGN_IDENTITY="${YUWP_SIGN_IDENTITY:?Set YUWP_SIGN_IDENTITY}"
 NOTARY_PROFILE="${YUWP_NOTARY_PROFILE:-}"
 TEAM_ID="${YUWP_TEAM_ID:-}"
@@ -51,7 +55,17 @@ DMG="$RELEASE_DIR/Yuwp-$VERSION.dmg"
 VENDORED_LICENSES_DIR="third_party/licenses"
 
 SPARKLE_FW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
-SPARKLE_TOOLS_DIR=$(find .build/artifacts -name "sign_update" -exec dirname {} \; 2>/dev/null | head -1)
+SPARKLE_TOOLS_DIR=".build/artifacts/sparkle/Sparkle/bin"
+SPARKLE_SIGN_UPDATE="$SPARKLE_TOOLS_DIR/sign_update"
+SPARKLE_GENERATE_KEYS="$SPARKLE_TOOLS_DIR/generate_keys"
+
+[ -x "$SPARKLE_SIGN_UPDATE" ] || { echo "Error: missing Sparkle sign_update at $SPARKLE_SIGN_UPDATE"; exit 1; }
+[ -x "$SPARKLE_GENERATE_KEYS" ] || { echo "Error: missing Sparkle generate_keys at $SPARKLE_GENERATE_KEYS"; exit 1; }
+KEYCHAIN_PUBLIC_ED_KEY=$("$SPARKLE_GENERATE_KEYS" -p)
+if [ "$KEYCHAIN_PUBLIC_ED_KEY" != "$SPARKLE_PUBLIC_ED_KEY" ]; then
+    echo "Error: configured Sparkle public key does not match the private key in Keychain"
+    exit 1
+fi
 
 # ── Build ──────────────────────────────────────────────────────────────
 echo "=== Building Yuwp $VERSION ==="
@@ -125,6 +139,10 @@ cat > "$APP/Contents/Info.plist" << PLIST
     <string>$SPARKLE_FEED_URL</string>
     <key>SUPublicEDKey</key>
     <string>$SPARKLE_PUBLIC_ED_KEY</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
 </dict>
 </plist>
 PLIST
@@ -209,15 +227,12 @@ xcrun stapler staple "$DMG"
 
 # ── Sparkle Appcast ────────────────────────────────────────────────────
 echo "=== Generating appcast ==="
-if [ -z "$SPARKLE_TOOLS_DIR" ]; then
-    echo "Warning: Sparkle sign_update tool not found — skipping appcast generation"
-    echo "Run: find .build/artifacts -name sign_update"
-else
-    SIGN_OUTPUT=$("$SPARKLE_TOOLS_DIR/sign_update" "$DMG" 2>&1)
-    ED_SIGNATURE=$(echo "$SIGN_OUTPUT" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')
-    FILE_LENGTH=$(stat -f%z "$DMG")
+SIGN_OUTPUT=$("$SPARKLE_SIGN_UPDATE" "$DMG" 2>&1)
+ED_SIGNATURE=$(echo "$SIGN_OUTPUT" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')
+[ -n "$ED_SIGNATURE" ] || { echo "Error: Sparkle sign_update returned no EdDSA signature"; exit 1; }
+FILE_LENGTH=$(stat -f%z "$DMG")
 
-    cat > "$RELEASE_DIR/appcast.xml" << APPCAST
+cat > "$RELEASE_DIR/appcast.xml" << APPCAST
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
@@ -235,8 +250,10 @@ else
   </channel>
 </rss>
 APPCAST
-    echo "  appcast.xml generated"
-fi
+xmllint --noout "$RELEASE_DIR/appcast.xml"
+grep -Fq "sparkle:edSignature=\"$ED_SIGNATURE\"" "$RELEASE_DIR/appcast.xml"
+grep -Fq "length=\"$FILE_LENGTH\"" "$RELEASE_DIR/appcast.xml"
+echo "  appcast.xml generated and validated"
 
 # ── Done ───────────────────────────────────────────────────────────────
 echo ""
