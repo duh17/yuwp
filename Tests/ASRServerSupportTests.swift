@@ -75,6 +75,57 @@ struct ASRServerSupportTests {
         }
     }
 
+    @Test func streamRecordingConfigurationReadsEnvironment() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("yuwp-asr-recordings-env", isDirectory: true)
+        let config = ASRStreamRecordingConfiguration.fromEnvironment(
+            [
+                "YUWP_ASR_SAVE_RECORDINGS": "1",
+                "YUWP_ASR_RECORDINGS_DIR": dir.path,
+            ],
+            transcriptionModel: "qwen"
+        )
+
+        #expect(config.enabled)
+        #expect(config.directory == dir.standardizedFileURL)
+        #expect(config.transcriptionModel == "qwen")
+    }
+
+    @Test func streamRecordingArtifactWriterWritesWavTranscriptAndMetadata() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("yuwp-asr-recording-artifact-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let pcm = Data(repeating: 0x7f, count: 3_200)
+        let context = ASRStreamRecordingContext(
+            sessionID: "session123",
+            transcriptionModel: "qwen",
+            languageHint: "English"
+        )
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let handle = try ASRStreamRecordingArtifactWriter.writeRecording(
+            pcmData: pcm,
+            directory: dir,
+            context: context,
+            date: date
+        )
+        try ASRStreamRecordingArtifactWriter.writeTranscript("hello", for: handle, context: context, updatedAt: date)
+
+        let wav = try Data(contentsOf: handle.audioURL)
+        #expect(String(data: Data(wav[0..<4]), encoding: .ascii) == "RIFF")
+        #expect(String(data: Data(wav[8..<12]), encoding: .ascii) == "WAVE")
+        let dataLength = UInt32(wav[40]) | UInt32(wav[41]) << 8 | UInt32(wav[42]) << 16 | UInt32(wav[43]) << 24
+        #expect(dataLength == UInt32(pcm.count))
+
+        let transcript = try String(contentsOf: handle.transcriptURL, encoding: .utf8)
+        #expect(transcript == "hello\n")
+        let metadata = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: handle.metadataURL)) as? [String: Any])
+        #expect(metadata["source"] as? String == "asr_stream")
+        #expect(metadata["sessionID"] as? String == "session123")
+        #expect(metadata["transcriptionModel"] as? String == "qwen")
+        #expect(metadata["languageHint"] as? String == "English")
+        #expect(metadata["transcript"] as? String == "hello")
+    }
+
     @Test func multipartParserExtractsFieldsAndFiles() {
         let boundary = "Boundary-123"
         var body = Data()

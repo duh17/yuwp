@@ -64,11 +64,19 @@ public func runASRServer(arguments: [String]) -> Int32 {
             }
         }
 
+        let recordingConfiguration = ASRStreamRecordingConfiguration.fromEnvironment(
+            transcriptionModel: modelURL.lastPathComponent
+        )
+        if recordingConfiguration.enabled {
+            log("ASR stream recording enabled: \(recordingConfiguration.directory.path)")
+        }
+
         let manager = StreamingSessionManager(
             transcriber: transcriber,
             batchTranscriber: batchTranscriber,
             batchRetranscribeEnabled: config.batchRetranscribeEnabled,
-            vad: vad
+            vad: vad,
+            recordingConfiguration: recordingConfiguration
         )
         switch config.transport {
         case .http:

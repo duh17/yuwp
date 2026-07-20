@@ -234,6 +234,9 @@ private struct ASRServerConfiguration: Sendable, Equatable {
     var transcriptionModel: String = "mlx-community/Qwen3-ASR-0.6B-4bit"
     var batchCommitEnabled: Bool = true
     var diagnosticLoggingEnabled: Bool = false
+    var saveRecordings: Bool = false
+    var recordingsDir: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Yuwp/recordings", isDirectory: true)
     var port: UInt16
     var serverMode: ServerMode = .localhost
     var asrTransport: ASRIPCTransport = .stdio
@@ -333,6 +336,8 @@ private actor NativeASRServerLifecycle {
         proc.arguments = arguments
         var childEnvironment = ProcessInfo.processInfo.environment
         childEnvironment["YUWP_DIAGNOSTIC_LOGGING"] = configuration.diagnosticLoggingEnabled ? "1" : "0"
+        childEnvironment["YUWP_ASR_SAVE_RECORDINGS"] = configuration.saveRecordings ? "1" : "0"
+        childEnvironment["YUWP_ASR_RECORDINGS_DIR"] = configuration.recordingsDir.path
         proc.environment = childEnvironment
         proc.standardInput = stdinPipe ?? FileHandle.nullDevice
         proc.standardOutput = stdoutPipe ?? FileHandle.nullDevice
@@ -567,6 +572,16 @@ final class NativeASRProvider: SttProvider {
     var port: UInt16 {
         get { configuration.port }
         set { configuration.port = newValue }
+    }
+
+    var saveRecordings: Bool {
+        get { configuration.saveRecordings }
+        set { configuration.saveRecordings = newValue }
+    }
+
+    var recordingsDir: URL {
+        get { configuration.recordingsDir }
+        set { configuration.recordingsDir = newValue.standardizedFileURL }
     }
 
     var serverMode: ServerMode {

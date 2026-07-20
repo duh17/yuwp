@@ -141,19 +141,41 @@ private func analyzeSpeechActivity(_ audio: [Float], vad: SileroVAD?) -> SpeechA
     return SpeechActivityHint(hasSpeech: speechFrames > 0, speechDurationSec: speechDurationSec)
 }
 
+private final class ManagedStreamingSession: @unchecked Sendable {
+    let session: StreamingSession
+    let gate = SessionOperationGate()
+    var pendingAudio = StreamingAudioAccumulator()
+    var lastActivity: Date
+    var recordingData: Data?
+    let recordingStartedAt: Date
+    let language: String?
+
+    init(
+        session: StreamingSession,
+        startedAt: Date,
+        language: String?,
+        recordsAudio: Bool
+    ) {
+        self.session = session
+        self.lastActivity = startedAt
+        self.recordingData = recordsAudio ? Data() : nil
+        self.recordingStartedAt = startedAt
+        self.language = language
+    }
+}
+
 final class StreamingSessionManager: @unchecked Sendable {
     private let transcriber: Qwen3ASRTranscriber
     private let batchTranscriber: Qwen3ASRTranscriber?
     private let batchRetranscribeEnabled: Bool
-    private var sessions: [String: StreamingSession] = [:]
-    private var pendingAudio: [String: [Float]] = [:]
-    private var lastActivity: [String: Date] = [:]
+    private var sessions: [String: ManagedStreamingSession] = [:]
     private let stateLock = NSLock()
     private let inferenceLock = NSLock()
     private let chunkSamples: Int
     private let bootstrapChunkSamples: Int
     private let vad: SileroVAD?
     private let sessionTimeout: TimeInterval = 300
+    private let recordingConfiguration: ASRStreamRecordingConfiguration
     private var processedChunksSinceCacheTrim = 0
     private let cacheTrimChunkInterval = 8
 
@@ -162,7 +184,8 @@ final class StreamingSessionManager: @unchecked Sendable {
         batchTranscriber: Qwen3ASRTranscriber? = nil,
         batchRetranscribeEnabled: Bool = true,
         vad: SileroVAD? = nil,
-        chunkSec: Double = 1.75
+        chunkSec: Double = 1.75,
+        recordingConfiguration: ASRStreamRecordingConfiguration? = nil
     ) {
         self.transcriber = transcriber
         self.batchTranscriber = batchTranscriber
@@ -170,6 +193,8 @@ final class StreamingSessionManager: @unchecked Sendable {
         self.vad = vad
         self.chunkSamples = Int(chunkSec * Double(ASRAudio.sampleRate))
         self.bootstrapChunkSamples = Int(min(chunkSec, 1.5) * Double(ASRAudio.sampleRate))
+        self.recordingConfiguration = recordingConfiguration
+            ?? .disabled(transcriptionModel: transcriber.modelDirectory.lastPathComponent)
         DispatchQueue.global().async { [weak self] in
             while true {
                 Thread.sleep(forTimeInterval: 30)
@@ -179,118 +204,144 @@ final class StreamingSessionManager: @unchecked Sendable {
     }
 
     func create(language: String? = nil) -> String {
-        let sid = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12).lowercased()
+        let sid = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12).lowercased())
         let session = StreamingSession(
             transcriber: transcriber,
             batchTranscriber: batchTranscriber,
             config: StreamConfig(batchRetranscribe: batchRetranscribeEnabled),
             language: language
         )
+        let startedAt = Date()
+        let managedSession = ManagedStreamingSession(
+            session: session,
+            startedAt: startedAt,
+            language: language,
+            recordsAudio: recordingConfiguration.enabled
+        )
         stateLock.lock()
-        sessions[String(sid)] = session
-        pendingAudio[String(sid)] = []
-        lastActivity[String(sid)] = Date()
+        sessions[sid] = managedSession
         stateLock.unlock()
         log("Session created: \(sid)")
-        return String(sid)
+        return sid
     }
 
     func feed(_ sid: String, pcmData: Data) -> [String: Any]? {
-        stateLock.lock()
-        guard let session = sessions[sid] else { stateLock.unlock(); return nil }
-        var pending = pendingAudio[sid] ?? []
-        pendingAudio[sid] = []
-        lastActivity[sid] = Date()
-        stateLock.unlock()
+        guard let managedSession = sessionState(for: sid) else { return nil }
 
-        let samples = pcmData.withUnsafeBytes { buffer -> [Float] in
-            let int16s = buffer.bindMemory(to: Int16.self)
-            return int16s.map { Float($0) / 32768.0 }
-        }
-        pending.append(contentsOf: samples)
+        return managedSession.gate.withActiveOperation {
+            managedSession.lastActivity = Date()
+            managedSession.recordingData?.append(pcmData)
 
-        var batchCorrected = false
-        inferenceLock.lock()
-        while true {
-            let currentChunkSamples = session.activeSegmentText().isEmpty
-                ? bootstrapChunkSamples
-                : chunkSamples
-            guard pending.count >= currentChunkSamples else { break }
-
-            let chunk = Array(pending.prefix(currentChunkSamples))
-            pending = Array(pending.dropFirst(currentChunkSamples))
-            let speechHint = analyzeSpeechActivity(chunk, vad: vad)
-            let result = session.processChunk(chunk, speechHint: speechHint)
-            if result.batchCorrected { batchCorrected = true }
-            processedChunksSinceCacheTrim += 1
-            if processedChunksSinceCacheTrim >= cacheTrimChunkInterval {
-                Self.trimMLXCache()
-                processedChunksSinceCacheTrim = 0
+            let samples = pcmData.withUnsafeBytes { buffer -> [Float] in
+                let int16s = buffer.bindMemory(to: Int16.self)
+                return int16s.map { Float($0) / 32768.0 }
             }
+            managedSession.pendingAudio.append(contentsOf: samples)
+
+            let session = managedSession.session
+            var batchCorrected = false
+            inferenceLock.lock()
+            defer { inferenceLock.unlock() }
+
+            while true {
+                let currentChunkSamples = session.activeSegmentText().isEmpty
+                    ? bootstrapChunkSamples
+                    : chunkSamples
+                guard let chunk = managedSession.pendingAudio.takePrefix(currentChunkSamples) else { break }
+
+                let speechHint = analyzeSpeechActivity(chunk, vad: vad)
+                let result = session.processChunk(chunk, speechHint: speechHint)
+                if result.batchCorrected { batchCorrected = true }
+                processedChunksSinceCacheTrim += 1
+                if processedChunksSinceCacheTrim >= cacheTrimChunkInterval {
+                    Self.trimMLXCache()
+                    processedChunksSinceCacheTrim = 0
+                }
 #if YUWP_INTERNAL_DIAGNOSTICS
-            log(
-                "PERF sid=\(sid) chunk=\(session.processedChunkCount) "
-                    + "samples=\(chunk.count) "
-                    + "encode_ms=\(Int(result.encodeMs.rounded())) "
-                    + "prefill_ms=\(Int(result.prefillMs.rounded())) "
-                    + "decode_ms=\(Int(result.decodeMs.rounded())) "
-                    + "total_ms=\(Int(result.totalMs.rounded())) "
-                    + "reuse_pct=\(Int(result.reusePct.rounded())) "
-                    + "text_len=\(result.text.count) "
-                    + "batch_corrected=\(result.batchCorrected ? 1 : 0)"
-            )
+                log(
+                    "PERF sid=\(sid) chunk=\(session.processedChunkCount) "
+                        + "samples=\(chunk.count) "
+                        + "encode_ms=\(Int(result.encodeMs.rounded())) "
+                        + "prefill_ms=\(Int(result.prefillMs.rounded())) "
+                        + "decode_ms=\(Int(result.decodeMs.rounded())) "
+                        + "total_ms=\(Int(result.totalMs.rounded())) "
+                        + "reuse_pct=\(Int(result.reusePct.rounded())) "
+                        + "text_len=\(result.text.count) "
+                        + "batch_corrected=\(result.batchCorrected ? 1 : 0)"
+                )
 #endif
+            }
+
+            return transcriptPayload(
+                session: session,
+                kind: batchCorrected ? "segment_commit" : "partial",
+                isFinal: false,
+                batchCorrected: batchCorrected
+            )
         }
-
-        let response = transcriptPayload(
-            session: session,
-            kind: batchCorrected ? "segment_commit" : "partial",
-            isFinal: false,
-            batchCorrected: batchCorrected
-        )
-        inferenceLock.unlock()
-
-        stateLock.lock()
-        if sessions[sid] != nil {
-            pendingAudio[sid] = pending + (pendingAudio[sid] ?? [])
-        }
-        stateLock.unlock()
-
-        return response
     }
 
     func stop(_ sid: String) -> [String: Any]? {
-        stateLock.lock()
-        guard let session = sessions.removeValue(forKey: sid) else { stateLock.unlock(); return nil }
-        let pending = pendingAudio.removeValue(forKey: sid) ?? []
-        lastActivity.removeValue(forKey: sid)
-        stateLock.unlock()
+        guard let managedSession = sessionState(for: sid) else { return nil }
 
-        inferenceLock.lock()
-        if !pending.isEmpty {
-            let speechHint = analyzeSpeechActivity(pending, vad: vad)
-            _ = session.processChunk(pending, speechHint: speechHint)
+        let stopped = managedSession.gate.close { () -> (response: [String: Any], text: String, recording: Data?) in
+            removeSession(sid, matching: managedSession)
+            let pending = managedSession.pendingAudio.drain()
+            let session = managedSession.session
+
+            inferenceLock.lock()
+            defer { inferenceLock.unlock() }
+            if !pending.isEmpty {
+                let speechHint = analyzeSpeechActivity(pending, vad: vad)
+                _ = session.processChunk(pending, speechHint: speechHint)
+            }
+            let text = session.finalize()
+            let response = transcriptPayload(
+                session: session,
+                kind: "final",
+                isFinal: true,
+                batchCorrected: false
+            )
+            return (response, text, managedSession.recordingData)
         }
-        let text = session.finalize()
-        let response = transcriptPayload(
-            session: session,
-            kind: "final",
-            isFinal: true,
-            batchCorrected: false
-        )
-        inferenceLock.unlock()
+        guard let stopped else { return nil }
 
-        stateLock.lock()
-        let shouldTrimCache = sessions.isEmpty
-        stateLock.unlock()
-        if shouldTrimCache {
+        if isSessionRegistryEmpty {
             inferenceLock.lock()
             Self.trimMLXCache()
             inferenceLock.unlock()
         }
 
-        log("Session stopped (\(sid)): \(text.count) chars")
-        return response
+        persistRecordingIfNeeded(
+            sid: sid,
+            pcmData: stopped.recording,
+            transcript: stopped.text,
+            language: managedSession.language,
+            startedAt: managedSession.recordingStartedAt
+        )
+
+        log("Session stopped (\(sid)): \(stopped.text.count) chars")
+        return stopped.response
+    }
+
+    private func sessionState(for sid: String) -> ManagedStreamingSession? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return sessions[sid]
+    }
+
+    private func removeSession(_ sid: String, matching expected: ManagedStreamingSession) {
+        stateLock.lock()
+        if sessions[sid] === expected {
+            sessions.removeValue(forKey: sid)
+        }
+        stateLock.unlock()
+    }
+
+    private var isSessionRegistryEmpty: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return sessions.isEmpty
     }
 
     private func transcriptPayload(
@@ -368,22 +419,72 @@ final class StreamingSessionManager: @unchecked Sendable {
         return (resolvedTranscript, resolvedLanguage, items)
     }
 
+    private func persistRecordingIfNeeded(
+        sid: String,
+        pcmData: Data?,
+        transcript: String,
+        language: String?,
+        startedAt: Date?
+    ) {
+        guard recordingConfiguration.enabled,
+              let pcmData,
+              !pcmData.isEmpty
+        else { return }
+
+        let config = recordingConfiguration
+        let date = startedAt ?? Date()
+        DispatchQueue.global(qos: .utility).async {
+            let context = ASRStreamRecordingContext(
+                sessionID: sid,
+                transcriptionModel: config.transcriptionModel,
+                languageHint: language
+            )
+            do {
+                let artifact = try ASRStreamRecordingArtifactWriter.writeRecording(
+                    pcmData: pcmData,
+                    directory: config.directory,
+                    context: context,
+                    date: date
+                )
+                try ASRStreamRecordingArtifactWriter.writeTranscript(
+                    transcript,
+                    for: artifact,
+                    context: context
+                )
+                log(
+                    "ASR recording saved: sid=\(sid) path=\(artifact.audioURL.path) "
+                        + "(\(String(format: "%.1f", artifact.durationSeconds))s)"
+                )
+            } catch {
+                log("ASR recording save failed: sid=\(sid) error=\(error.localizedDescription)")
+            }
+        }
+    }
+
     private func cleanupExpired() {
         let now = Date()
         stateLock.lock()
-        let expired = lastActivity.filter { now.timeIntervalSince($0.value) > sessionTimeout }.map(\.key)
-        for sid in expired {
-            sessions.removeValue(forKey: sid)
-            pendingAudio.removeValue(forKey: sid)
-            lastActivity.removeValue(forKey: sid)
-        }
-        let shouldTrimCache = !expired.isEmpty && sessions.isEmpty
+        let snapshot = Array(sessions)
         stateLock.unlock()
 
-        if !expired.isEmpty {
-            log("Expired \(expired.count) session(s)")
+        var expiredCount = 0
+        for (sid, managedSession) in snapshot {
+            let expired = managedSession.gate.closeIf(
+                { now.timeIntervalSince(managedSession.lastActivity) > sessionTimeout },
+                {
+                    removeSession(sid, matching: managedSession)
+                    managedSession.pendingAudio = StreamingAudioAccumulator()
+                    managedSession.recordingData = nil
+                    return true
+                }
+            ) ?? false
+            if expired { expiredCount += 1 }
         }
-        if shouldTrimCache {
+
+        if expiredCount > 0 {
+            log("Expired \(expiredCount) session(s)")
+        }
+        if expiredCount > 0, isSessionRegistryEmpty {
             inferenceLock.lock()
             Self.trimMLXCache()
             inferenceLock.unlock()

@@ -75,6 +75,36 @@ def percentile(values: list[float], p: float) -> float:
     return xs[lo] * (1 - frac) + xs[hi] * frac
 
 
+def summarize_chunk_timings(reports: list[dict]) -> dict:
+    chunks = [
+        chunk
+        for report in reports
+        for chunk in report["streaming"].get("chunks", [])
+        if chunk.get("speechActive") is True
+    ]
+
+    def summarize(key: str) -> dict[str, float | None]:
+        values = [float(chunk["timing"][key]) for chunk in chunks]
+        if not values:
+            return {"mean": None, "median": None, "p95": None, "max": None, "mad": None}
+        median = statistics.median(values)
+        return {
+            "mean": statistics.mean(values),
+            "median": median,
+            "p95": percentile(values, 0.95),
+            "max": max(values),
+            "mad": statistics.median(abs(value - median) for value in values),
+        }
+
+    return {
+        "speech_active_chunk_count": len(chunks),
+        "total_ms": summarize("totalMs"),
+        "encode_ms": summarize("encodeMs"),
+        "prefill_ms": summarize("prefillMs"),
+        "decode_ms": summarize("decodeMs"),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run streaming-quality canary benchmark")
     parser.add_argument("--bin", default=str(DEFAULT_BIN), help="Path to asr-stream-test binary")
@@ -296,6 +326,8 @@ def main() -> int:
     sys_cpu = [t["sys_cpu_s"] for t in timings if t.get("sys_cpu_s") is not None]
     rss_bytes = [t["max_rss_bytes"] for t in timings if t.get("max_rss_bytes") is not None]
 
+    chunk_timings = summarize_chunk_timings(reports)
+
     summary = {
         "generated_at_epoch": time.time(),
         "elapsed_wall_sec": time.time() - started_at,
@@ -349,6 +381,7 @@ def main() -> int:
         "mean_segment_commits": statistics.mean(r["streaming"]["segmentCommitCount"] for r in reports),
         "mean_finalization_s": statistics.mean(finalization_seconds),
         "p90_finalization_s": percentile(finalization_seconds, 0.90),
+        "chunk_timings": chunk_timings,
         "worst_cases": [
             {
                 "file": r["_file"],
@@ -385,6 +418,12 @@ def main() -> int:
     metric("mean_finalization_s", f"{summary['mean_finalization_s']:.6f}")
     metric("p90_finalization_s", f"{summary['p90_finalization_s']:.6f}")
     metric("mean_segment_commits", f"{summary['mean_segment_commits']:.6f}")
+    metric("speech_active_chunk_count", chunk_timings["speech_active_chunk_count"])
+    for stage in ("total_ms", "encode_ms", "prefill_ms", "decode_ms"):
+        for statistic in ("mean", "median", "p95", "max", "mad"):
+            value = chunk_timings[stage][statistic]
+            if value is not None:
+                metric(f"speech_active_{stage}_{statistic}", f"{value:.6f}")
     if summary["execution"]["mean_user_cpu_s"] is not None:
         metric("mean_user_cpu_s", f"{summary['execution']['mean_user_cpu_s']:.6f}")
     if summary["execution"]["mean_sys_cpu_s"] is not None:

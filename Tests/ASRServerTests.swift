@@ -165,6 +165,27 @@ struct ASRServerTests {
         #expect(ghostStatus == 404)
     }
 
+    @Test func feedRacingWithStopNeverTouchesFinalizedSession() async throws {
+        let (createData, createStatus) = try await http("POST", baseURL)
+        #expect(createStatus == 200)
+        let sid = try #require(json(createData)?["session_id"] as? String)
+        let speech = try loadFixturePCM("jfk.wav")
+        let firstChunk = Data(speech.prefix(chunkBytes))
+
+        async let feed = http("POST", "\(baseURL)/\(sid)", body: firstChunk)
+        async let stop = http("DELETE", "\(baseURL)/\(sid)")
+        let ((_, feedStatus), (stopData, stopStatus)) = try await (feed, stop)
+
+        #expect(feedStatus == 200 || feedStatus == 404)
+        #expect(stopStatus == 200)
+        #expect(json(stopData)?["is_final"] as? Bool == true)
+
+        let (_, lateFeedStatus) = try await http("POST", "\(baseURL)/\(sid)", body: firstChunk)
+        let (_, secondStopStatus) = try await http("DELETE", "\(baseURL)/\(sid)")
+        #expect(lateFeedStatus == 404)
+        #expect(secondStopStatus == 404)
+    }
+
     // MARK: - Transcription Quality
 
     @Test func jfkProducesProgressivePartials() async throws {
@@ -583,6 +604,62 @@ struct StreamingSessionUnitTests {
 
         // Both empty
         #expect(StreamingSession.appendSegment("", "") == "")
+    }
+
+    @Test func liveBatchRefreshPolicyRequiresSpeechAndNoGrowth() {
+        let policy = LiveBatchRefreshPolicy.default
+        let enoughAudio = ASRAudio.sampleRate * 4
+
+        #expect(!policy.shouldAttempt(
+            batchRetranscribeEnabled: true,
+            textChanged: true,
+            hasSpeech: true,
+            speechActive: true,
+            consecutiveNoGrowthChunks: 1,
+            activeAudioSampleCount: enoughAudio,
+            chunksSinceLastAttempt: 10
+        ))
+        #expect(!policy.shouldAttempt(
+            batchRetranscribeEnabled: true,
+            textChanged: false,
+            hasSpeech: true,
+            speechActive: false,
+            consecutiveNoGrowthChunks: 1,
+            activeAudioSampleCount: enoughAudio,
+            chunksSinceLastAttempt: 10
+        ))
+    }
+
+    @Test func liveBatchRefreshPolicyBoundsAudioAndRetryFrequency() {
+        let policy = LiveBatchRefreshPolicy.default
+
+        #expect(policy.shouldAttempt(
+            batchRetranscribeEnabled: true,
+            textChanged: false,
+            hasSpeech: true,
+            speechActive: true,
+            consecutiveNoGrowthChunks: 1,
+            activeAudioSampleCount: ASRAudio.sampleRate * 2,
+            chunksSinceLastAttempt: 2
+        ))
+        #expect(!policy.shouldAttempt(
+            batchRetranscribeEnabled: true,
+            textChanged: false,
+            hasSpeech: true,
+            speechActive: true,
+            consecutiveNoGrowthChunks: 1,
+            activeAudioSampleCount: ASRAudio.sampleRate * 12 + 1,
+            chunksSinceLastAttempt: 2
+        ))
+        #expect(!policy.shouldAttempt(
+            batchRetranscribeEnabled: true,
+            textChanged: false,
+            hasSpeech: true,
+            speechActive: true,
+            consecutiveNoGrowthChunks: 1,
+            activeAudioSampleCount: ASRAudio.sampleRate * 4,
+            chunksSinceLastAttempt: 1
+        ))
     }
 
     @Test func stopBatchStrategyDefaultsToTrailingSegmentOnly() {

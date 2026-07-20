@@ -13,6 +13,7 @@ yuwp-stream-replay.html
 results/
 benchmarks/*
 !benchmarks/README.md
+!benchmarks/streaming-refactor-acceptance-criteria.md
 !benchmarks/cli.py
 !benchmarks/lib/
 !benchmarks/lib/**

@@ -278,6 +278,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         asrProvider.transcriptionModel = shared.transcriptionModel
         asrProvider.batchCommitEnabled = shared.batchCommitEnabled
         asrProvider.asrTransport = shared.asrTransport
+        asrProvider.serverMode = shared.serverMode
+        asrProvider.port = shared.serverPort
+        asrProvider.diagnosticLoggingEnabled = shared.diagnosticLoggingEnabled
+        asrProvider.saveRecordings = shared.saveRecordings
+        asrProvider.recordingsDir = shared.recordingsDir
     }
 
     private func setupMicPanelDismiss() {
@@ -1271,6 +1276,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         Config.shared.saveRecordings = enabled
+        asrProvider.saveRecordings = enabled
+        restartProviderForSettingsChange()
         syncSettingsWindow()
         yuwpLog("Save recordings \(enabled ? "enabled" : "disabled")")
     }
@@ -1301,6 +1308,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.message = "Choose where Yuwp should save recorded audio files."
         if panel.runModal() == .OK, let url = panel.url {
             Config.shared.setRecordingsDir(url)
+            asrProvider.recordingsDir = Config.shared.recordingsDir
+            restartProviderForSettingsChange()
             syncSettingsWindow()
             yuwpLog("Recordings location changed to: \(Config.shared.recordingsDir.path)")
         }
@@ -1308,6 +1317,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func resetRecordingsDirectory() {
         Config.shared.resetRecordingsDir()
+        asrProvider.recordingsDir = Config.shared.recordingsDir
+        restartProviderForSettingsChange()
         syncSettingsWindow()
         yuwpLog("Recordings location reset to default: \(Config.shared.defaultRecordingsDir.path)")
     }
