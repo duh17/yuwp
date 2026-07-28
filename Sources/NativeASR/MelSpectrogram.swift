@@ -99,26 +99,25 @@ private func reflectPad1D(_ x: MLXArray, padding: Int) -> MLXArray {
     let n = x.shape[0]
     guard n > 1 else { return x }
 
-    var prefix = flip1D(x[1 ..< min(padding + 1, n)])
-    var suffix = flip1D(x[max(0, n - padding - 1) ..< (n - 1)])
-
-    while prefix.shape[0] < padding {
-        let need = padding - prefix.shape[0]
-        let extra = flip1D(x[1 ..< (min(need, n - 1) + 1)])
-        prefix = MLX.concatenated([extra, prefix])
+    // Single-pass index construction + one gather (replaces multiple flip+concat)
+    // Handles arbitrary padding lengths via periodic reflection.
+    let totalLen = n + 2 * padding
+    var indices = [Int32](repeating: 0, count: totalLen)
+    let period = 2 * (n - 1)
+    for i in 0 ..< padding {
+        let raw = padding - i
+        let mod = raw % period
+        indices[i] = Int32(mod <= n - 1 ? mod : period - mod)
     }
-    while suffix.shape[0] < padding {
-        let need = padding - suffix.shape[0]
-        let extra = flip1D(x[(max(0, n - need - 1)) ..< (n - 1)])
-        suffix = MLX.concatenated([suffix, extra])
+    for i in 0 ..< n {
+        indices[padding + i] = Int32(i)
     }
-
-    return MLX.concatenated([prefix[0 ..< padding], x, suffix[0 ..< padding]])
-}
-
-private func flip1D(_ x: MLXArray) -> MLXArray {
-    let indices = MLXArray((0 ..< x.shape[0]).reversed().map { Int32($0) })
-    return x[indices]
+    for i in 0 ..< padding {
+        let raw = n + i
+        let mod = raw % period
+        indices[padding + n + i] = Int32(mod <= n - 1 ? mod : period - mod)
+    }
+    return x[MLXArray(indices)]
 }
 
 // MARK: - Mel Filterbank

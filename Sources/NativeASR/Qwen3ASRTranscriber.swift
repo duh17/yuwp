@@ -144,8 +144,8 @@ public final class Qwen3ASRTranscriber: @unchecked Sendable {
         var repetitionCount = 0
         var lastToken = -1
 
-        // First token
-        eval(y)
+        // First token — y.item() blocks until ready; asyncEval(nextY)
+        // already ensures y is computed as a dependency.
         var n = 0
         while n < tokenCap {
             // Read current token (blocks until ready)

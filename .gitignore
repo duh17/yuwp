@@ -27,3 +27,4 @@ demo-audio/
 
 # Skill-local dependencies
 skills/**/node_modules/
+.auto/log.jsonl

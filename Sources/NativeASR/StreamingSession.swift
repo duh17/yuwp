@@ -171,6 +171,12 @@ public final class StreamingSession: @unchecked Sendable {
     private let encWindowSamples: Int
     private var kvCache: [KVCache]
     private var prevPrefillEmbeds: MLXArray?
+    /// Number of encoder tokens from cached windows in the previous chunk.
+    /// Used for structural reuse-length estimation (avoids GPU sync).
+    private var prevCachedEncTokenCount: Int = 0
+    /// Encoder window start offset from the previous chunk.
+    /// Used to detect window eviction (count alone misses steady-state rollover).
+    private var prevNextWindowStart: Int = 0
     private var rawTokens: [Int] = []
     private var chunkIdx: Int = 0
     private var lastText: String = ""
@@ -285,13 +291,30 @@ public final class StreamingSession: @unchecked Sendable {
         let inputEmbeds = buildInputEmbeds(
             encOutput: encOutput, numEncTokens: numEncTokens, prefixTokens: prefixTokens
         )
-        eval(inputEmbeds)
+        // No explicit eval here — the model forward pass triggers lazy evaluation.
+        // Previously needed for computeReuseLength's GPU comparison; structural
+        // reuse estimation avoids that sync.
 
         // 4. Delta prefill
         let prefillT0 = Date()
-        let reuseLen = computeReuseLength(prevEmbeds: prevPrefillEmbeds, newEmbeds: inputEmbeds)
         let totalLen = inputEmbeds.shape[1]
         let prefillLen = totalLen - 1
+
+        // Structural reuse estimation: header (9 tokens) + cached encoder
+        // windows are bit-identical across chunks. Avoids the GPU sync that
+        // computeReuseLength required (element-wise diff + argMax + eval).
+        let reuseLen: Int
+        if prevPrefillEmbeds == nil {
+            reuseLen = 0
+        } else if nextWindowStart > prevNextWindowStart
+            && encWindowCache.count >= config.maxEncWindows
+        {
+            // New windows encoded AND cache at capacity — eviction shifted
+            // positions. Only the header is safe to reuse.
+            reuseLen = min(9, prefillLen)
+        } else {
+            reuseLen = min(9 + prevCachedEncTokenCount, prefillLen)
+        }
 
         for c in kvCache { c.offset = reuseLen }
 
@@ -300,21 +323,17 @@ public final class StreamingSession: @unchecked Sendable {
         // If embedding shrank, correct the offset
         if deltaLen < 0 {
             for c in kvCache { c.offset = prefillLen }
-        } else if deltaLen > 0 {
-            let deltaEmbeds = inputEmbeds[0..., reuseLen ..< prefillLen, 0...]
-            let dummyIds = MLXArray([Int32(0)]).expandedDimensions(axis: 0)
-            let (dl, _) = transcriber.model(
-                inputIds: dummyIds,
-                inputEmbeddings: deltaEmbeds, cache: kvCache
-            )
-            eval(dl)
         }
 
+        // Single forward pass: when deltaLen > 0, process delta + last position
+        // together (causal mask). Otherwise just the last position (seqLen=1).
+        // This merges what was previously two separate 28-layer decoder calls.
         let dummyIds = MLXArray([Int32(0)]).expandedDimensions(axis: 0)
-        let lastEmbed = inputEmbeds[0..., prefillLen ..< (prefillLen + 1), 0...]
+        let startIdx = deltaLen > 0 ? reuseLen : prefillLen
+        let prefillEmbeds = inputEmbeds[0..., startIdx ..< (prefillLen + 1), 0...]
         let (logits, _) = transcriber.model(
             inputIds: dummyIds,
-            inputEmbeddings: lastEmbed, cache: kvCache
+            inputEmbeddings: prefillEmbeds, cache: kvCache
         )
         eval(logits)
 
@@ -322,6 +341,8 @@ public final class StreamingSession: @unchecked Sendable {
         let reusePct = Double(reuseLen) / Double(max(totalLen, 1)) * 100
 
         prevPrefillEmbeds = inputEmbeds[0..., 0 ..< prefillLen, 0...]
+        prevCachedEncTokenCount = encWindowCache.reduce(0) { $0 + $1.shape[0] }
+        prevNextWindowStart = nextWindowStart
 
         // 5. Decode
         let decodeT0 = Date()
@@ -399,6 +420,8 @@ public final class StreamingSession: @unchecked Sendable {
         nextWindowStart = 0
         kvCache = transcriber.model.makeCache()
         prevPrefillEmbeds = nil
+        prevCachedEncTokenCount = 0
+        prevNextWindowStart = 0
         rawTokens = []
         chunkIdx = 0
         consecutiveSilence = 0
@@ -613,23 +636,6 @@ public final class StreamingSession: @unchecked Sendable {
         return embeds
     }
 
-    private func computeReuseLength(prevEmbeds: MLXArray?, newEmbeds: MLXArray) -> Int {
-        guard let prev = prevEmbeds else { return 0 }
-        let cmpLen = min(prev.shape[1], newEmbeds.shape[1])
-        if cmpLen == 0 { return 0 }
-
-        let prevSlice = prev[0, 0 ..< cmpLen].asType(.float32)
-        let newSlice = newEmbeds[0, 0 ..< cmpLen].asType(.float32)
-        let diff = MLX.abs(prevSlice - newSlice).sum(axis: -1) // shape: (cmpLen,)
-        let mask = (diff .> MLXArray(Float(1e-4))).asType(.int32)
-        let total = mask.sum()
-        let first = MLX.argMax(mask)
-        eval(total, first)
-
-        if total.item(Int.self) == 0 { return cmpLen }
-        return first.item(Int.self)
-    }
-
     /// Decode with double-buffer asyncEval pattern:
     /// Sample current token while next forward pass runs on GPU.
     private func decodeTokens(logits: MLXArray, maxTokens: Int) -> [Int] {
@@ -725,6 +731,8 @@ public final class StreamingSession: @unchecked Sendable {
             // Reset cache — batch changed the token sequence
             kvCache = transcriber.model.makeCache()
             prevPrefillEmbeds = nil
+            prevCachedEncTokenCount = 0
+            prevNextWindowStart = 0
             fputs("[StreamingSession] Active-segment \(reason): \(audioBuffer.count / ASRAudio.sampleRate)s audio → \(text.count) chars\n", stderr)
             return text
         } catch {

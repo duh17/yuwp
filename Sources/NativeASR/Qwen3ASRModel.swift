@@ -90,20 +90,41 @@ public final class Qwen3ASRModel: Module {
 
     /// Full forward pass.
     /// - Returns: (logits, updated KV caches)
+    ///
+    /// PERFORMANCE: The LM head (vocab projection) is only computed for the last
+    /// token position. All callers sample from `logits[0, -1]`, so computing
+    /// logits for every prefill position wastes (seqLen-1) × hiddenSize × vocabSize
+    /// multiply-adds. For a 163-token prefill with vocab=151936, this saves ~99%
+    /// of the LM head compute.
+    ///
+    /// When `skipLMHead` is true, returns hidden states instead of logits.
+    /// Used by streaming delta prefill where logits are never sampled — only
+    /// eval'd to force KV cache computation. Skips the expensive vocab projection.
     public func callAsFunction(
         inputIds: MLXArray,
         inputEmbeddings: MLXArray? = nil,
-        cache: [KVCache]? = nil
+        cache: [KVCache]? = nil,
+        skipLMHead: Bool = false
     ) -> (MLXArray, [KVCache]) {
         let embeds = inputEmbeddings ?? model.embedTokens(inputIds)
 
         let (hidden, newCache) = model(inputEmbeddings: embeds, cache: cache)
 
+        if skipLMHead {
+            return (hidden, newCache)
+        }
+
+        // Slice to last position before the expensive vocab projection
+        let seqLen = hidden.shape[1]
+        let lastHidden = seqLen > 1
+            ? hidden[0..., (seqLen - 1) ..< seqLen, 0...]
+            : hidden
+
         let logits: MLXArray
         if config.textConfig.tieWordEmbeddings {
-            logits = model.embedTokens.asLinear(hidden)
+            logits = model.embedTokens.asLinear(lastHidden)
         } else if let lmHead {
-            logits = lmHead(hidden)
+            logits = lmHead(lastHidden)
         } else {
             fatalError("No LM head and embeddings not tied")
         }
