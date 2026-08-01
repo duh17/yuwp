@@ -119,9 +119,20 @@ final class AudioEncoderLayer: Module {
 // MARK: - Audio Encoder
 
 final class AudioEncoder: Module {
+    private struct BlockMaskKey: Hashable {
+        let seqLen: Int
+        let cuSeqlens: [Int]
+    }
+
     let config: AudioEncoderConfig
     let nWindow: Int
     let nWindowInfer: Int
+
+    // Masks recur across fixed-size streaming chunks and repeated batch requests.
+    // Keep the cache bounded because each value grows quadratically with sequence length.
+    private let blockMaskCacheCapacity = 16
+    private var blockMaskCache: [BlockMaskKey: MLXArray] = [:]
+    private var blockMaskCacheOrder: [BlockMaskKey] = []
 
     @ModuleInfo var conv2d1: Conv2d
     @ModuleInfo var conv2d2: Conv2d
@@ -170,6 +181,11 @@ final class AudioEncoder: Module {
     /// Block-diagonal additive attention mask restricting attention to within windows.
     /// Built on GPU using MLX operations instead of CPU loop (O(N²) CPU work was bottleneck for long audio).
     private func makeBlockMask(seqLen: Int, cuSeqlens: [Int], dtype: DType) -> MLXArray {
+        let key = BlockMaskKey(seqLen: seqLen, cuSeqlens: cuSeqlens)
+        if let cached = blockMaskCache[key] {
+            return cached
+        }
+
         // Assign each position to its block index
         var blockIds = [Int32](repeating: 0, count: seqLen)
         for i in 0 ..< max(0, cuSeqlens.count - 1) {
@@ -184,7 +200,17 @@ final class AudioEncoder: Module {
         let colIds = ids.expandedDimensions(axis: 0)  // (1, seqLen)
         let sameBlock = (rowIds .== colIds).asType(dtype)  // 1.0 where same block
         let mask = MLX.where(sameBlock .== 1, MLXArray(Float(0.0)).asType(dtype), MLXArray(Float(-1e9)).asType(dtype))
-        return mask.expandedDimensions(axis: 0).expandedDimensions(axis: 0)
+            .expandedDimensions(axis: 0).expandedDimensions(axis: 0)
+
+        if blockMaskCache.count >= blockMaskCacheCapacity,
+           let evicted = blockMaskCacheOrder.first
+        {
+            blockMaskCache.removeValue(forKey: evicted)
+            blockMaskCacheOrder.removeFirst()
+        }
+        blockMaskCache[key] = mask
+        blockMaskCacheOrder.append(key)
+        return mask
     }
 
     func callAsFunction(_ inputFeatures: MLXArray, featureAttentionMask: MLXArray? = nil) -> MLXArray {
