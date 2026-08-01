@@ -96,28 +96,38 @@ private func computeSTFT(_ x: MLXArray, window: MLXArray, nFft: Int, hopLength: 
 
 private func reflectPad1D(_ x: MLXArray, padding: Int) -> MLXArray {
     guard padding > 0 else { return x }
-    let n = x.shape[0]
-    guard n > 1 else { return x }
+    let indices = reflectPadIndices(length: x.shape[0], padding: padding)
+    guard indices.count > x.shape[0] else { return x }
+    return x[MLXArray(indices)]
+}
 
-    // Single-pass index construction + one gather (replaces multiple flip+concat)
-    // Handles arbitrary padding lengths via periodic reflection.
-    let totalLen = n + 2 * padding
-    var indices = [Int32](repeating: 0, count: totalLen)
-    let period = 2 * (n - 1)
-    for i in 0 ..< padding {
-        let raw = padding - i
-        let mod = raw % period
-        indices[i] = Int32(mod <= n - 1 ? mod : period - mod)
+/// Indices for NumPy-style reflection padding (edge values are not repeated).
+/// Internal so the boundary behavior can be tested without evaluating an STFT.
+func reflectPadIndices(length: Int, padding: Int) -> [Int32] {
+    precondition(length > 0)
+    precondition(padding >= 0)
+    guard padding > 0 else {
+        return (0 ..< length).map(Int32.init)
     }
-    for i in 0 ..< n {
+    if length == 1 {
+        return [Int32](repeating: 0, count: 1 + 2 * padding)
+    }
+
+    let totalLength = length + 2 * padding
+    var indices = [Int32](repeating: 0, count: totalLength)
+    let period = 2 * (length - 1)
+    for i in 0 ..< padding {
+        let reflected = (padding - i) % period
+        indices[i] = Int32(reflected <= length - 1 ? reflected : period - reflected)
+    }
+    for i in 0 ..< length {
         indices[padding + i] = Int32(i)
     }
     for i in 0 ..< padding {
-        let raw = n + i
-        let mod = raw % period
-        indices[padding + n + i] = Int32(mod <= n - 1 ? mod : period - mod)
+        let reflected = (length + i) % period
+        indices[padding + length + i] = Int32(reflected <= length - 1 ? reflected : period - reflected)
     }
-    return x[MLXArray(indices)]
+    return indices
 }
 
 // MARK: - Mel Filterbank

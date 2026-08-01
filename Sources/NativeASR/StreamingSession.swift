@@ -168,15 +168,17 @@ public final class StreamingSession: @unchecked Sendable {
     private var sessionAudioBuffer: [Float] = []
     private var encWindowCache: [MLXArray] = []
     private var nextWindowStart: Int = 0
+    /// Number of complete encoder windows evicted from the front of the cache.
+    private var encoderCacheOrigin: Int = 0
     private let encWindowSamples: Int
     private var kvCache: [KVCache]
     private var prevPrefillEmbeds: MLXArray?
     /// Number of encoder tokens from cached windows in the previous chunk.
     /// Used for structural reuse-length estimation (avoids GPU sync).
     private var prevCachedEncTokenCount: Int = 0
-    /// Encoder window start offset from the previous chunk.
-    /// Used to detect window eviction (count alone misses steady-state rollover).
-    private var prevNextWindowStart: Int = 0
+    /// Cache origin from the previous chunk. A change means encoder token
+    /// positions shifted and only the fixed prompt header remains reusable.
+    private var prevEncoderCacheOrigin: Int = 0
     private var rawTokens: [Int] = []
     private var chunkIdx: Int = 0
     private var lastText: String = ""
@@ -303,18 +305,12 @@ public final class StreamingSession: @unchecked Sendable {
         // Structural reuse estimation: header (9 tokens) + cached encoder
         // windows are bit-identical across chunks. Avoids the GPU sync that
         // computeReuseLength required (element-wise diff + argMax + eval).
-        let reuseLen: Int
-        if prevPrefillEmbeds == nil {
-            reuseLen = 0
-        } else if nextWindowStart > prevNextWindowStart
-            && encWindowCache.count >= config.maxEncWindows
-        {
-            // New windows encoded AND cache at capacity — eviction shifted
-            // positions. Only the header is safe to reuse.
-            reuseLen = min(9, prefillLen)
-        } else {
-            reuseLen = min(9 + prevCachedEncTokenCount, prefillLen)
-        }
+        let reuseLen = Self.estimateReuseLength(
+            hasPreviousPrefill: prevPrefillEmbeds != nil,
+            encoderCacheOriginChanged: encoderCacheOrigin != prevEncoderCacheOrigin,
+            previousCachedEncoderTokenCount: prevCachedEncTokenCount,
+            prefillLength: prefillLen
+        )
 
         for c in kvCache { c.offset = reuseLen }
 
@@ -342,7 +338,7 @@ public final class StreamingSession: @unchecked Sendable {
 
         prevPrefillEmbeds = inputEmbeds[0..., 0 ..< prefillLen, 0...]
         prevCachedEncTokenCount = encWindowCache.reduce(0) { $0 + $1.shape[0] }
-        prevNextWindowStart = nextWindowStart
+        prevEncoderCacheOrigin = encoderCacheOrigin
 
         // 5. Decode
         let decodeT0 = Date()
@@ -418,10 +414,11 @@ public final class StreamingSession: @unchecked Sendable {
         audioBuffer = []
         encWindowCache = []
         nextWindowStart = 0
+        encoderCacheOrigin = 0
         kvCache = transcriber.model.makeCache()
         prevPrefillEmbeds = nil
         prevCachedEncTokenCount = 0
-        prevNextWindowStart = 0
+        prevEncoderCacheOrigin = 0
         rawTokens = []
         chunkIdx = 0
         consecutiveSilence = 0
@@ -534,6 +531,23 @@ public final class StreamingSession: @unchecked Sendable {
         return activeSpeechEvidence.hasEnoughSpeech
     }
 
+    static func encoderWindowEvictionCount(cachedWindowCount: Int, maximum: Int) -> Int {
+        max(0, cachedWindowCount - maximum)
+    }
+
+    static func estimateReuseLength(
+        hasPreviousPrefill: Bool,
+        encoderCacheOriginChanged: Bool,
+        previousCachedEncoderTokenCount: Int,
+        prefillLength: Int
+    ) -> Int {
+        guard hasPreviousPrefill else { return 0 }
+        let reusableLength = encoderCacheOriginChanged
+            ? 9
+            : 9 + previousCachedEncoderTokenCount
+        return min(reusableLength, prefillLength)
+    }
+
     /// Concatenate two segment texts with a single space, handling empty inputs
     /// and avoiding double-spaces.
     static func appendSegment(_ committed: String, _ segment: String) -> String {
@@ -590,9 +604,15 @@ public final class StreamingSession: @unchecked Sendable {
             nextWindowStart += encWindowSamples
         }
 
-        // Evict oldest
-        while encWindowCache.count > config.maxEncWindows {
-            encWindowCache.removeFirst()
+        // Evict oldest only after the cache exceeds capacity. Reaching capacity
+        // does not shift encoder positions and must preserve structural reuse.
+        let evictionCount = Self.encoderWindowEvictionCount(
+            cachedWindowCount: encWindowCache.count,
+            maximum: config.maxEncWindows
+        )
+        if evictionCount > 0 {
+            encWindowCache.removeFirst(evictionCount)
+            encoderCacheOrigin += evictionCount
         }
 
         // Encode tail (partial window)
@@ -732,7 +752,7 @@ public final class StreamingSession: @unchecked Sendable {
             kvCache = transcriber.model.makeCache()
             prevPrefillEmbeds = nil
             prevCachedEncTokenCount = 0
-            prevNextWindowStart = 0
+            prevEncoderCacheOrigin = encoderCacheOrigin
             fputs("[StreamingSession] Active-segment \(reason): \(audioBuffer.count / ASRAudio.sampleRate)s audio → \(text.count) chars\n", stderr)
             return text
         } catch {

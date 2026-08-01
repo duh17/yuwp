@@ -584,6 +584,51 @@ struct ASRServerTests {
 
 @Suite("StreamingSession helpers")
 struct StreamingSessionUnitTests {
+    @Test func reflectPaddingIndicesMatchNumPySemantics() {
+        #expect(reflectPadIndices(length: 4, padding: 2) == [2, 1, 0, 1, 2, 3, 2, 1])
+        #expect(reflectPadIndices(length: 4, padding: 8) == [
+            2, 1, 0, 1, 2, 3, 2, 1,
+            0, 1, 2, 3,
+            2, 1, 0, 1, 2, 3, 2, 1,
+        ])
+        #expect(reflectPadIndices(length: 1, padding: 4) == Array(repeating: 0, count: 9))
+        #expect(reflectPadIndices(length: 5, padding: 0) == [0, 1, 2, 3, 4])
+    }
+
+    @Test func structuralReuseDropsAudioTokensOnlyAfterActualEviction() {
+        #expect(StreamingSession.estimateReuseLength(
+            hasPreviousPrefill: false,
+            encoderCacheOriginChanged: false,
+            previousCachedEncoderTokenCount: 40,
+            prefillLength: 80
+        ) == 0)
+        #expect(StreamingSession.estimateReuseLength(
+            hasPreviousPrefill: true,
+            encoderCacheOriginChanged: false,
+            previousCachedEncoderTokenCount: 40,
+            prefillLength: 80
+        ) == 49)
+        #expect(StreamingSession.estimateReuseLength(
+            hasPreviousPrefill: true,
+            encoderCacheOriginChanged: true,
+            previousCachedEncoderTokenCount: 40,
+            prefillLength: 80
+        ) == 9)
+        #expect(StreamingSession.estimateReuseLength(
+            hasPreviousPrefill: true,
+            encoderCacheOriginChanged: false,
+            previousCachedEncoderTokenCount: 40,
+            prefillLength: 20
+        ) == 20)
+    }
+
+    @Test func encoderWindowEvictionStartsOnlyAboveCapacity() {
+        #expect(StreamingSession.encoderWindowEvictionCount(cachedWindowCount: 3, maximum: 4) == 0)
+        #expect(StreamingSession.encoderWindowEvictionCount(cachedWindowCount: 4, maximum: 4) == 0)
+        #expect(StreamingSession.encoderWindowEvictionCount(cachedWindowCount: 5, maximum: 4) == 1)
+        #expect(StreamingSession.encoderWindowEvictionCount(cachedWindowCount: 7, maximum: 4) == 3)
+    }
+
     /// `appendSegment` is a static helper that joins committed and active text
     /// with a single space, handling empties without producing double-spaces.
     @Test func appendSegmentJoinsCleanly() {

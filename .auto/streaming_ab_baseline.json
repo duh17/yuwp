@@ -1,0 +1,81 @@
+{
+  "fixture": "Tests/fixtures/asr_en.wav",
+  "model": "mlx-community/Qwen3-ASR-0.6B-bf16",
+  "batchCorrection": false,
+  "commandTemplate": "<checkout>/.build/arm64-apple-macosx/release/asr-stream-test Tests/fixtures/asr_en.wav --model <model-dir> --no-batch-retranscribe --compact",
+  "procedure": {
+    "warmupRunsPerBinary": 1,
+    "cooldownBeforeWarmupSeconds": 20,
+    "measuredRunsPerBinary": 6,
+    "oneSecondPauseAfterEachPair": true,
+    "runOrder": [
+      "baseline", "optimized",
+      "optimized", "baseline",
+      "baseline", "optimized",
+      "optimized", "baseline",
+      "baseline", "optimized",
+      "optimized", "baseline"
+    ]
+  },
+  "baseline": {
+    "commit": "0c10f63daca44679315da254b0040a2679f681d2",
+    "samples": [
+      {"streamRtf": 0.15041617169742402, "streamPrefillMs": 64.61405754089355},
+      {"streamRtf": 0.15242497883636075, "streamPrefillMs": 70.07598876953125},
+      {"streamRtf": 0.18295034257506254, "streamPrefillMs": 82.45849609375},
+      {"streamRtf": 0.07549929789814021, "streamPrefillMs": 37.45752573013306},
+      {"streamRtf": 0.07357518999921070, "streamPrefillMs": 35.76844930648804},
+      {"streamRtf": 0.08218368683546272, "streamPrefillMs": 43.301522731781006}
+    ],
+    "median": {
+      "streamRtf": 0.11629992926644336,
+      "streamPrefillMs": 53.95779013633728,
+      "streamWerAgainstOwnBatch": 0.027777777777777776
+    },
+    "batchTranscript": "Mhm. Oh yeah, yeah. He wasn't even that big when I started listening to him, but and his solo music didn't do overly well, but he did very well when he started writing for other people.",
+    "streamTranscript": "Hmm. Oh, yeah! Yeah, he wasn't even that big when I started listening to him, but and his solo music didn't do overly well, but he did very well when he started writing for other people."
+  },
+  "optimized": {
+    "baseCommit": "7535ee7326df5d0ff240cb619f2b39044a098d54",
+    "description": "7535ee7 plus cache-origin boundary and validation fixes",
+    "codeBlobIds": {
+      "Sources/NativeASR/MelSpectrogram.swift": "e36e0cec6ffe1cfba2c4b2351eecc03998b8a736",
+      "Sources/NativeASR/Qwen3ASRModel.swift": "c612952b9a94e29061ec7ee8185e3489b7975223",
+      "Sources/NativeASR/Qwen3ASRTranscriber.swift": "ec9bd389f1a544dfd14ea20af1406e5c2e042856",
+      "Sources/NativeASR/StreamingSession.swift": "1d5992d47f7eb1038ed35cc0a90bddbd4599c1b9"
+    },
+    "samples": [
+      {"streamRtf": 0.16986127653510003, "streamPrefillMs": 47.11407423019409},
+      {"streamRtf": 0.15682742261427818, "streamPrefillMs": 54.52948808670044},
+      {"streamRtf": 0.13766734410446260, "streamPrefillMs": 31.585514545440674},
+      {"streamRtf": 0.07674364172629554, "streamPrefillMs": 33.02145004272461},
+      {"streamRtf": 0.07615997414691912, "streamPrefillMs": 31.93354606628418},
+      {"streamRtf": 0.08631066403703352, "streamPrefillMs": 35.762012004852295}
+    ],
+    "median": {
+      "streamRtf": 0.11198900407074806,
+      "streamPrefillMs": 34.39173102378845,
+      "streamWerAgainstOwnBatch": 0.05555555555555555
+    },
+    "batchTranscript": "Mhm. Oh yeah, yeah. He wasn't even that big when I started listening to him, but and his solo music didn't do overly well, but he did very well when he started writing for other people.",
+    "streamTranscript": "Mhm. Oh yeah, yeah—he wasn't even that big when I started listening to him, but and his solo music didn't do overly well, but he did very well when he started writing for other people."
+  },
+  "pairedImprovementPercent": {
+    "streamRtfSamples": [-12.9275, -2.8883, 24.7515, -1.6482, -3.5131, -5.0217],
+    "streamRtfMedian": -3.2007,
+    "streamRtfMean": -0.2079,
+    "streamRtfWins": 1,
+    "streamPrefillMsSamples": [27.0839, 22.1852, 61.6953, 11.8429, 10.7215, 17.4117],
+    "streamPrefillMsMedian": 19.7984,
+    "streamPrefillMsMean": 25.1567,
+    "streamPrefillMsWins": 6
+  },
+  "conclusion": {
+    "streamRtf": "No demonstrated improvement: paired runs show a 3.20% median regression and 0.21% mean regression within a noisy bimodal workload.",
+    "streamPrefillMs": "Demonstrated improvement: optimized prefill won all six pairs with a 19.80% median paired reduction."
+  },
+  "notes": [
+    "Runs were bimodal, so paired comparisons—not differences between independent medians—are the stated conclusion.",
+    "Both outputs preserve the spoken content. Stream-vs-batch WER differs because punctuation normalization does not split a Unicode em dash and because the baseline emits Hmm where batch emits Mhm."
+  ]
+}

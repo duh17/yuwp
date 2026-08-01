@@ -89,30 +89,23 @@ public final class Qwen3ASRModel: Module {
     // MARK: - Forward Pass
 
     /// Full forward pass.
-    /// - Returns: (logits, updated KV caches)
+    /// - Returns: Last-position logits shaped `[batch, 1, vocabulary]` and the
+    ///   updated KV caches. This method does not return logits for earlier input
+    ///   positions.
     ///
     /// PERFORMANCE: The LM head (vocab projection) is only computed for the last
     /// token position. All callers sample from `logits[0, -1]`, so computing
     /// logits for every prefill position wastes (seqLen-1) × hiddenSize × vocabSize
     /// multiply-adds. For a 163-token prefill with vocab=151936, this saves ~99%
     /// of the LM head compute.
-    ///
-    /// When `skipLMHead` is true, returns hidden states instead of logits.
-    /// Used by streaming delta prefill where logits are never sampled — only
-    /// eval'd to force KV cache computation. Skips the expensive vocab projection.
     public func callAsFunction(
         inputIds: MLXArray,
         inputEmbeddings: MLXArray? = nil,
-        cache: [KVCache]? = nil,
-        skipLMHead: Bool = false
+        cache: [KVCache]? = nil
     ) -> (MLXArray, [KVCache]) {
         let embeds = inputEmbeddings ?? model.embedTokens(inputIds)
 
         let (hidden, newCache) = model(inputEmbeddings: embeds, cache: cache)
-
-        if skipLMHead {
-            return (hidden, newCache)
-        }
 
         // Slice to last position before the expensive vocab projection
         let seqLen = hidden.shape[1]

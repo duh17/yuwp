@@ -17,19 +17,29 @@ through MLX Swift. The hot path is: mel spectrogram → audio encoder (Conv2d st
   across benchmark fixtures. RTF = wall_time / audio_duration.
 - **Secondary**:
   - `en_rtf` — RTF on jfk.wav (11s English)
-  - `long_rtf` — RTF on asr_en.wav (68s English)
+  - `long_rtf` — RTF on asr_en.wav (15s English)
   - `zh_rtf` — RTF on asr_zh.wav (4s Chinese)
-  - `en_wer` — WER on jfk.wav (quality guard, must not regress >1% absolute)
-  - `encode_ms` — audio encoder phase time
-  - `decode_ms` — autoregressive decode phase time
+  - `xl_rtf` — RTF on asr_en_long.wav (26s English)
+  - `stream_rtf` — end-to-end core streaming RTF on asr_en.wav
+  - `stream_prefill_ms` — median per-chunk streaming prefill latency on asr_en.wav
+  - `stream_reuse_pct` — median structural prefix reuse on asr_en.wav
+- **Quality gates** (run by `.auto/checks.sh`):
+  - exact batch transcripts for the English JFK and Chinese fixtures
+  - stream-vs-batch WER ≤1% on JFK and ≤7% on asr_en.wav, with batch correction disabled
 
 ## How to Run
 
 `./.auto/measure.sh` — outputs `METRIC name=number` lines.
 
-Runs `yuwp-asr transcribe --format json` on three fixtures, 3 repetitions each,
-reports median RTF. Total runtime ~30-40s. The binary must be pre-built:
-`swift build -c release --product yuwp-asr`.
+Runs `yuwp-asr transcribe --format json` on four fixtures and runs the core
+streaming path on asr_en.wav with batch correction disabled, 3 repetitions each.
+It reports batch RTF plus streaming RTF, prefill latency, and reuse. Both binaries
+must be pre-built and newer than all tracked NativeASR sources:
+
+```bash
+swift build -c release --product yuwp-asr
+swift build -c release --product asr-stream-test
+```
 
 ## Files in Scope
 
@@ -58,7 +68,7 @@ reports median RTF. Total runtime ~30-40s. The binary must be pre-built:
 ## Constraints
 
 1. `swift build -c release --product yuwp-asr` must succeed with no errors
-2. `swift test` must pass (297+ tests)
+2. `swift test` must pass
 3. WER on jfk.wav must not regress more than 1% absolute from baseline
 4. No new package dependencies
 5. Swift 6 strict concurrency — no new warnings
@@ -101,12 +111,14 @@ reasonable eval placement; audit for any that can be removed or batched.
 ### Kept
 1. **reflectPad1D simplification** (iter 1): single index gather replaces multi flip+concat. ~1% gain, cleaner code.
 2. **LM head last-position-only** (iter 2): slice hidden to last token before vocab projection. ~0.7% batch gain, bigger for 1.7B.
-3. **skipLMHead for streaming delta** (iter 3): streaming delta prefill never samples logits. Skips vocab projection.
-4. **Merged delta+last forward pass** (iter 4): two 28-layer decoder calls → one. ~50% streaming prefill reduction.
-5. **Structural reuse estimation** (iter 5): replaced GPU-sync computeReuseLength with integer tracking. Removes 2 GPU syncs per streaming chunk.
+3. **Merged delta+last forward pass** (iter 4): two 28-layer decoder calls → one. Streaming quality gates cover the merged path.
+4. **Structural reuse estimation** (iter 5): replaced GPU-sync computeReuseLength with integer tracking. Cache-origin tracking makes eviction explicit.
 
 ### Discarded
-6. **Unmasked SDPA for single-window encoder** (iter 6): 4% regression on zh fixture. MLX masked SDPA with all-zero mask is faster than .none mode for small sequences.
+5. **Unmasked SDPA for single-window encoder** (iter 6): 4% regression on zh fixture. MLX masked SDPA with all-zero mask is faster than .none mode for small sequences.
+
+### Superseded
+- **skipLMHead for streaming delta** (iter 3): removed after the merged forward pass made the separate delta-only call obsolete.
 
 ### Dead Ends
 - KV cache pre-allocation: MLX scatter creates new array internally, no benefit for short sequences (~30 tokens)
