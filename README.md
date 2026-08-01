@@ -7,11 +7,6 @@ Yuwp is local dictation for macOS. Press a hotkey, speak, and Yuwp inserts the t
 - Injects text into most apps (AX API, terminal key events, clipboard fallback)
 - No cloud API required after model download
 
-## Demo
-
-- Product page and demo: https://chaosdonkey.dev/yuwp/
-- Latest release: https://github.com/duh17/yuwp/releases/latest
-
 ## Requirements
 
 - macOS 14+
