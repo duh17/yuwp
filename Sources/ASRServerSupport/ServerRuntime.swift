@@ -174,6 +174,8 @@ final class StreamingSessionManager: @unchecked Sendable {
     private let chunkSamples: Int
     private let bootstrapChunkSamples: Int
     private let vad: SileroVAD?
+    private let batchVAD: SileroVAD?
+    private let batchChunking: BatchChunkingMode
     private let sessionTimeout: TimeInterval = 300
     private let recordingConfiguration: ASRStreamRecordingConfiguration
     private var processedChunksSinceCacheTrim = 0
@@ -184,6 +186,8 @@ final class StreamingSessionManager: @unchecked Sendable {
         batchTranscriber: Qwen3ASRTranscriber? = nil,
         batchRetranscribeEnabled: Bool = true,
         vad: SileroVAD? = nil,
+        batchVAD: SileroVAD? = nil,
+        batchChunking: BatchChunkingMode = .automatic,
         chunkSec: Double = 1.75,
         recordingConfiguration: ASRStreamRecordingConfiguration? = nil
     ) {
@@ -191,6 +195,11 @@ final class StreamingSessionManager: @unchecked Sendable {
         self.batchTranscriber = batchTranscriber
         self.batchRetranscribeEnabled = batchRetranscribeEnabled
         self.vad = vad
+        // Batch VAD is intentionally explicit. The live VAD instance is only
+        // for streaming activity hints; stdio and energy-only batch paths do
+        // not load or implicitly reuse it.
+        self.batchVAD = batchVAD
+        self.batchChunking = batchChunking
         self.chunkSamples = Int(chunkSec * Double(ASRAudio.sampleRate))
         self.bootstrapChunkSamples = Int(min(chunkSec, 1.5) * Double(ASRAudio.sampleRate))
         self.recordingConfiguration = recordingConfiguration
@@ -371,7 +380,8 @@ final class StreamingSessionManager: @unchecked Sendable {
             audio: audio,
             language: language,
             temperature: temperature,
-            vad: vad,
+            vad: batchVAD,
+            chunking: batchChunking,
             log: log
         )
     }
@@ -768,6 +778,8 @@ func startServer(
     mgr: StreamingSessionManager,
     aligner: ForcedAligner?,
     vad: SileroVAD?,
+    batchVAD: SileroVAD?,
+    batchChunking: BatchChunkingMode,
     streamingModelName: String,
     activeModelID: String?,
     batchModelName: String?,
@@ -803,6 +815,8 @@ func startServer(
         manager: mgr,
         aligner: aligner,
         vad: vad,
+        batchVAD: batchVAD,
+        batchChunking: batchChunking,
         streamingModelName: streamingModelName,
         activeModelID: activeModelID,
         batchModelName: batchModelName,

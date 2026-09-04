@@ -1,7 +1,8 @@
 import ASRIPC
 import Foundation
+import NativeASR
 
-public let asrServerUsage = "Usage: yuwp-asr serve [--model <path-or-repo-id>] [--batch-model <dir>] [--aligner-model <dir>] [--transport <http|stdio> (default: stdio)] [--disable-vad] [--disable-batch-retranscribe] [--port \(ASRIPCDefaults.defaultHTTPPort)] [--host 127.0.0.1] [--parent-pid <pid>] [--warmup]"
+public let asrServerUsage = "Usage: yuwp-asr serve [--model <path-or-repo-id>] [--batch-model <dir>] [--aligner-model <dir>] [--batch-chunking <automatic|vad|energy>] [--transport <http|stdio> (default: stdio)] [--disable-vad] [--disable-batch-retranscribe] [--port \(ASRIPCDefaults.defaultHTTPPort)] [--host 127.0.0.1] [--parent-pid <pid>] [--warmup]"
 
 public struct ASRServerCLIConfiguration: Equatable {
     public let modelSpec: String?
@@ -13,6 +14,7 @@ public struct ASRServerCLIConfiguration: Equatable {
     public let alignerModelPath: String?
     public let batchRetranscribeEnabled: Bool
     public let vadEnabled: Bool
+    public let batchChunking: BatchChunkingMode
     public let transport: ASRIPCTransport
 
     public init(
@@ -25,6 +27,7 @@ public struct ASRServerCLIConfiguration: Equatable {
         alignerModelPath: String? = nil,
         batchRetranscribeEnabled: Bool = true,
         vadEnabled: Bool = true,
+        batchChunking: BatchChunkingMode = .automatic,
         transport: ASRIPCTransport = .stdio
     ) {
         self.modelSpec = modelSpec?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -36,6 +39,7 @@ public struct ASRServerCLIConfiguration: Equatable {
         self.alignerModelPath = alignerModelPath
         self.batchRetranscribeEnabled = batchRetranscribeEnabled
         self.vadEnabled = vadEnabled
+        self.batchChunking = batchChunking
         self.transport = transport
     }
 }
@@ -45,6 +49,7 @@ public enum ASRServerCLIError: Error, Equatable {
     case invalidPort(String)
     case invalidParentPID(String)
     case invalidTransport(String)
+    case invalidBatchChunking(String)
     case unknownOption(String)
 }
 
@@ -59,6 +64,8 @@ extension ASRServerCLIError: LocalizedError {
             return "--parent-pid requires a pid"
         case .invalidTransport(let value):
             return "--transport must be one of: http, stdio (got '\(value)')"
+        case .invalidBatchChunking(let value):
+            return "--batch-chunking must be one of: automatic, vad, energy (got '\(value)')"
         case .unknownOption(let flag):
             return "Unknown option: \(flag)"
         }
@@ -81,6 +88,8 @@ public func parseASRServerCLI(arguments: [String]) throws -> ASRServerCLIConfigu
     var alignerModelPath: String?
     var batchRetranscribeEnabled = true
     var vadEnabled = true
+    var batchChunking: BatchChunkingMode = .automatic
+    var batchChunkingExplicit = false
     var transport: ASRIPCTransport = .stdio
 
     while !args.isEmpty {
@@ -111,8 +120,19 @@ public func parseASRServerCLI(arguments: [String]) throws -> ASRServerCLIConfigu
             alignerModelPath = args.removeFirst()
         case "--disable-batch-retranscribe":
             batchRetranscribeEnabled = false
+        case "--batch-chunking":
+            guard !args.isEmpty else { throw ASRServerCLIError.missingValue(flag: "--batch-chunking") }
+            let value = args.removeFirst().trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard let parsed = BatchChunkingMode(rawValue: value) else {
+                throw ASRServerCLIError.invalidBatchChunking(value)
+            }
+            batchChunking = parsed
+            batchChunkingExplicit = true
         case "--disable-vad":
             vadEnabled = false
+            if !batchChunkingExplicit {
+                batchChunking = .energy
+            }
         case "--transport":
             guard !args.isEmpty else { throw ASRServerCLIError.missingValue(flag: "--transport") }
             let value = args.removeFirst().trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -137,6 +157,7 @@ public func parseASRServerCLI(arguments: [String]) throws -> ASRServerCLIConfigu
         alignerModelPath: alignerModelPath,
         batchRetranscribeEnabled: batchRetranscribeEnabled,
         vadEnabled: vadEnabled,
+        batchChunking: batchChunking,
         transport: transport
     )
 }

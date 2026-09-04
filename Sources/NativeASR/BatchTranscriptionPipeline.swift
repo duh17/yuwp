@@ -1,5 +1,26 @@
 import Foundation
 
+public enum BatchChunkingMode: String, Codable, CaseIterable, Sendable {
+    case automatic
+    case vad
+    case energy
+
+    /// Resolve the requested batch policy for one decoded audio duration.
+    /// Explicit VAD safely falls back to energy when the VAD model is unavailable.
+    public func resolved(audioDuration: Double, hasVAD: Bool) -> BatchChunkingMode {
+        switch self {
+        case .automatic:
+            return audioDuration > BatchTranscriptionDefaults.maxChunkDurationSec && hasVAD
+                ? .energy
+                : (hasVAD ? .vad : .energy)
+        case .vad:
+            return hasVAD ? .vad : .energy
+        case .energy:
+            return .energy
+        }
+    }
+}
+
 public enum BatchTranscriptionDefaults {
     public static let maxChunkDurationSec = 120.0
 
@@ -114,12 +135,14 @@ public enum BatchTranscriptionPipeline {
         language: String?,
         temperature: Float,
         vad: SileroVAD?,
+        chunking: BatchChunkingMode = .automatic,
         log: @Sendable (String) -> Void = { _ in }
     ) throws -> TranscriptionResult {
         let startedAt = Date()
-        let chunks = try chunkAudio(audio, vad: vad)
         let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
-        let chunkMode = vad == nil ? "energy" : "VAD"
+        let resolvedChunking = chunking.resolved(audioDuration: audioDuration, hasVAD: vad != nil)
+        let chunks = try chunkAudio(audio, vad: vad, chunking: resolvedChunking)
+        let chunkMode = chunkingLabel(resolvedChunking)
         log("\(chunkMode) chunking transcription: \(chunks.count) chunks from \(String(format: "%.1f", audioDuration))s")
         log("\(chunkMode) chunk ranges transcription: \(formatChunkRanges(chunks))")
 
@@ -148,12 +171,14 @@ public enum BatchTranscriptionPipeline {
         temperature: Float,
         aligner: ForcedAligner,
         vad: SileroVAD?,
+        chunking: BatchChunkingMode = .automatic,
         log: @Sendable (String) -> Void = { _ in }
     ) throws -> BatchSubtitleResult {
         let startedAt = Date()
-        let chunks = try chunkAudio(audio, vad: vad)
         let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
-        let chunkMode = vad == nil ? "energy" : "VAD"
+        let resolvedChunking = chunking.resolved(audioDuration: audioDuration, hasVAD: vad != nil)
+        let chunks = try chunkAudio(audio, vad: vad, chunking: resolvedChunking)
+        let chunkMode = chunkingLabel(resolvedChunking)
         log("\(chunkMode) chunking subtitles: \(chunks.count) chunks from \(String(format: "%.1f", audioDuration))s")
         log("\(chunkMode) chunk ranges subtitles: \(formatChunkRanges(chunks))")
 
@@ -207,14 +232,23 @@ public enum BatchTranscriptionPipeline {
         )
     }
 
-    public static func chunkAudio(_ audio: [Float], vad: SileroVAD?) throws -> [AudioChunk] {
-        if let vad {
+    public static func chunkAudio(
+        _ audio: [Float],
+        vad: SileroVAD?,
+        chunking: BatchChunkingMode = .automatic
+    ) throws -> [AudioChunk] {
+        let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
+        switch chunking.resolved(audioDuration: audioDuration, hasVAD: vad != nil) {
+        case .vad:
+            guard let vad else {
+                return chunkAudioByEnergy(audio, sampleRate: ASRAudio.sampleRate, config: BatchTranscriptionDefaults.energyConfig)
+            }
             vadLock.lock()
             defer { vadLock.unlock() }
             return try vad.chunk(audio: audio, config: BatchTranscriptionDefaults.vadConfig)
+        case .automatic, .energy:
+            return chunkAudioByEnergy(audio, sampleRate: ASRAudio.sampleRate, config: BatchTranscriptionDefaults.energyConfig)
         }
-
-        return chunkAudioByEnergy(audio, sampleRate: ASRAudio.sampleRate, config: BatchTranscriptionDefaults.energyConfig)
     }
 
     public static func splitTextProportionally(_ text: String, chunkDurations: [Double]) -> [String] {
@@ -266,6 +300,10 @@ public func splitTextProportionally(_ text: String, chunkDurations: [Double]) ->
 }
 
 private extension BatchTranscriptionPipeline {
+    static func chunkingLabel(_ mode: BatchChunkingMode) -> String {
+        mode == .vad ? "VAD" : "energy"
+    }
+
     static func formatChunkRanges(_ chunks: [AudioChunk]) -> String {
         chunks.enumerated().map { index, chunk in
             String(format: "%d:%.3f-%.3f", index + 1, chunk.startTime, chunk.endTime)

@@ -29,7 +29,43 @@ struct ASRServerSupportTests {
         #expect(config.alignerModelPath == "/models/aligner")
         #expect(config.batchRetranscribeEnabled == false)
         #expect(config.vadEnabled == false)
+        #expect(config.batchChunking == .energy)
         #expect(config.transport == .stdio)
+    }
+
+    @Test func cliParserSelectsBatchChunkingWithoutDisablingStreamingVAD() throws {
+        let config = try parseASRServerCLI(arguments: [
+            "--batch-chunking", "energy",
+        ])
+
+        #expect(config.batchChunking == .energy)
+        #expect(config.vadEnabled)
+    }
+
+    @Test func cliParserRejectsInvalidBatchChunking() {
+        #expect(throws: ASRServerCLIError.invalidBatchChunking("nope")) {
+            try parseASRServerCLI(arguments: ["--batch-chunking", "nope"])
+        }
+    }
+
+    @Test func automaticBatchChunkingKeepsShortVADAndUsesEnergyForLongAudio() {
+        #expect(BatchChunkingMode.automatic.resolved(audioDuration: 120.0, hasVAD: true) == .vad)
+        #expect(BatchChunkingMode.automatic.resolved(audioDuration: 120.001, hasVAD: true) == .energy)
+        #expect(BatchChunkingMode.automatic.resolved(audioDuration: 120.0, hasVAD: false) == .energy)
+        #expect(BatchChunkingMode.vad.resolved(audioDuration: 3.0, hasVAD: true) == .vad)
+        #expect(BatchChunkingMode.vad.resolved(audioDuration: 3.0, hasVAD: false) == .energy)
+    }
+
+    @Test func explicitBatchModeWinsOverDisableVADRegardlessOfArgumentOrder() throws {
+        let configurations = try [
+            parseASRServerCLI(arguments: ["--disable-vad", "--batch-chunking", "vad"]),
+            parseASRServerCLI(arguments: ["--batch-chunking", "vad", "--disable-vad"]),
+            parseASRServerCLI(arguments: ["--disable-vad", "--batch-chunking", "automatic"]),
+            parseASRServerCLI(arguments: ["--batch-chunking", "automatic", "--disable-vad"]),
+        ]
+
+        #expect(configurations.map(\.vadEnabled) == [false, false, false, false])
+        #expect(configurations.map(\.batchChunking) == [.vad, .vad, .automatic, .automatic])
     }
 
     @Test func cliParserPrefersExplicitModelOverPositionalModel() throws {
@@ -301,6 +337,74 @@ struct ASRServerSupportTests {
         #expect(json["status"] as? String == "ready")
         #expect(json["aligner"] as? Bool == false)
         #expect(json["vad"] as? Bool == false)
+        #expect(json["batch_chunking"] as? String == "automatic")
+        #expect(json["batch_chunking_requested"] as? String == "automatic")
+        #expect(json["batch_chunking_resolution"] as? String == "energy")
+        #expect(json["batch_chunking_vad_available"] as? Bool == false)
+    }
+
+    @Test func routeInfoDistinguishesExplicitVADFallbackFromRequestedMode() throws {
+        let manager = FakeManager()
+        let context = ASRRouteContext(
+            manager: manager,
+            aligner: nil,
+            vad: nil,
+            batchVAD: nil,
+            batchChunking: .vad,
+            streamingModelName: "streaming-model",
+            batchModelName: nil,
+            batchRetranscribeEnabled: false,
+            loadAudio: { _ in [] }
+        )
+
+        let response = routeRequest(HTTPRequest(method: "GET", path: "/v1/info", headers: [:], body: Data()), context: context)
+        let json = try #require(try JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+
+        #expect(json["batch_chunking"] as? String == "vad")
+        #expect(json["batch_chunking_requested"] as? String == "vad")
+        #expect(json["batch_chunking_resolution"] as? String == "energy")
+        #expect(json["batch_chunking_vad_available"] as? Bool == false)
+    }
+
+    @Test func batchRouteHonorsExplicitVADFallbackWhenBatchVADIsUnavailable() throws {
+        let manager = FakeManager()
+        manager.transcribeResult = TranscriptionResult(
+            text: "chunk",
+            language: "English",
+            audioDuration: ASRServerLimits.maxChunkSec,
+            processingTime: 0.1
+        )
+
+        let multipart = makeMultipartRequest(
+            fields: [:],
+            fileName: "long.wav",
+            fileContentType: "audio/wav",
+            fileData: Data([0x00, 0x01])
+        )
+        let request = HTTPRequest(
+            method: "POST",
+            path: "/v1/audio/transcriptions",
+            headers: ["content-type": multipart.contentType],
+            body: multipart.body
+        )
+        let totalSamples = Int((ASRServerLimits.maxChunkSec * 2 + 1) * Double(ASRAudio.sampleRate))
+        let context = ASRRouteContext(
+            manager: manager,
+            aligner: nil,
+            vad: nil,
+            batchVAD: nil,
+            batchChunking: .vad,
+            streamingModelName: "stream",
+            batchModelName: nil,
+            batchRetranscribeEnabled: true,
+            loadAudio: { _ in Array(repeating: 0, count: totalSamples) }
+        )
+
+        let response = routeRequest(request, context: context)
+        let json = try #require(try JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        #expect(response.status == 200)
+        #expect(json["text"] as? String == "chunk chunk chunk")
+        #expect(manager.transcribeCallCount == 3)
     }
 
     @Test func batchRouteUsesInjectedAudioLoaderAndManager() throws {

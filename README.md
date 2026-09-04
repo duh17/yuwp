@@ -74,6 +74,13 @@ Run standalone ASR HTTP server (default transport is stdio, so pass `--transport
 curl -sf http://127.0.0.1:7936/v1/info | jq .
 ```
 
+Batch transcription uses automatic chunking: short inputs retain VAD, while inputs
+longer than 120 seconds use energy boundaries. Override it without changing live
+streaming with `--batch-chunking automatic|vad|energy`; an explicit `vad` request safely falls
+back to energy if batch VAD is unavailable. `--disable-vad` remains the legacy flag
+that also disables streaming VAD. HTTP `/v1/info` reports the requested batch mode,
+its duration-dependent/fallback resolution, and batch-VAD availability separately.
+
 Run standalone TTS HTTP server:
 
 ```bash

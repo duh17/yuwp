@@ -17,7 +17,13 @@ public protocol ASRServing: BatchTranscriptionServing, AnyObject, Sendable {
 public struct ASRRouteContext: Sendable {
     public let manager: any ASRServing
     public let aligner: ForcedAligner?
+    /// VAD used by live streaming activity hints.
     public let vad: SileroVAD?
+    /// Dedicated VAD used by HTTP batch chunking, when that path needs it.
+    /// This is nil for energy-only and stdio configurations.
+    public let batchVAD: SileroVAD?
+    /// Requested batch policy. Automatic mode resolves per decoded input.
+    public let batchChunking: BatchChunkingMode
     public let streamingModelName: String
     public let activeModelID: String?
     public let batchModelName: String?
@@ -29,6 +35,8 @@ public struct ASRRouteContext: Sendable {
         manager: any ASRServing,
         aligner: ForcedAligner?,
         vad: SileroVAD?,
+        batchVAD: SileroVAD? = nil,
+        batchChunking: BatchChunkingMode = .automatic,
         streamingModelName: String,
         activeModelID: String? = nil,
         batchModelName: String?,
@@ -39,6 +47,8 @@ public struct ASRRouteContext: Sendable {
         self.manager = manager
         self.aligner = aligner
         self.vad = vad
+        self.batchVAD = batchVAD
+        self.batchChunking = batchChunking
         self.streamingModelName = streamingModelName
         self.activeModelID = activeModelID
         self.batchModelName = batchModelName
@@ -61,6 +71,17 @@ private func queryValue(named name: String, in rawPath: String) -> String? {
     var components = URLComponents()
     components.percentEncodedQuery = query
     return components.queryItems?.first(where: { $0.name == name })?.value
+}
+
+private func batchChunkingResolution(_ mode: BatchChunkingMode, hasVAD: Bool) -> String {
+    switch mode {
+    case .automatic:
+        return hasVAD ? "duration-dependent" : "energy"
+    case .vad:
+        return hasVAD ? "vad" : "energy"
+    case .energy:
+        return "energy"
+    }
 }
 
 public func routeRequest(_ req: HTTPRequest, context: ASRRouteContext) -> HTTPResponse {
@@ -103,6 +124,18 @@ private func handleInfoRoute(_ req: HTTPRequest, context: ASRRouteContext) -> HT
     }
     info["aligner"] = context.aligner != nil
     info["vad"] = context.vad != nil
+    // Keep batch_chunking as the requested mode for compatibility. Report the
+    // actual no-audio-specific resolution separately because automatic mode is
+    // duration-dependent and explicit VAD can fall back when unavailable.
+    let batchVADAvailable = context.batchVAD != nil
+    info["batch_chunking"] = context.batchChunking.rawValue
+    info["batch_chunking_requested"] = context.batchChunking.rawValue
+    info["batch_chunking_resolution"] = batchChunkingResolution(
+        context.batchChunking,
+        hasVAD: batchVADAvailable
+    )
+    info["batch_chunking_vad_available"] = batchVADAvailable
+    info["batch_vad"] = batchVADAvailable
     return jsonResponse(status: 200, info)
 }
 
@@ -175,6 +208,10 @@ private func handleBatchTranscriptionRequest(_ req: HTTPRequest, context: ASRRou
     }
 
     let language = fields["language"].flatMap { $0.isEmpty ? nil : $0 }
+    let transcript = fields["text"].flatMap {
+        let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
     let temperature = Float(fields["temperature"] ?? "0") ?? 0
     let includeDebug = parseDebugFlag(fields["debug"])
 
@@ -188,7 +225,8 @@ private func handleBatchTranscriptionRequest(_ req: HTTPRequest, context: ASRRou
                 audio: audio,
                 language: language,
                 temperature: temperature,
-                vad: context.vad,
+                vad: context.batchVAD,
+                chunking: context.batchChunking,
                 log: context.log
             )
             return textResponse(status: 200, result.text)
@@ -199,11 +237,12 @@ private func handleBatchTranscriptionRequest(_ req: HTTPRequest, context: ASRRou
             let subtitleResult = try BatchTranscriptionPipeline.subtitle(
                 using: context.manager,
                 audio: audio,
-                transcript: nil,
+                transcript: transcript,
                 language: language,
                 temperature: temperature,
                 aligner: aligner,
-                vad: context.vad,
+                vad: context.batchVAD,
+                chunking: context.batchChunking,
                 log: context.log
             )
             return makeSubtitleResponse(
@@ -216,11 +255,12 @@ private func handleBatchTranscriptionRequest(_ req: HTTPRequest, context: ASRRou
                 let subtitleResult = try BatchTranscriptionPipeline.subtitle(
                     using: context.manager,
                     audio: audio,
-                    transcript: nil,
+                    transcript: transcript,
                     language: language,
                     temperature: temperature,
                     aligner: aligner,
-                    vad: context.vad,
+                    vad: context.batchVAD,
+                    chunking: context.batchChunking,
                     log: context.log
                 )
                 return makeSubtitleResponse(
@@ -235,7 +275,8 @@ private func handleBatchTranscriptionRequest(_ req: HTTPRequest, context: ASRRou
                 audio: audio,
                 language: language,
                 temperature: temperature,
-                vad: context.vad,
+                vad: context.batchVAD,
+                chunking: context.batchChunking,
                 log: context.log
             )
             var payload: [String: Any] = [

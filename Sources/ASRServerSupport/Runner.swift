@@ -53,8 +53,21 @@ public func runASRServer(arguments: [String]) -> Int32 {
                 vad = nil
             }
         } else {
-            log("Silero VAD disabled")
+            log("Silero VAD disabled for live streaming")
             vad = nil
+        }
+
+        let batchVAD: SileroVAD?
+        if config.transport == .stdio || config.batchChunking == .energy {
+            batchVAD = nil
+        } else {
+            do {
+                batchVAD = try SileroVAD()
+                log("Batch Silero VAD loaded")
+            } catch {
+                log("Batch Silero VAD unavailable: \(error.localizedDescription)")
+                batchVAD = nil
+            }
         }
 
         if config.warmup {
@@ -76,6 +89,8 @@ public func runASRServer(arguments: [String]) -> Int32 {
             batchTranscriber: batchTranscriber,
             batchRetranscribeEnabled: config.batchRetranscribeEnabled,
             vad: vad,
+            batchVAD: batchVAD,
+            batchChunking: config.batchChunking,
             recordingConfiguration: recordingConfiguration
         )
         switch config.transport {
@@ -86,6 +101,8 @@ public func runASRServer(arguments: [String]) -> Int32 {
                 mgr: manager,
                 aligner: aligner,
                 vad: vad,
+                batchVAD: batchVAD,
+                batchChunking: config.batchChunking,
                 streamingModelName: modelURL.lastPathComponent,
                 activeModelID: YuwpModelSupport.publicModelID(for: config.modelSpec ?? YuwpModelSupport.defaultYuwpModelSpec() ?? modelURL.path),
                 batchModelName: batchTranscriber?.modelDirectory.lastPathComponent,
