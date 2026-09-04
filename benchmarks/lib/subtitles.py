@@ -29,6 +29,12 @@ DEFAULT_BASE_URL = "http://127.0.0.1:7936"
 DEFAULT_OUT_DIR = Path("/tmp/yuwp-subtitle-bench")
 DEFAULT_GAP_WARN_SEC = 2.0
 DEFAULT_OVERLAP_TOLERANCE_SEC = 0.05
+DEFAULT_MAX_CHARACTERS_PER_LINE = 42
+DEFAULT_MAX_LINES = 2
+DEFAULT_MAX_CHARACTERS_PER_SECOND = 17.0
+DEFAULT_MIN_DURATION_SEC = 5 / 6
+DEFAULT_MAX_DURATION_SEC = 7.0
+DEFAULT_MIN_GAP_SEC = 2 / 24
 
 
 class SampleFailure(Exception):
@@ -135,6 +141,13 @@ def analyze_subtitles(items: list[dict[str, Any]], wall_seconds: float, gap_warn
     max_overlap = 0.0
     word_count = 0
     char_count = 0
+    characters_per_line_violations = 0
+    line_count_violations = 0
+    reading_speed_violations = 0
+    min_duration_violations = 0
+    max_duration_violations = 0
+    min_gap_violations = 0
+    single_word_cues = 0
 
     first_start = None
     last_end = None
@@ -144,11 +157,26 @@ def analyze_subtitles(items: list[dict[str, Any]], wall_seconds: float, gap_warn
         text = str(item.get("text") or "").strip()
         start = float(item.get("start") or 0.0)
         end = float(item.get("end") or 0.0)
+        cue_duration = end - start
+        lines = text.splitlines() or [""]
+        words = text.split()
 
         if not text:
             empty_text += 1
-        word_count += len(text.split())
+        word_count += len(words)
         char_count += len(text)
+        if len(words) == 1:
+            single_word_cues += 1
+        if any(len(line) > DEFAULT_MAX_CHARACTERS_PER_LINE for line in lines):
+            characters_per_line_violations += 1
+        if len(lines) > DEFAULT_MAX_LINES:
+            line_count_violations += 1
+        if cue_duration > 0 and len(text.replace("\n", "")) / cue_duration > DEFAULT_MAX_CHARACTERS_PER_SECOND:
+            reading_speed_violations += 1
+        if 0 < cue_duration < DEFAULT_MIN_DURATION_SEC:
+            min_duration_violations += 1
+        if cue_duration > DEFAULT_MAX_DURATION_SEC:
+            max_duration_violations += 1
 
         if end < start:
             invalid_ranges += 1
@@ -157,11 +185,13 @@ def analyze_subtitles(items: list[dict[str, Any]], wall_seconds: float, gap_warn
         last_end = end
 
         if prev_end is not None:
+            gap = start - prev_end
             if start + DEFAULT_OVERLAP_TOLERANCE_SEC < prev_end:
                 overlap = prev_end - start
                 overlap_count += 1
                 max_overlap = max(max_overlap, overlap)
-            gap = start - prev_end
+            elif gap < DEFAULT_MIN_GAP_SEC:
+                min_gap_violations += 1
             if gap > gap_warn_sec:
                 gap_count += 1
                 max_gap = max(max_gap, gap)
@@ -170,7 +200,8 @@ def analyze_subtitles(items: list[dict[str, Any]], wall_seconds: float, gap_warn
         prev_end = end
 
     duration = float(last_end or 0.0)
-    realtime_factor = (duration / wall_seconds) if wall_seconds > 0 and duration > 0 else None
+    rtf = (wall_seconds / duration) if wall_seconds > 0 and duration > 0 else None
+    speed_multiplier = (duration / wall_seconds) if wall_seconds > 0 and duration > 0 else None
 
     return {
         "entries": len(items),
@@ -178,7 +209,9 @@ def analyze_subtitles(items: list[dict[str, Any]], wall_seconds: float, gap_warn
         "last_end": last_end,
         "duration_from_subtitles": duration,
         "wall_seconds": wall_seconds,
-        "realtime_factor": realtime_factor,
+        "rtf": rtf,
+        "speed_multiplier": speed_multiplier,
+        "realtime_factor": speed_multiplier,
         "gap_warn_seconds": gap_warn_sec,
         "gap_count": gap_count,
         "max_gap": max_gap,
@@ -187,6 +220,21 @@ def analyze_subtitles(items: list[dict[str, Any]], wall_seconds: float, gap_warn
         "non_monotonic_count": non_monotonic,
         "invalid_range_count": invalid_ranges,
         "empty_text_count": empty_text,
+        "characters_per_line_violation_count": characters_per_line_violations,
+        "line_count_violation_count": line_count_violations,
+        "reading_speed_violation_count": reading_speed_violations,
+        "min_duration_violation_count": min_duration_violations,
+        "max_duration_violation_count": max_duration_violations,
+        "min_gap_violation_count": min_gap_violations,
+        "single_word_cue_count": single_word_cues,
+        "policy": {
+            "max_characters_per_line": DEFAULT_MAX_CHARACTERS_PER_LINE,
+            "max_lines": DEFAULT_MAX_LINES,
+            "max_characters_per_second": DEFAULT_MAX_CHARACTERS_PER_SECOND,
+            "min_duration_seconds": DEFAULT_MIN_DURATION_SEC,
+            "max_duration_seconds": DEFAULT_MAX_DURATION_SEC,
+            "min_gap_seconds": DEFAULT_MIN_GAP_SEC,
+        },
         "word_count": word_count,
         "char_count": char_count,
     }
@@ -269,7 +317,7 @@ def main() -> int:
                 "[bench-subtitles]",
                 name,
                 f"ok wall={summarize_metric(metrics['wall_seconds'])}s",
-                f"rtf={summarize_metric(metrics['realtime_factor'])}x",
+                f"rtf={summarize_metric(metrics['rtf'])}",
                 f"entries={metrics['entries']}",
                 f"gaps={metrics['gap_count']}",
                 f"overlaps={metrics['overlap_count']}",

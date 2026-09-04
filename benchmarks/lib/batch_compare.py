@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
 import os
 import re
 import shlex
@@ -243,17 +244,21 @@ def parse_extra_args(raw: str) -> list[str]:
     return shlex.split(raw)
 
 
-def multipart_request(url: str, file_path: Path) -> bytes:
+def multipart_request(url: str, file_path: Path, *, language: str | None = None) -> bytes:
     boundary = f"----Benchmark{int(time.time() * 1000)}"
     file_bytes = file_path.read_bytes()
+    fields = {"response_format": "json"}
+    if language:
+        fields["language"] = language
+    field_body = "".join(
+        f"--{boundary}\r\n"
+        f"Content-Disposition: form-data; name=\"{name}\"\r\n\r\n"
+        f"{value}\r\n"
+        for name, value in fields.items()
+    )
     body = (
-        f"--{boundary}\r\n"
-        f"Content-Disposition: form-data; name=\"model\"\r\n\r\n"
-        f"qwen3-asr\r\n"
-        f"--{boundary}\r\n"
-        f"Content-Disposition: form-data; name=\"response_format\"\r\n\r\n"
-        f"json\r\n"
-        f"--{boundary}\r\n"
+        field_body
+        + f"--{boundary}\r\n"
         f"Content-Disposition: form-data; name=\"file\"; filename=\"{file_path.name}\"\r\n"
         f"Content-Type: application/octet-stream\r\n\r\n"
     ).encode() + file_bytes + f"\r\n--{boundary}--\r\n".encode()
@@ -291,7 +296,7 @@ def resolve_yuwp_server_bin() -> Path:
     return YUWP_CANONICAL_CLI_BIN
 
 
-def start_yuwp_server(model_dir: Path, disable_vad: bool) -> PreparedYuwpServer:
+def start_yuwp_server(model_dir: Path, *, batch_chunking: str = "automatic") -> PreparedYuwpServer:
     log_file = tempfile.NamedTemporaryFile(prefix="yuwp-benchmark-", suffix=".log", delete=False)
     log_file.close()
     port = find_free_port()
@@ -306,8 +311,9 @@ def start_yuwp_server(model_dir: Path, disable_vad: bool) -> PreparedYuwpServer:
         "--port",
         str(port),
     ]
-    if disable_vad:
-        command.append("--disable-vad")
+    if batch_chunking not in {"automatic", "vad", "energy"}:
+        raise ValueError(f"unsupported Yuwp batch chunking mode: {batch_chunking}")
+    command.extend(["--batch-chunking", batch_chunking])
 
     started = time.perf_counter()
     process = subprocess.Popen(command, stdout=open(log_file.name, "w"), stderr=subprocess.STDOUT, text=True)
@@ -338,12 +344,51 @@ def stop_process(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=5)
 
 
-def run_yuwp_server(audio_path: Path, server: PreparedYuwpServer) -> tuple[str, float, float]:
+def _run_yuwp_server_request(
+    audio_path: Path,
+    server: PreparedYuwpServer,
+    *,
+    language: str | None = None,
+) -> tuple[dict[str, Any], float]:
     url = f"http://127.0.0.1:{server.port}/v1/audio/transcriptions"
     started = time.perf_counter()
-    body = multipart_request(url, audio_path)
+    body = multipart_request(url, audio_path, language=language)
     wall_s = time.perf_counter() - started
-    payload = json.loads(body.decode())
+    return json.loads(body.decode()), wall_s
+
+
+def run_yuwp_server_with_duration(
+    audio_path: Path,
+    server: PreparedYuwpServer,
+    *,
+    language: str | None = None,
+) -> tuple[str, float, float]:
+    """Run Yuwp and return text, wall time, and server-decoded duration.
+
+    The HTTP server decodes the upload to the sample rate used by inference.
+    That duration is the only trustworthy denominator for a Yuwp measurement;
+    container metadata can include encoder padding or disagree with decoded
+    sample counts.
+    """
+    payload, wall_s = _run_yuwp_server_request(audio_path, server, language=language)
+    text = payload.get("text", "")
+    try:
+        duration_s = float(payload["duration"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise RuntimeError(f"Yuwp response did not contain a valid decoded duration: {payload!r}") from error
+    if not math.isfinite(duration_s) or duration_s < 0:
+        raise RuntimeError(f"Yuwp response contained an invalid decoded duration: {duration_s!r}")
+    return text, wall_s, duration_s
+
+
+def run_yuwp_server(
+    audio_path: Path,
+    server: PreparedYuwpServer,
+    *,
+    language: str | None = None,
+) -> tuple[str, float, float]:
+    """Preserve batch_compare's container-duration RTF contract."""
+    payload, wall_s = _run_yuwp_server_request(audio_path, server, language=language)
     text = payload.get("text", "")
     duration_s = audio_duration_seconds(audio_path)
     return text, wall_s, duration_s / max(wall_s, 1e-9)
@@ -533,7 +578,10 @@ def run_variant(variant: Variant, audio_files: list[Path], repeats: int, save_te
     metadata: dict[str, Any] = {}
 
     if variant.tool == "yuwp":
-        server = start_yuwp_server(Path(variant.params["model_dir"]), disable_vad=(variant.params["chunking"] == "energy"))
+        server = start_yuwp_server(
+            Path(variant.params["model_dir"]),
+            batch_chunking=str(variant.params["chunking"]),
+        )
         metadata["startup_s"] = server.startup_s
         metadata["log_path"] = server.log_path
         try:
@@ -738,7 +786,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Print the planned benchmark matrix without executing anything.")
 
     parser.add_argument("--yuwp-model", type=Path, action="append", help=f"Yuwp model directory. Repeat for multiple model variants. Default: {DEFAULT_YUWP_MODEL}")
-    parser.add_argument("--yuwp-chunking", action="append", choices=["vad", "energy"], help="Yuwp server chunking mode. Repeat to compare VAD vs low-energy fallback.")
+    parser.add_argument("--yuwp-chunking", action="append", choices=["automatic", "vad", "energy"], help="Yuwp server batch chunking mode. Repeat to compare automatic, VAD, and energy modes.")
 
     parser.add_argument("--mlx-model", action="append", help=f"mlx-audio model name. Repeat for multiple models. Default: {DEFAULT_MLX_MODEL}")
 

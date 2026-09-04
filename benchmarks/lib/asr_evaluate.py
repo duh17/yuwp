@@ -13,7 +13,9 @@ The JSONL manifest has one object per line:
 
 Audio paths are resolved relative to the manifest. English uses WER; Chinese and
 Japanese use whitespace-independent CER. Results report corpus (micro) error
-rates and standard RTF (wall time / audio duration; lower is better).
+rates and standard RTF (wall time / audio duration; lower is better). Yuwp uses
+the server-reported decoded duration; other tools retain their existing duration
+sources.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ from .batch_compare import (
     multipart_request,
     require_path,
     resolve_yuwp_server_bin,
-    run_yuwp_server,
+    run_yuwp_server_with_duration,
     start_yuwp_server,
     stop_process,
 )
@@ -73,6 +75,10 @@ class EvaluationMeasurement:
     hypothesis: str
     errors: int
     reference_units: int
+    correct: int = 0
+    substitutions: int = 0
+    deletions: int = 0
+    insertions: int = 0
 
     @property
     def rtf(self) -> float:
@@ -135,6 +141,10 @@ def summarize(measurements: list[EvaluationMeasurement]) -> dict[str, dict[str, 
     for (variant_id, language), rows in sorted(grouped.items()):
         errors = sum(row.errors for row in rows)
         reference_units = sum(row.reference_units for row in rows)
+        correct = sum(row.correct for row in rows)
+        substitutions = sum(row.substitutions for row in rows)
+        deletions = sum(row.deletions for row in rows)
+        insertions = sum(row.insertions for row in rows)
         total_audio = sum(row.duration_s for row in rows)
         total_wall = sum(row.wall_s for row in rows)
         rtfs = [row.rtf for row in rows]
@@ -143,6 +153,10 @@ def summarize(measurements: list[EvaluationMeasurement]) -> dict[str, dict[str, 
             "cases": len(rows),
             "errors": errors,
             "reference_units": reference_units,
+            "correct": correct,
+            "substitutions": substitutions,
+            "deletions": deletions,
+            "insertions": insertions,
             "error_rate": errors / max(reference_units, 1),
             "total_audio_s": total_audio,
             "total_wall_s": total_wall,
@@ -155,11 +169,21 @@ def summarize(measurements: list[EvaluationMeasurement]) -> dict[str, dict[str, 
     return result
 
 
-def score(metric: str, reference: str, hypothesis: str) -> tuple[int, int]:
+def score(metric: str, reference: str, hypothesis: str) -> dict[str, int]:
     accumulator = ErrorRateAccumulator(metric)
     accumulator.add(reference, hypothesis)
     result = accumulator.summary()
-    return int(result["errors"]), int(result["reference_units"])
+    return {
+        key: int(result[key])
+        for key in (
+            "errors",
+            "reference_units",
+            "correct",
+            "substitutions",
+            "deletions",
+            "insertions",
+        )
+    }
 
 
 def save_hypothesis(directory: Path | None, variant_id: str, case: EvaluationCase, text: str) -> None:
@@ -176,31 +200,45 @@ def run_yuwp(
     cases: list[EvaluationCase],
     repeat: int,
     save_text_dir: Path | None,
+    *,
+    batch_chunking: str = "vad",
 ) -> tuple[list[EvaluationMeasurement], dict[str, Any]]:
-    server = start_yuwp_server(model_dir, disable_vad=False)
+    server = start_yuwp_server(model_dir, batch_chunking=batch_chunking)
     rows: list[EvaluationMeasurement] = []
+    warmup_case = cases[0]
     try:
+        print(f"[evaluate] warming {variant_id} with {warmup_case.id}", file=sys.stderr)
+        run_yuwp_server_with_duration(
+            warmup_case.audio,
+            server,
+            language=LANGUAGE_NAMES[warmup_case.language],
+        )
         for repetition in range(1, repeat + 1):
             for index, case in enumerate(cases, start=1):
                 print(
                     f"[evaluate] {variant_id} {index}/{len(cases)} r{repetition}/{repeat} {case.id}",
                     file=sys.stderr,
                 )
-                hypothesis, wall_s, _ = run_yuwp_server(
+                hypothesis, wall_s, duration_s = run_yuwp_server_with_duration(
                     case.audio,
                     server,
                     language=LANGUAGE_NAMES[case.language],
                 )
-                duration_s = audio_duration_seconds(case.audio)
-                errors, reference_units = score(case.metric, case.reference, hypothesis)
+                scores = score(case.metric, case.reference, hypothesis)
                 save_hypothesis(save_text_dir, variant_id, case, hypothesis)
                 rows.append(EvaluationMeasurement(
                     variant_id, case.id, case.language, case.metric, duration_s, wall_s,
-                    case.reference, hypothesis, errors, reference_units,
+                    case.reference, hypothesis, **scores,
                 ))
     finally:
         stop_process(server.process)
-    return rows, {"startup_s": server.startup_s, "log_path": server.log_path}
+    return rows, {
+        "startup_s": server.startup_s,
+        "log_path": server.log_path,
+        "warmup_case": warmup_case.id,
+        "chunking": batch_chunking,
+        "duration_source": "server_decoded",
+    }
 
 
 def run_whisper_cpp(
@@ -250,11 +288,11 @@ def run_whisper_cpp(
                 wall_s = time.perf_counter() - request_started
                 hypothesis = json.loads(response.decode())["text"].strip()
                 duration_s = audio_duration_seconds(case.audio)
-                errors, reference_units = score(case.metric, case.reference, hypothesis)
+                scores = score(case.metric, case.reference, hypothesis)
                 save_hypothesis(save_text_dir, variant_id, case, hypothesis)
                 rows.append(EvaluationMeasurement(
                     variant_id, case.id, case.language, case.metric, duration_s, wall_s,
-                    case.reference, hypothesis, errors, reference_units,
+                    case.reference, hypothesis, **scores,
                 ))
         return rows, {"startup_s": startup_s, "log_path": log_file.name}
     finally:
@@ -290,26 +328,27 @@ def run_mlx_audio(
             wall_s = time.perf_counter() - started
             hypothesis = result.text.strip()
             duration_s = audio_duration_seconds(case.audio)
-            errors, reference_units = score(case.metric, case.reference, hypothesis)
+            scores = score(case.metric, case.reference, hypothesis)
             save_hypothesis(save_text_dir, variant_id, case, hypothesis)
             rows.append(EvaluationMeasurement(
                 variant_id, case.id, case.language, case.metric, duration_s, wall_s,
-                case.reference, hypothesis, errors, reference_units,
+                case.reference, hypothesis, **scores,
             ))
     return rows, {"startup_s": startup_s}
 
 
 def print_report(summary: dict[str, dict[str, dict[str, Any]]], metadata: dict[str, Any]) -> None:
     print("\nGround-truth ASR evaluation (error/RTF: lower is better)\n")
-    print("| Variant | Language | Cases | Metric | Error | Corpus RTF | Median RTF | P95 RTF | Startup s |")
-    print("|---|---|---:|:---:|---:|---:|---:|---:|---:|")
+    print("| Variant | Language | Cases | Metric | Error | S/D/I | Corpus RTF | Median RTF | P95 RTF | Startup s |")
+    print("|---|---|---:|:---:|---:|---:|---:|---:|---:|---:|")
     for variant_id, languages in summary.items():
         for language, row in languages.items():
             startup = metadata.get(variant_id, {}).get("startup_s")
             startup_text = "" if startup is None else f"{startup:.2f}"
             print(
                 f"| {variant_id} | {language} | {row['cases']} | {row['metric'].upper()} | "
-                f"{100 * row['error_rate']:.2f}% | {row['corpus_rtf']:.4f} | "
+                f"{100 * row['error_rate']:.2f}% | "
+                f"{row['substitutions']}/{row['deletions']}/{row['insertions']} | {row['corpus_rtf']:.4f} | "
                 f"{row['median_utterance_rtf']:.4f} | {row['p95_utterance_rtf']:.4f} | {startup_text} |"
             )
 
@@ -319,6 +358,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, required=True, help="JSONL evaluation manifest")
     parser.add_argument("--tool", action="append", choices=["yuwp", "mlx-audio", "whisper-cpp"], required=True)
     parser.add_argument("--yuwp-model", type=Path, action="append")
+    parser.add_argument(
+        "--yuwp-disable-vad",
+        action="store_true",
+        help="legacy alias for --yuwp-batch-chunking energy",
+    )
+    parser.add_argument(
+        "--yuwp-batch-chunking",
+        choices=["automatic", "vad", "energy"],
+        help="Yuwp batch chunking mode (default: vad for reproducible baseline runs)",
+    )
     parser.add_argument("--mlx-model", action="append")
     parser.add_argument("--whisper-model", type=Path, action="append", help="whisper.cpp GGML model")
     parser.add_argument("--whisper-bin", type=Path, default=Path("/opt/homebrew/bin/whisper-server"))
@@ -338,9 +387,12 @@ def main() -> int:
     if "yuwp" in args.tool:
         require_path(resolve_yuwp_server_bin(), "Yuwp server binary")
         require_path(YUWP_METALLIB, "mlx.metallib")
+        if args.yuwp_disable_vad and args.yuwp_batch_chunking is not None:
+            raise SystemExit("--yuwp-disable-vad cannot be combined with --yuwp-batch-chunking")
+        batch_chunking = "energy" if args.yuwp_disable_vad else (args.yuwp_batch_chunking or "vad")
         for model in args.yuwp_model or [DEFAULT_YUWP_MODEL]:
             model = require_path(model.expanduser().resolve(), "Yuwp model")
-            variants.append((f"yuwp/{model_label(model)}", "yuwp", model))
+            variants.append((f"yuwp/{model_label(model)}/{batch_chunking}", "yuwp", model))
     if "mlx-audio" in args.tool:
         for model in args.mlx_model or [DEFAULT_MLX_MODEL]:
             variants.append((f"mlx-audio/{model_label(model)}", "mlx-audio", model))
@@ -362,7 +414,14 @@ def main() -> int:
     metadata: dict[str, Any] = {}
     for variant_id, tool, model in variants:
         if tool == "yuwp":
-            rows, details = run_yuwp(variant_id, Path(model), cases, args.repeat, args.save_text_dir)
+            rows, details = run_yuwp(
+                variant_id,
+                Path(model),
+                cases,
+                args.repeat,
+                args.save_text_dir,
+                batch_chunking=("energy" if args.yuwp_disable_vad else (args.yuwp_batch_chunking or "vad")),
+            )
         elif tool == "whisper-cpp":
             rows, details = run_whisper_cpp(
                 variant_id,
