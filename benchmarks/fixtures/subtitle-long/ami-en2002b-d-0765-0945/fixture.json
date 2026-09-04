@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "id": "ami-en2002b-d-0765-0945",
+  "language": "en",
+  "duration_seconds": 180.0,
+  "audio": {
+    "file": "audio.m4a",
+    "codec": "aac",
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "sha256": "8bd6fef1df8b84a87142915126f2e45b6825a8c7c5777a25719f0e5e265420ae"
+  },
+  "references": {
+    "human_segments": "human-segments.json",
+    "srt": "reference.srt",
+    "normalized_transcript": "reference.txt",
+    "segment_count": 10
+  },
+  "validation": {
+    "valid_for": [
+      "wer-smoke",
+      "subtitle-structure-smoke"
+    ],
+    "not_valid_for": [
+      "timestamp-accuracy",
+      "subtitle-segmentation-quality"
+    ],
+    "reason": "AMI word times are forced-alignment-derived and these human utterance segments are not professional subtitle cues."
+  },
+  "provenance": {
+    "dataset": "AMI Meeting Corpus",
+    "meeting_id": "EN2002b",
+    "speaker": "D",
+    "source_audio": "EN2002b.Headset-3.wav",
+    "source_start_seconds": 765.0,
+    "source_end_seconds": 945.0,
+    "source_url": "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/EN2002b/audio/EN2002b.Headset-3.wav",
+    "annotation_release": "ami_public_manual_1.6.2",
+    "annotation_url": "https://groups.inf.ed.ac.uk/ami/AMICorpusAnnotations/ami_public_manual_1.6.2.zip",
+    "license": "CC BY 4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "text_origin": "human",
+    "time_origin": "human_segment",
+    "break_origin": "human_utterance",
+    "normalization": "Speaker labels and bracketed non-speech events are excluded from scoring. AMI underscore-spelled initialisms are joined by the WER normalizer.",
+    "notes": "Close-talking channel for one speaker. Word timings inside segments are forced alignments; cue boundaries are human-adjusted utterances, not professional subtitle breaks."
+  },
+  "tags": [
+    "long-form",
+    "meeting",
+    "single-speaker",
+    "close-talk",
+    "human-transcript"
+  ]
+}

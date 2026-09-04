@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-08-01T21:16:33Z",
+  "scope": "development-only",
+  "heldout_evaluated": false,
+  "benchmark_plan_sha256": "c9933c3cc5a0d552ce8def188a14e0bdbf897b121365d89ec1b322a11bc0e81b",
+  "system": {
+    "platform": "macOS 27.0 arm64",
+    "git_revision": "ad35a0649c89e20221b9709285d00ce08a4f4fcd",
+    "git_dirty": true,
+    "yuwp_asr_sha256": "3e7a563b84d6ceec068190dd0ffe4e843ceddcf3b95f1eb87a456569a2c5394a"
+  },
+  "model": {
+    "id": "mlx-community--Qwen3-ASR-0.6B-bf16",
+    "config_sha256": "dae1fbfa8b858aceefe5afcc7ecc9184e4a6045bc4a1bca8a41834724f490874"
+  },
+  "scoring": {
+    "normalizer": "spoken-v1",
+    "alignment_algorithm": "hirschberg-min-edit-v1",
+    "language": "English",
+    "reference_placeholders_excluded": true
+  },
+  "protocol": {
+    "repeat": 3,
+    "warmup_case": "earnings21-4346818",
+    "warmup_discarded": true,
+    "case_order": [
+      "earnings21-4346818",
+      "earnings21-4366522"
+    ]
+  },
+  "quality_per_repeat": {
+    "reference_units": 15394,
+    "correct": 13358,
+    "substitutions": 1097,
+    "deletions": 939,
+    "insertions": 405,
+    "errors": 2441,
+    "wer": 0.15856827335325452,
+    "deterministic_across_repeats": true
+  },
+  "performance": {
+    "duration_source": "Yuwp server-reported decoded duration reconstructed from saved wall times",
+    "total_measured_audio_seconds": 17313.4625625,
+    "total_wall_seconds": 480.99086512299255,
+    "corpus_rtf": 0.027781321234078,
+    "repeat_corpus_rtf": [0.02447271937038, 0.031694963681834, 0.02717628065002],
+    "median_case_rtf": 0.025964244279517,
+    "p95_case_rtf": 0.035033704270766,
+    "case_rtf_range": [
+      0.017185686405026,
+      0.037182178901979
+    ],
+    "warning": "Observed RTF spread is large; compare candidates with paired repeated runs on an otherwise idle machine."
+  },
+  "cases": [
+    {
+      "id": "earnings21-4346818",
+      "duration_seconds": 3953.423625,
+      "reference_units": 11145,
+      "wer": 0.16500672947510094,
+      "rtf_runs": [
+        0.027823198293839,
+        0.037182178901979,
+        0.028588280377128
+      ]
+    },
+    {
+      "id": "earnings21-4366522",
+      "duration_seconds": 1817.7305625,
+      "reference_units": 4249,
+      "wer": 0.1416803953871499,
+      "rtf_runs": [
+        0.017185686405026,
+        0.019760694250314,
+        0.024105290265195
+      ]
+    }
+  ]
+}

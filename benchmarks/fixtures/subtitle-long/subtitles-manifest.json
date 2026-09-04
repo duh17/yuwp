@@ -1,0 +1,15 @@
+{
+  "samples": [
+    {
+      "name": "ami-en2002b-d-0765-0945",
+      "file": "benchmarks/fixtures/subtitle-long/ami-en2002b-d-0765-0945/audio.m4a",
+      "source_url": "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/EN2002b/audio/EN2002b.Headset-3.wav",
+      "language": "en",
+      "reference_srt": "benchmarks/fixtures/subtitle-long/ami-en2002b-d-0765-0945/reference.srt",
+      "reference_segments": "benchmarks/fixtures/subtitle-long/ami-en2002b-d-0765-0945/human-segments.json",
+      "max_words_per_line": 8,
+      "max_duration": 5.0,
+      "pause_threshold": 0.5
+    }
+  ]
+}

@@ -23,7 +23,20 @@ uv run benchmarks/cli.py asr remote --remote-url http://127.0.0.1:8000
 
 # Exercise timed subtitle output
 uv run benchmarks/cli.py asr subtitles --file sample.wav
+
+# Materialize pinned local-only long-form dev/heldout data
+uv run benchmarks/cli.py asr prepare-long-form earnings21
 ```
+
+Long-form evaluator runs use explicit batch modes (`vad`, `energy`, or
+`automatic`); production `automatic` keeps VAD for inputs up to 120 seconds and
+uses energy boundaries for longer batch/subtitle inputs. Explicit `vad` falls
+back to energy if batch VAD cannot be loaded. Use `--yuwp-batch-chunking energy`
+for a batch-only experiment rather than `--disable-vad`, which also disables
+live-stream VAD for legacy compatibility. Yuwp RTF uses the server-reported
+decoded duration; other tools retain their existing duration sources. The
+compact dev-only result record is
+`fixtures/subtitle-external/earnings21-batch-chunking.json`.
 
 Scenario-specific help:
 
@@ -49,6 +62,8 @@ benchmarks/
   lib/batch_compare.py      # implementation for `asr compare`
   lib/openai_asr_compare.py # implementation for `asr remote`
   lib/subtitles.py          # implementation for `asr subtitles`
+  lib/external_benchmark_data.py # local-only long-form dataset materializer
+  fixtures/subtitle-external/    # pinned plans and data-handling documentation
   lib/plot_native.py        # implementation for `plot`
 ```
 

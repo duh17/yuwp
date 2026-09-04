@@ -1,0 +1,39 @@
+1
+00:00:06,597 --> 00:00:45,368
+Um there is, but I w I haven't made a lot of changes to it, so I might just um delete what I've done and copy again from yours. 'Cause I'm sure you've probably made some changes already. Oh really? Since Friday,? Okay. I thought you said okay. Oh right, I see. Okay. I thought you said that you had written some things that maybe have caused some bugs and that you were gonna fix those on the weekend or something. No, okay. Alright. Alright, yeah, okay. Right. Okay, cool. Um yeah, so if you although there's stuff out there that actually I'm gonna try and minimise the amount of changes I make to M_ browser anyways. Shouldn't um
+
+2
+00:00:46,632 --> 00:01:15,016
+shouldn't be an issue. Actually just to clarify last week when we were talking about our search results, um like if we have topics as well as transcripts as well as what was the other? Summaries. Um do we want separate result panes uh for each of those? Or do we want them all in one pane with like an icon or a different colour or something to indicate what type of result they are? So that when they, you know, click on that, it's gonna go to the relevant thing. Like just if they check all three say topics, summaries, blah blah blah, have three different windows come up?
+
+3
+00:01:16,456 --> 00:01:18,685
+Or three like sub sub-panes sort of.
+
+4
+00:01:22,008 --> 00:01:22,750
+Um
+
+5
+00:01:25,176 --> 00:01:57,464
+What um I thought what we sorta discussed last week was to have it sort um the same window, um so it'll be on the search window, bottom half of the search window. Um I don't know if we still wanna keep it that way, but that's uh that's what I was gonna be working. So so it's just like you click those and it's just loads up. You know, splits that thing into like two or three or whatever that is. One, two or three, depending on which ones you check. And then um so if we wanna do it that way, you know like it probably doesn't matter too much. Just trying to think if there's gonna be any other issues down the road um depending on
+
+6
+00:02:03,070 --> 00:02:24,323
+No, just just panes, just result panes for each of the three no no no, no No. No, no. So so it's just when we click, you know, topics and summaries for what we wanna search, then it'll uh You know, there'll be two result panes. So for one for topics, one for I don't not really tabs. Um But then you can't see all of them at the same time, and it's just like
+
+7
+00:02:28,008 --> 00:02:32,868
+Well it's no, but the thing is if you're looking if you could check them both um you wanna see all the results.
+
+8
+00:02:36,744 --> 00:02:48,205
+Yeah, exactly. Yeah, so the summary and the topic and the transcript are um So Um or we could just put them all into one result pane on that same window and just indicate
+
+9
+00:02:49,896 --> 00:02:57,992
+Yeah. Yeah. Oh yeah, I guess that was the other thing whether we wanna have this reorder by columns and all that. But that's a hassle too. It's a lot of work.
+
+10
+00:02:59,171 --> 00:02:59,687
+.

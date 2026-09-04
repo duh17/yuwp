@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "scope": "development-only",
+  "heldout_evaluated": false,
+  "heldout_touched": false,
+  "source_manifest": "benchmarks/data/long-subtitle/earnings21/asr-dev.jsonl",
+  "policy": "Two pinned dev calls only; raw audio, references, and hypotheses remain local under benchmarks/data/.",
+  "system": {
+    "platform": "macOS 27.0 arm64",
+    "git_revision": "ad35a0649c89e20221b9709285d00ce08a4f4fcd",
+    "git_dirty": true,
+    "yuwp_asr_sha256": "8dad352712c819a43692a9e65117d0ad1933f660df45ac432f80760b4f650283",
+    "mlx_metallib_sha256": "67412110099272b343e14ccec0b42ad495f54ce33f56d4a999e7dbe36f6134ef",
+    "asr_model": "mlx-community--Qwen3-ASR-0.6B-bf16",
+    "asr_config_sha256": "dae1fbfa8b858aceefe5afcc7ecc9184e4a6045bc4a1bca8a41834724f490874",
+    "aligner_model": "mlx-community--Qwen3-ForcedAligner-0.6B-8bit",
+    "aligner_config_sha256": "8dc126e1a4ac001acb02f3a9ca6277c8a20a25485fde293bc99eeab3aedc604d"
+  },
+  "batch_policy": {
+    "default": "automatic",
+    "short_input": "vad",
+    "long_input_threshold_seconds": 120.0,
+    "long_input": "energy",
+    "explicit_override": "--batch-chunking vad|energy|automatic",
+    "live_streaming": "unchanged; HTTP batch VAD is dedicated; stdio does not load batch VAD and exposes streaming commands only",
+    "explicit_vad_without_batch_vad": "safe energy fallback",
+    "info_contract": {
+      "batch_chunking": "requested mode",
+      "batch_chunking_resolution": "energy|vad|duration-dependent",
+      "batch_chunking_vad_available": "whether the dedicated HTTP batch VAD is loaded"
+    }
+  },
+  "chunk_diagnostic": {
+    "vad": {
+      "earnings21-4346818": {"audio_seconds_loaded": 3953.423625, "chunks": 771, "median_chunk_seconds": 4.392, "min_chunk_seconds": 2.016, "max_chunk_seconds": 29.772},
+      "earnings21-4366522": {"audio_seconds_loaded": 1817.7305625, "chunks": 247, "median_chunk_seconds": 6.066, "min_chunk_seconds": 2.052, "max_chunk_seconds": 30.222}
+    },
+    "automatic_resolved_energy": {
+      "earnings21-4346818": {"chunks": 34},
+      "earnings21-4366522": {"chunks": 16}
+    },
+    "coverage": "VAD ranges were contiguous from 0 to the loaded audio end; no dropped-gap evidence."
+  },
+  "wer": {
+    "duration_source": "Yuwp HTTP response duration (decoded 16 kHz samples)",
+    "rtf_recomputed_from_saved_wall_times": true,
+    "reference_units_per_repeat": 15394,
+    "baseline_saved": {
+      "artifact": "benchmarks/data/long-subtitle/earnings21/baseline-dev-repeat3.json",
+      "repeat": 3,
+      "correct": 13358,
+      "substitutions": 1097,
+      "deletions": 939,
+      "insertions": 405,
+      "errors": 2441,
+      "wer": 0.1585682734,
+      "corpus_rtf": 0.0277813212,
+      "repeat_corpus_rtf": [0.0244727194, 0.0316949637, 0.0271762807],
+      "deterministic_across_repeats": true
+    },
+    "candidate_automatic": {
+      "artifact": "benchmarks/data/long-subtitle/earnings21/candidate-automatic-dev-final-repeat3.json",
+      "mode": "automatic",
+      "resolved_mode_on_both_dev_calls": "energy",
+      "repeat": 3,
+      "correct": 13728,
+      "substitutions": 813,
+      "deletions": 853,
+      "insertions": 212,
+      "errors": 1878,
+      "wer": 0.1219955827,
+      "corpus_rtf": 0.0244418336,
+      "repeat_corpus_rtf": [0.0240255925, 0.0244844413, 0.0248154672],
+      "deterministic_across_repeats": true
+    },
+    "candidate_cases": {
+      "earnings21-4346818": {"correct": 9849, "substitutions": 633, "deletions": 663, "insertions": 150, "errors": 1446, "wer": 0.1297442799, "rtf": [0.0241596465, 0.0249969166, 0.0261361675]},
+      "earnings21-4366522": {"correct": 3879, "substitutions": 180, "deletions": 190, "insertions": 62, "errors": 432, "wer": 0.1016709814, "rtf": [0.0237340353, 0.0233698470, 0.0219430459]}
+    }
+  },
+  "subtitle_structure": {
+    "baseline_mode": "vad",
+    "candidate_mode": "automatic (energy on both dev calls)",
+    "structural_gold": false,
+    "paired_setup": {
+      "manifest": "/tmp/yuwp-earnings21-dev-subtitles-manifest.json",
+      "binary_sha256": "8dad352712c819a43692a9e65117d0ad1933f660df45ac432f80760b4f650283",
+      "aligner_model": "mlx-community--Qwen3-ForcedAligner-0.6B-8bit",
+      "duration_source": "server-reported decoded duration"
+    },
+    "cases": {
+      "earnings21-4346818": {
+        "decoded_duration_seconds": 3953.423625,
+        "baseline_vad": {"entries": 1836, "gap_count": 82, "overlap_count": 1, "non_monotonic_count": 5, "invalid_range_count": 0, "empty_text_count": 0, "characters_per_line_violation_count": 500, "line_count_violation_count": 0, "reading_speed_violation_count": 1425, "min_duration_violation_count": 384, "max_duration_violation_count": 0, "min_gap_violation_count": 739, "single_word_cue_count": 162, "wall_seconds": 116.5994707, "rtf": 0.0294932903},
+        "candidate_automatic": {"entries": 1783, "gap_count": 78, "overlap_count": 0, "non_monotonic_count": 0, "invalid_range_count": 0, "empty_text_count": 0, "characters_per_line_violation_count": 497, "line_count_violation_count": 0, "reading_speed_violation_count": 1304, "min_duration_violation_count": 346, "max_duration_violation_count": 0, "min_gap_violation_count": 789, "single_word_cue_count": 156, "wall_seconds": 85.8518563, "rtf": 0.0217158252}
+      },
+      "earnings21-4366522": {
+        "decoded_duration_seconds": 1817.7305625,
+        "baseline_vad": {"entries": 719, "gap_count": 23, "overlap_count": 1, "non_monotonic_count": 1, "invalid_range_count": 0, "empty_text_count": 0, "characters_per_line_violation_count": 249, "line_count_violation_count": 0, "reading_speed_violation_count": 407, "min_duration_violation_count": 119, "max_duration_violation_count": 0, "min_gap_violation_count": 276, "single_word_cue_count": 64, "wall_seconds": 45.6349691, "rtf": 0.0251054640},
+        "candidate_automatic": {"entries": 707, "gap_count": 21, "overlap_count": 0, "non_monotonic_count": 0, "invalid_range_count": 0, "empty_text_count": 0, "characters_per_line_violation_count": 235, "line_count_violation_count": 0, "reading_speed_violation_count": 370, "min_duration_violation_count": 118, "max_duration_violation_count": 0, "min_gap_violation_count": 288, "single_word_cue_count": 62, "wall_seconds": 36.8025724, "rtf": 0.0202464398}
+      }
+    }
+  },
+  "limitations": [
+    "WER evidence covers two calls and is not a heldout selection gate.",
+    "Subtitle counters are structural diagnostics, not timestamp or subtitle-quality gold.",
+    "The AMI smoke fixture remains a structure/WER smoke check only."
+  ]
+}

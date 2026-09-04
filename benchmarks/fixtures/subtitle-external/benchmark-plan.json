@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "data_root": "benchmarks/data/long-subtitle",
+  "policy": {
+    "commit_corpus_data": false,
+    "dev_is_tunable": true,
+    "heldout_is_tunable": false,
+    "heldout_max_decision_uses": 5
+  },
+  "earnings21": {
+    "source": {
+      "dataset": "Earnings-21",
+      "repository": "https://github.com/revdotcom/speech-datasets",
+      "revision": "c05ab6fd8b4b627d123c922a22a39e993dd37635",
+      "text_license": "CC BY-SA 4.0",
+      "text_license_url": "https://github.com/revdotcom/speech-datasets/blob/main/earnings21/LICENSE.md",
+      "audio_license_status": "not-explicitly-stated",
+      "usage": "local benchmark only; do not redistribute audio"
+    },
+    "cases": [
+      {
+        "id": "4346818",
+        "split": "dev",
+        "company": "Ingersoll Rand",
+        "sector": "Industrial Goods",
+        "duration_seconds": 3972.022,
+        "sample_rate_hz": 11025,
+        "audio": {
+          "path": "media/4346818.mp3",
+          "size": 7907009,
+          "sha256": "dab8405e23d24f6107bcb441bbb8636bc4d58d400aebfbb07bddee3453339347"
+        },
+        "reference": {
+          "path": "transcripts/nlp_references/4346818.nlp",
+          "size": 250080,
+          "sha256": "113a8af8df320b36b3e14466af684dd6e27c61a556a5c7dd030733573b71dc26"
+        }
+      },
+      {
+        "id": "4366522",
+        "split": "dev",
+        "company": "Aldeyra Therapeutics Inc",
+        "sector": "Healthcare",
+        "duration_seconds": 1817.901,
+        "sample_rate_hz": 22050,
+        "audio": {
+          "path": "media/4366522.mp3",
+          "size": 9088686,
+          "sha256": "143073661592bc19ab931de1f5cf564adbfd2777c65837cacfa98572c6b1e09e"
+        },
+        "reference": {
+          "path": "transcripts/nlp_references/4366522.nlp",
+          "size": 96239,
+          "sha256": "53eab8ef960f999d6fb0a55af583cdfb7210e1a17ae164b07c7855bffeebcbf8"
+        }
+      },
+      {
+        "id": "4363614",
+        "split": "heldout",
+        "company": "Banco Santander",
+        "sector": "Financial",
+        "duration_seconds": 5586.921,
+        "sample_rate_hz": 11025,
+        "audio": {
+          "path": "media/4363614.mp3",
+          "size": 11123251,
+          "sha256": "749ed70ccb37fe666278d69be9a07b60c9de9c7b9af387d0917f3f553c073ef4"
+        },
+        "reference": {
+          "path": "transcripts/nlp_references/4363614.nlp",
+          "size": 307284,
+          "sha256": "f966853948960fd6e85c8ec45407277fbaead34d9f30c2773da01b193a7d28d4"
+        }
+      },
+      {
+        "id": "4386541",
+        "split": "heldout",
+        "company": "Cumulus Media Inc",
+        "sector": "Services",
+        "duration_seconds": 1097.1,
+        "sample_rate_hz": 16000,
+        "audio": {
+          "path": "media/4386541.mp3",
+          "size": 5485533,
+          "sha256": "8ba0f8013f8d3eb7a1aabc390479ebd2c7db895797e79709264b2af71f3c77f2"
+        },
+        "reference": {
+          "path": "transcripts/nlp_references/4386541.nlp",
+          "size": 62362,
+          "sha256": "4ba6c38d75974783e8ece62881b220b26053b5a0e8a22f9e6def48caff06a2e4"
+        }
+      }
+    ]
+  },
+  "must_cinema": {
+    "source": {
+      "dataset": "MuST-Cinema",
+      "publication": "https://aclanthology.org/2020.lrec-1.460/",
+      "legacy_homepage": "https://ict.fbk.eu/must-cinema/",
+      "mirror": "https://opendatalab.com/OpenDataLab/MuST-Cinema/download",
+      "mirror_license_claim": "CC BY-NC-ND 4.0",
+      "access_status": "manual download or authenticated mirror required",
+      "usage": "local benchmark only; do not redistribute"
+    },
+    "required_splits": {
+      "dev_talks": 3,
+      "heldout_talks": 5,
+      "human_timed_minutes": 10
+    },
+    "status": "awaiting-source-archive"
+  }
+}

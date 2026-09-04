@@ -37,6 +37,11 @@ SCENARIOS: dict[str, tuple[str, str, str]] = {
         "lib.subtitles",
         "benchmarks/cli.py asr subtitles --file sample.wav",
     ),
+    "prepare-long-form": (
+        "Materialize pinned local-only long-form evaluation data",
+        "lib.external_benchmark_data",
+        "benchmarks/cli.py asr prepare-long-form earnings21",
+    ),
 }
 
 

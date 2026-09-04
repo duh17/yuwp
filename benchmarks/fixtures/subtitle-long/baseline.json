@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-08-01T19:58:47Z",
+  "scope": "smoke-only",
+  "warning": "This single close-talk AMI excerpt is not representative quality, timestamp, or subtitle-segmentation gold. Do not accept optimizations from this result alone.",
+  "system": {
+    "platform": "macOS 27.0 arm64",
+    "git_revision": "ad35a0649c89e20221b9709285d00ce08a4f4fcd",
+    "git_dirty": true,
+    "yuwp_asr_sha256": "3e7a563b84d6ceec068190dd0ffe4e843ceddcf3b95f1eb87a456569a2c5394a"
+  },
+  "models": {
+    "asr": "mlx-community--Qwen3-ASR-0.6B-bf16",
+    "asr_config_sha256": "dae1fbfa8b858aceefe5afcc7ecc9184e4a6045bc4a1bca8a41834724f490874",
+    "aligner": "mlx-community--Qwen3-ForcedAligner-0.6B-8bit",
+    "aligner_config_sha256": "8dc126e1a4ac001acb02f3a9ca6277c8a20a25485fde293bc99eeab3aedc604d"
+  },
+  "normalizer": {
+    "version": "spoken-v1",
+    "alignment_algorithm": "hirschberg-min-edit-v1",
+    "reference_annotations_only": true,
+    "apostrophes_inside_words_are_boundaries": false
+  },
+  "case": "ami-en2002b-d-0765-0945",
+  "asr": {
+    "repeat": 3,
+    "language": "English",
+    "reference_units_per_run": 531,
+    "correct_per_run": 475,
+    "substitutions_per_run": 38,
+    "deletions_per_run": 18,
+    "insertions_per_run": 23,
+    "errors_per_run": 79,
+    "wer": 0.1487758945386064,
+    "hypothesis_sha256": "d0a93caa7e3cdf0b2a35c87db1b7d94136e6e8dc0e71a414885f0fdefbd2e3fc",
+    "median_rtf": 0.020152534955802062,
+    "p95_rtf": 0.020154815165830463,
+    "rtf_range": [
+      0.020133434722406997,
+      0.020155068522500288
+    ]
+  },
+  "subtitles": {
+    "repeat": 1,
+    "raw_json_sha256": "78e854755a2dc88fefe1ebd0ed36db7cd094a7c59ed7526b943ad4a7441713da",
+    "rtf": 0.03555720545681469,
+    "entries": 98,
+    "non_monotonic_count": 0,
+    "invalid_range_count": 0,
+    "empty_text_count": 0,
+    "overlap_count": 0,
+    "characters_per_line_violation_count": 13,
+    "line_count_violation_count": 0,
+    "reading_speed_violation_count": 84,
+    "min_duration_violation_count": 35,
+    "max_duration_violation_count": 0,
+    "min_gap_violation_count": 41,
+    "single_word_cue_count": 13,
+    "policy": {
+      "max_characters_per_line": 42,
+      "max_lines": 2,
+      "max_characters_per_second": 17.0,
+      "min_duration_seconds": 0.8333333333333334,
+      "max_duration_seconds": 7.0,
+      "min_gap_seconds": 0.08333333333333333
+    }
+  }
+}

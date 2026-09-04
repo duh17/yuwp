@@ -11,6 +11,8 @@ internal/
 transcript.txt
 yuwp-stream-replay.html
 results/
+# Downloaded benchmark corpora and raw runs are always local-only.
+benchmarks/data/
 benchmarks/*
 !benchmarks/README.md
 !benchmarks/streaming-refactor-acceptance-criteria.md
