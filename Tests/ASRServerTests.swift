@@ -584,6 +584,21 @@ struct ASRServerTests {
 
 @Suite("StreamingSession helpers")
 struct StreamingSessionUnitTests {
+    @Test func pauseAndFinalCorrectionUseTheSameVocabularyHintsAsLivePrefill() {
+        let hints = ["Yuwp", "file name.swift"]
+        let context = StreamingSession.sessionASRContext(language: "English", vocabularyHints: hints)
+        let empty = StreamingSession.sessionASRContext(language: nil, vocabularyHints: [])
+
+        #expect(context.language == "English")
+        #expect(context.vocabularyHints == hints)
+        #expect(
+            Qwen3ASRTokenizer.vocabularySystemMessage(from: context.vocabularyHints)
+                == "Vocabulary: Yuwp, file name.swift"
+        )
+        #expect(empty.vocabularyHints.isEmpty)
+        #expect(Qwen3ASRTokenizer.vocabularySystemMessage(from: empty.vocabularyHints) == nil)
+    }
+
     @Test func reflectPaddingIndicesMatchNumPySemantics() {
         #expect(reflectPadIndices(length: 4, padding: 2) == [2, 1, 0, 1, 2, 3, 2, 1])
         #expect(reflectPadIndices(length: 4, padding: 8) == [
@@ -600,25 +615,53 @@ struct StreamingSessionUnitTests {
             hasPreviousPrefill: false,
             encoderCacheOriginChanged: false,
             previousCachedEncoderTokenCount: 40,
-            prefillLength: 80
+            prefillLength: 80,
+            headerLength: Qwen3ASRTokenizer.emptySystemAudioPadStartIndex
         ) == 0)
         #expect(StreamingSession.estimateReuseLength(
             hasPreviousPrefill: true,
             encoderCacheOriginChanged: false,
             previousCachedEncoderTokenCount: 40,
-            prefillLength: 80
+            prefillLength: 80,
+            headerLength: Qwen3ASRTokenizer.emptySystemAudioPadStartIndex
         ) == 49)
         #expect(StreamingSession.estimateReuseLength(
             hasPreviousPrefill: true,
             encoderCacheOriginChanged: true,
             previousCachedEncoderTokenCount: 40,
-            prefillLength: 80
+            prefillLength: 80,
+            headerLength: Qwen3ASRTokenizer.emptySystemAudioPadStartIndex
         ) == 9)
         #expect(StreamingSession.estimateReuseLength(
             hasPreviousPrefill: true,
             encoderCacheOriginChanged: false,
             previousCachedEncoderTokenCount: 40,
-            prefillLength: 20
+            prefillLength: 20,
+            headerLength: Qwen3ASRTokenizer.emptySystemAudioPadStartIndex
+        ) == 20)
+    }
+
+    @Test func structuralReuseFollowsActualPromptHeaderLength() {
+        #expect(StreamingSession.estimateReuseLength(
+            hasPreviousPrefill: true,
+            encoderCacheOriginChanged: true,
+            previousCachedEncoderTokenCount: 40,
+            prefillLength: 80,
+            headerLength: 15
+        ) == 15)
+        #expect(StreamingSession.estimateReuseLength(
+            hasPreviousPrefill: true,
+            encoderCacheOriginChanged: false,
+            previousCachedEncoderTokenCount: 40,
+            prefillLength: 80,
+            headerLength: 15
+        ) == 55)
+        #expect(StreamingSession.estimateReuseLength(
+            hasPreviousPrefill: true,
+            encoderCacheOriginChanged: false,
+            previousCachedEncoderTokenCount: 40,
+            prefillLength: 20,
+            headerLength: 15
         ) == 20)
     }
 

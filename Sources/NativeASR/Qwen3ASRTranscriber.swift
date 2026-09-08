@@ -90,7 +90,8 @@ public final class Qwen3ASRTranscriber: @unchecked Sendable {
         audio: [Float],
         language: String? = nil,
         maxTokens: Int = 4096,
-        temperature: Float = 0.0
+        temperature: Float = 0.0,
+        vocabularyHints: [String] = []
     ) throws -> TranscriptionResult {
         guard audio.count >= ASRAudio.nFft else {
             return TranscriptionResult(text: "", language: language, audioDuration: Double(audio.count) / Double(ASRAudio.sampleRate), processingTime: 0)
@@ -115,13 +116,15 @@ public final class Qwen3ASRTranscriber: @unchecked Sendable {
         // Phase 3: Build prompt and fuse embeddings
         // numAudioTokens computed from audio length — no shape query needed
         let numAudioTokens = audioEncoderOutputLength(nFrames)
-        let promptIds = tokenizer.buildPrompt(numAudioTokens: numAudioTokens, language: language)
-        let inputIds = MLXArray(promptIds.map { Int32($0) }).expandedDimensions(axis: 0)
-        // Audio pads start at index 9 in the prompt (after system+user header tokens)
-        let audioStartIndex = 9
+        let prompt = tokenizer.buildPromptTokens(
+            numAudioTokens: numAudioTokens,
+            language: language,
+            vocabularyHints: vocabularyHints
+        )
+        let inputIds = MLXArray(prompt.tokenIds.map { Int32($0) }).expandedDimensions(axis: 0)
         let inputEmbeds = model.buildInputsEmbeds(
             inputIds: inputIds, audioFeatures: audioFeatures,
-            numAudioTokens: numAudioTokens, audioStartIndex: audioStartIndex
+            numAudioTokens: numAudioTokens, audioStartIndex: prompt.audioPadStartIndex
         )
 
         // Phase 4: Autoregressive decode with KV cache

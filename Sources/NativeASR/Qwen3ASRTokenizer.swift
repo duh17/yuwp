@@ -5,7 +5,7 @@
 // DESIGN:
 // - Decode: vocab.json (ID→string) + GPT-2 byte-to-unicode inversion → UTF-8 output
 // - Encode: BPE encoding for arbitrary text + special token handling
-// - buildPrompt: hardcoded token IDs for the audio transcription template
+// - buildPrompt: ChatML audio template; empty system header is 9 tokens before pads
 //
 // PROMPT TOKEN IDS (verified with Qwen3-ASR-0.6B tokenizer):
 // <|im_start|>=151644, system=8948, \n=198, <|im_end|>=151645
@@ -27,6 +27,12 @@ public final class Qwen3ASRTokenizer: @unchecked Sendable {
     public static let asrText: Int = 151704
 
     public static let eosTokens: Set<Int> = [151645, 151643]
+    /// Tokens that would break ChatML / audio-prompt structure if injected as IDs.
+    public static let promptDelimiterTokenIDs: Set<Int> = [
+        imStart, imEnd, endOfText, audioStart, audioEnd, audioPad, asrText,
+    ]
+    /// First audio-pad index for the historical empty system header.
+    public static let emptySystemAudioPadStartIndex = 9
     /// The auto-language header is short (`language <detected><asr_text>`).
     /// If `<asr_text>` appears much later, treat it as regular decoded output.
     static let autoLanguagePrefixLookahead = 24
@@ -93,28 +99,61 @@ public final class Qwen3ASRTokenizer: @unchecked Sendable {
     /// - `language != nil` → assistant prefix is `language <lang><asr_text>`
     /// - `language == nil` → no assistant prefix at all (model auto-detects language)
     /// - no trailing newline after the assistant prefix
-    public func buildPrompt(numAudioTokens: Int, language: String? = nil) -> [Int] {
+    /// - empty `vocabularyHints` keeps the historical empty system header
+    public func buildPrompt(
+        numAudioTokens: Int,
+        language: String? = nil,
+        vocabularyHints: [String] = []
+    ) -> [Int] {
+        buildPromptTokens(
+            numAudioTokens: numAudioTokens,
+            language: language,
+            vocabularyHints: vocabularyHints
+        ).tokenIds
+    }
+
+    /// Same prompt as `buildPrompt`, plus the index of the first audio-pad token.
+    public func buildPromptTokens(
+        numAudioTokens: Int,
+        language: String? = nil,
+        vocabularyHints: [String] = []
+    ) -> ASRTranscriptionPrompt {
         var tokens = [
-            151644, 8948, 198, 151645, 198,     // <|im_start|>system\n<|im_end|>\n
-            151644, 872, 198, 151669,            // <|im_start|>user\n<|audio_start|>
+            Self.imStart, 8948, 198,            // <|im_start|>system\n
         ]
-        tokens += Array(repeating: 151676, count: numAudioTokens)  // audio pads
+        if let systemMessage = Self.vocabularySystemMessage(from: vocabularyHints) {
+            tokens += encodeData(systemMessage)
+        }
         tokens += [
-            151670, 151645, 198,                // <|audio_end|><|im_end|>\n
-            151644, 77091, 198,                 // <|im_start|>assistant\n
+            Self.imEnd, 198,                    // <|im_end|>\n
+            Self.imStart, 872, 198, Self.audioStart,  // <|im_start|>user\n<|audio_start|>
+        ]
+        let audioPadStartIndex = tokens.count
+        tokens += Array(repeating: Self.audioPad, count: numAudioTokens)
+        tokens += [
+            Self.audioEnd, Self.imEnd, 198,     // <|audio_end|><|im_end|>\n
+            Self.imStart, 77091, 198,           // <|im_start|>assistant\n
         ]
 
         let lang = language?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let lang, !lang.isEmpty, lang.lowercased() != "auto" {
             if lang.lowercased() == "english" || lang.lowercased() == "en" {
-                tokens += [11528, 6364, 151704] // language English<asr_text>
+                tokens += [11528, 6364, Self.asrText] // language English<asr_text>
             } else {
                 tokens += encode("language \(lang)")
-                tokens += [151704]
+                tokens += [Self.asrText]
             }
         }
 
-        return tokens
+        return ASRTranscriptionPrompt(tokenIds: tokens, audioPadStartIndex: audioPadStartIndex)
+    }
+
+    /// Provider-owned short conditioning text. Nil when there are no phrases so
+    /// the empty system header stays byte-identical to the historical prompt.
+    public static func vocabularySystemMessage(from phrases: [String]) -> String? {
+        let kept = phrases.filter { !ASRContextualText.isBlankPhrase($0) }
+        guard !kept.isEmpty else { return nil }
+        return "Vocabulary: " + kept.joined(separator: ", ")
     }
 
     // MARK: - Decoding
@@ -193,11 +232,21 @@ public final class Qwen3ASRTokenizer: @unchecked Sendable {
     /// Encode arbitrary text to token IDs using BPE.
     /// Handles special tokens by looking them up directly in the vocab.
     public func encode(_ text: String) -> [Int] {
-        // Fast path: single special token
         if let id = tokenToId[text] { return [id] }
+        return bpeEncode(text)
+    }
 
+    /// Encode text as ordinary BPE data, never as prompt-delimiter special tokens.
+    public func encodeData(_ text: String) -> [Int] {
+        let tokens = bpeEncode(text)
+        if tokens.contains(where: { Self.promptDelimiterTokenIDs.contains($0) }) {
+            return byteFallbackEncode(text)
+        }
+        return tokens
+    }
+
+    private func bpeEncode(_ text: String) -> [Int] {
         var result: [Int] = []
-        // Simple word-level split (GPT-2 style: split on spaces, keep space with next word)
         let words = splitGPT2Style(text)
         for word in words {
             let bpeTokens = applyBPE(word)
@@ -205,7 +254,19 @@ public final class Qwen3ASRTokenizer: @unchecked Sendable {
                 if let id = tokenToId[token] {
                     result.append(id)
                 }
-                // Unknown tokens are dropped
+            }
+        }
+        return result
+    }
+
+    private func byteFallbackEncode(_ text: String) -> [Int] {
+        let enc = Self.bytesEncoder
+        var result: [Int] = []
+        for byte in text.utf8 {
+            guard let char = enc[byte] else { continue }
+            let symbol = String(char)
+            if let id = tokenToId[symbol], !Self.promptDelimiterTokenIDs.contains(id) {
+                result.append(id)
             }
         }
         return result
@@ -307,6 +368,34 @@ public final class Qwen3ASRTokenizer: @unchecked Sendable {
 }
 
 // MARK: - BPEPair
+
+public struct ASRTranscriptionPrompt: Equatable, Sendable {
+    public let tokenIds: [Int]
+    public let audioPadStartIndex: Int
+
+    public init(tokenIds: [Int], audioPadStartIndex: Int) {
+        self.tokenIds = tokenIds
+        self.audioPadStartIndex = audioPadStartIndex
+    }
+}
+
+/// Shared wire blank policy for vocabulary phrases.
+/// Unicode White_Space plus U+200B and U+FEFF. Not Foundation `whitespacesAndNewlines`.
+public enum ASRContextualText: Sendable {
+    public static func isBlankScalar(_ scalar: Unicode.Scalar) -> Bool {
+        if scalar.properties.isWhitespace { return true }
+        switch scalar.value {
+        case 0x200B, 0xFEFF:
+            return true
+        default:
+            return false
+        }
+    }
+
+    public static func isBlankPhrase(_ text: String) -> Bool {
+        text.unicodeScalars.allSatisfy(isBlankScalar)
+    }
+}
 
 struct BPEPair: Hashable {
     let first: String

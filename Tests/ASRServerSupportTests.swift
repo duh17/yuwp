@@ -635,9 +635,11 @@ private final class FakeManager: ASRServing, @unchecked Sendable {
     var lastFedSessionID: String?
     var lastStoppedSessionID: String?
     var lastCreatedLanguage: String?
+    var lastCreatedContextualStrings: [String] = []
 
-    func create(language: String?) -> String {
+    func create(language: String?, contextualStrings: [String]) -> String {
         lastCreatedLanguage = language
+        lastCreatedContextualStrings = contextualStrings
         return createdSessionID
     }
 

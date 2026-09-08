@@ -6,6 +6,167 @@ public enum ASRServerLimits {
     public static let maxChunkSec = BatchTranscriptionDefaults.maxChunkDurationSec
 }
 
+public enum StreamContextualStringLimits {
+    public static let maxPhraseCount = 100
+    public static let maxPhraseUTF8ByteCount = 256
+    public static let maxAggregateUTF8ByteCount = 8192
+}
+
+public enum StreamCreateBodyError: Error, Equatable, Sendable {
+    case invalidJSON
+    case bodyNotObject
+    case streamConfigNotObject
+    case contextualStringsNotArray
+    case phraseNotString
+    case emptyOrWhitespacePhrase
+    case controlCharacters
+    case tooManyPhrases
+    case phraseTooLong
+    case aggregateTooLong
+}
+
+public struct StreamCreateBody: Equatable, Sendable {
+    public let contextualStrings: [String]
+
+    public init(contextualStrings: [String]) {
+        self.contextualStrings = contextualStrings
+    }
+
+    public var contextApplied: Bool { !contextualStrings.isEmpty }
+}
+
+/// Parse the optional stream-create JSON body.
+/// Empty or whitespace-only bodies stay valid for existing clients.
+/// Phrase strings are decoded with JSONDecoder so leading U+FEFF is preserved.
+public func parseStreamCreateBody(_ data: Data) -> Result<StreamCreateBody, StreamCreateBodyError> {
+    guard let text = String(data: data, encoding: .utf8) else {
+        return data.isEmpty
+            ? .success(StreamCreateBody(contextualStrings: []))
+            : .failure(.invalidJSON)
+    }
+    // Payload presence only. Phrase blankness uses ASRContextualText, not this trim.
+    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return .success(StreamCreateBody(contextualStrings: []))
+    }
+
+    let dto: StreamCreateRequestDTO
+    do {
+        dto = try JSONDecoder().decode(StreamCreateRequestDTO.self, from: data)
+    } catch let error as StreamCreateBodyError {
+        return .failure(error)
+    } catch {
+        return classifyStreamCreateDecodeError(data)
+    }
+
+    guard let phrases = dto.phrases else {
+        return .success(StreamCreateBody(contextualStrings: []))
+    }
+    return validateContextualPhrases(phrases)
+}
+
+private func classifyStreamCreateDecodeError(_ data: Data) -> Result<StreamCreateBody, StreamCreateBodyError> {
+    guard let parsed = try? JSONSerialization.jsonObject(with: data) else {
+        return .failure(.invalidJSON)
+    }
+    if parsed is [String: Any] {
+        return .failure(.invalidJSON)
+    }
+    return .failure(.bodyNotObject)
+}
+
+private func validateContextualPhrases(_ phrasesAny: [String]) -> Result<StreamCreateBody, StreamCreateBodyError> {
+    if phrasesAny.count > StreamContextualStringLimits.maxPhraseCount {
+        return .failure(.tooManyPhrases)
+    }
+
+    var phrases: [String] = []
+    phrases.reserveCapacity(phrasesAny.count)
+    var aggregateUTF8Bytes = 0
+    for phrase in phrasesAny {
+        // Hard limits and Cc checks run on the raw string before any trim.
+        if phrase.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) {
+            return .failure(.controlCharacters)
+        }
+        let utf8Bytes = phrase.utf8.count
+        if utf8Bytes > StreamContextualStringLimits.maxPhraseUTF8ByteCount {
+            return .failure(.phraseTooLong)
+        }
+        aggregateUTF8Bytes += utf8Bytes
+        if aggregateUTF8Bytes > StreamContextualStringLimits.maxAggregateUTF8ByteCount {
+            return .failure(.aggregateTooLong)
+        }
+        if ASRContextualText.isBlankPhrase(phrase) {
+            return .failure(.emptyOrWhitespacePhrase)
+        }
+        phrases.append(phrase)
+    }
+    return .success(StreamCreateBody(contextualStrings: phrases))
+}
+
+private struct StreamCreateRequestDTO: Decodable {
+    var phrases: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case streamConfig = "stream_config"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container: KeyedDecodingContainer<CodingKeys>
+        do {
+            container = try decoder.container(keyedBy: CodingKeys.self)
+        } catch {
+            throw StreamCreateBodyError.bodyNotObject
+        }
+
+        guard container.contains(.streamConfig) else {
+            phrases = nil
+            return
+        }
+        if try container.decodeNil(forKey: .streamConfig) {
+            throw StreamCreateBodyError.streamConfigNotObject
+        }
+        let config: StreamConfigDTO
+        do {
+            config = try container.decode(StreamConfigDTO.self, forKey: .streamConfig)
+        } catch let error as StreamCreateBodyError {
+            throw error
+        } catch {
+            throw StreamCreateBodyError.streamConfigNotObject
+        }
+        phrases = config.phrases
+    }
+}
+
+private struct StreamConfigDTO: Decodable {
+    var phrases: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case contextualStrings = "contextual_strings"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container: KeyedDecodingContainer<CodingKeys>
+        do {
+            container = try decoder.container(keyedBy: CodingKeys.self)
+        } catch {
+            throw StreamCreateBodyError.streamConfigNotObject
+        }
+
+        guard container.contains(.contextualStrings) else {
+            phrases = nil
+            return
+        }
+        if try container.decodeNil(forKey: .contextualStrings) {
+            throw StreamCreateBodyError.contextualStringsNotArray
+        }
+        do {
+            phrases = try container.decode([String].self, forKey: .contextualStrings)
+        } catch {
+            throw StreamCreateBodyError.contextualStringsNotArray
+        }
+    }
+}
+
 public struct HTTPRequest {
     public let method: String
     public let path: String

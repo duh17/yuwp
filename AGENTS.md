@@ -79,6 +79,13 @@ When transport is HTTP, communication uses this API on `127.0.0.1:7936` by defau
 | `POST` | `/v1/audio/transcriptions/stream/:id` | Feed audio chunk (raw s16le PCM) |
 | `DELETE` | `/v1/audio/transcriptions/stream/:id` | Stop session, get final text |
 
+Stream create accepts an optional JSON body `{model, stream_config:{contextual_strings:[...]}}`.
+Omit `stream_config` when there are no hints; empty bodies stay valid for existing clients.
+The response is `{session_id, context_applied}`. `context_applied` is true only when nonempty
+hints were consumed. Limits: 100 phrases, 256 UTF-8 bytes each, 8192 aggregate UTF-8 bytes;
+no empty/whitespace-only strings or control characters. Client `system_prompt` fields are ignored.
+Yuwp turns accepted phrases into a provider-owned vocabulary header internally.
+
 Override host/port with `--host` / `--port` flags.
 
 ## Code Quality

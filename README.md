@@ -74,6 +74,13 @@ Run standalone ASR HTTP server (default transport is stdio, so pass `--transport
 curl -sf http://127.0.0.1:7936/v1/info | jq .
 ```
 
+`POST /v1/audio/transcriptions/stream` creates a session. Existing clients may send an empty body.
+Compatible clients may send `{model, stream_config:{contextual_strings:[...]}}` and must omit
+`stream_config` when there are no hints. The response includes `session_id` and `context_applied`
+(true only when nonempty hints were consumed). Vocabulary bounds: 100 phrases, 256 UTF-8 bytes
+each, 8192 aggregate UTF-8 bytes; empty/whitespace-only strings and control characters are rejected.
+Yuwp does not accept a client `system_prompt`; it derives a short internal vocabulary header.
+
 Batch transcription uses automatic chunking: short inputs retain VAD, while inputs
 longer than 120 seconds use energy boundaries. Override it without changing live
 streaming with `--batch-chunking automatic|vad|energy`; an explicit `vad` request safely falls

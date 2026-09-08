@@ -212,13 +212,14 @@ final class StreamingSessionManager: @unchecked Sendable {
         }
     }
 
-    func create(language: String? = nil) -> String {
+    func create(language: String? = nil, contextualStrings: [String] = []) -> String {
         let sid = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12).lowercased())
         let session = StreamingSession(
             transcriber: transcriber,
             batchTranscriber: batchTranscriber,
             config: StreamConfig(batchRetranscribe: batchRetranscribeEnabled),
-            language: language
+            language: language,
+            vocabularyHints: contextualStrings
         )
         let startedAt = Date()
         let managedSession = ManagedStreamingSession(

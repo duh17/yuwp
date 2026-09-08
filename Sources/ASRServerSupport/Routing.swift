@@ -8,7 +8,7 @@ let internalDiagnosticsEnabled = false
 #endif
 
 public protocol ASRServing: BatchTranscriptionServing, AnyObject, Sendable {
-    func create(language: String?) -> String
+    func create(language: String?, contextualStrings: [String]) -> String
     func feed(_ sid: String, pcmData: Data) -> [String: Any]?
     func stop(_ sid: String) -> [String: Any]?
     func transcribeAudio(audio: [Float], language: String?, temperature: Float) throws -> TranscriptionResult
@@ -145,7 +145,19 @@ private func handleStreamRoute(_ req: HTTPRequest, path: String, context: ASRRou
         let requestedLanguage = queryValue(named: "language", in: req.path)
             .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .flatMap { $0.isEmpty ? nil : $0 }
-        return jsonResponse(status: 200, ["session_id": context.manager.create(language: requestedLanguage)])
+        switch parseStreamCreateBody(req.body) {
+        case .success(let createBody):
+            let sid = context.manager.create(
+                language: requestedLanguage,
+                contextualStrings: createBody.contextualStrings
+            )
+            return jsonResponse(status: 200, [
+                "session_id": sid,
+                "context_applied": createBody.contextApplied,
+            ])
+        case .failure(let error):
+            return streamCreateBodyErrorResponse(error)
+        }
     }
 
     let sid = String(path.dropFirst(streamRoutePrefix.count + 1))
@@ -331,6 +343,52 @@ private func invalidRequestResponse(_ message: String, param: String? = nil, sta
     ]
     if let param { error["param"] = param }
     return jsonResponse(status: status, ["error": error])
+}
+
+private func streamCreateBodyErrorResponse(_ error: StreamCreateBodyError) -> HTTPResponse {
+    switch error {
+    case .invalidJSON:
+        return invalidRequestResponse("Request body must be valid JSON.", param: "body")
+    case .bodyNotObject:
+        return invalidRequestResponse("Request body must be a JSON object.", param: "body")
+    case .streamConfigNotObject:
+        return invalidRequestResponse("stream_config must be a JSON object.", param: "stream_config")
+    case .contextualStringsNotArray:
+        return invalidRequestResponse(
+            "stream_config.contextual_strings must be an array of strings.",
+            param: "stream_config.contextual_strings"
+        )
+    case .phraseNotString:
+        return invalidRequestResponse(
+            "stream_config.contextual_strings must contain only strings.",
+            param: "stream_config.contextual_strings"
+        )
+    case .emptyOrWhitespacePhrase:
+        return invalidRequestResponse(
+            "contextual_strings must not contain empty or whitespace-only phrases.",
+            param: "stream_config.contextual_strings"
+        )
+    case .controlCharacters:
+        return invalidRequestResponse(
+            "contextual_strings must not contain control characters.",
+            param: "stream_config.contextual_strings"
+        )
+    case .tooManyPhrases:
+        return invalidRequestResponse(
+            "contextual_strings supports at most \(StreamContextualStringLimits.maxPhraseCount) phrases.",
+            param: "stream_config.contextual_strings"
+        )
+    case .phraseTooLong:
+        return invalidRequestResponse(
+            "each contextual_strings phrase must be at most \(StreamContextualStringLimits.maxPhraseUTF8ByteCount) UTF-8 bytes.",
+            param: "stream_config.contextual_strings"
+        )
+    case .aggregateTooLong:
+        return invalidRequestResponse(
+            "contextual_strings total size must be at most \(StreamContextualStringLimits.maxAggregateUTF8ByteCount) UTF-8 bytes.",
+            param: "stream_config.contextual_strings"
+        )
+    }
 }
 
 private func parseDebugFlag(_ raw: String?) -> Bool {
