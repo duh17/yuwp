@@ -1,0 +1,26 @@
+{
+  "label": "NON-ACCEPTANCE",
+  "runs": [
+    {
+      "artifact": "dev-run.jsonl",
+      "sha256": "c10427bac9ea06699a1ab18840b7107ba7a9ce3e3045d973b9156c93b80a6bbd",
+      "trials": 81,
+      "elapsed_s": 1610.4922751248814,
+      "status_counts": {
+        "ok": 53,
+        "failed": 28
+      }
+    },
+    {
+      "artifact": "parakeet-retry.jsonl",
+      "sha256": "5fc5b776391bb5b25c542c2bb99f86c8ea9cb27497774977411fb0117a876f63",
+      "trials": 27,
+      "elapsed_s": 783.0259733749554,
+      "status_counts": {
+        "ok": 27
+      }
+    }
+  ],
+  "heldout_inference_trials": 0,
+  "raw_workspace_artifacts": ".pi/research/english-parity-20260908/artifacts"
+}

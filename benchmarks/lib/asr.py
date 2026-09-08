@@ -12,6 +12,11 @@ import importlib
 import sys
 
 SCENARIOS: dict[str, tuple[str, str, str]] = {
+    "english-parity": (
+        "NON-ACCEPTANCE dev-only paired real-time ASR diagnostics",
+        "lib.english_parity",
+        "benchmarks/cli.py asr english-parity --commands commands.json --output /tmp/dev.jsonl",
+    ),
     "load": (
         "Concurrent local yuwp-asr serve load/latency benchmark",
         "lib.native_server",

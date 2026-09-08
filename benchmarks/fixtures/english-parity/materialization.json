@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "status": "materialized-before-inference; owner approval required",
+  "archive": {
+    "url": "https://www.openslr.org/resources/12/test-clean.tar.gz",
+    "bytes": 346663984,
+    "sha256": "39fde525e59672dc6d1551919b1478f724438a95aa55f874b576be21967e6c23",
+    "md5": "32fa31d27d2e1cad72775fee3f4849a9"
+  },
+  "seed": "english-parity-v1",
+  "selection": "SHA256(seed + colon + speakerID), ascending; first 6 dev, next 20 heldout; numeric-text lexical file order within speaker; first 3-10s short; first same-chapter whole-utterance concatenation reaching 20-40s excluding short; 250ms join silence",
+  "splits": {
+    "dev": {
+      "clips": 12,
+      "speakers": 6,
+      "seconds": 203.05,
+      "short": 6,
+      "long": 6
+    },
+    "heldout": {
+      "clips": 40,
+      "speakers": 20,
+      "seconds": 642.5951875,
+      "short": 20,
+      "long": 20
+    }
+  },
+  "diagnostics": {
+    "count": 21,
+    "dev": 15,
+    "heldout": 6
+  },
+  "ffmpeg": "ffmpeg version 8.0.1 Copyright (c) 2000-2025 the FFmpeg developers",
+  "python": "3.14.5 (main, May 10 2026, 10:21:34) [Clang 21.0.0 (clang-2100.0.123.102)]",
+  "materializer_sha256": "4406c6611e4d7526386dfbe2f311944ca807c6f6892e05f297d20f9eaa109f11",
+  "normalization_sha256": "9c8ce3b3efffb4091874a6079d554cde0ed3c4a6785416ead9a89fcefc56f1e0",
+  "manifests": {
+    "dev.jsonl": "3ca6c291ced53baa402e14fd81c8466431384f66d45ad4b60de0859e94f80cb8",
+    "heldout.jsonl": "e25a0662d1b9f31b7ecba202babaf822af43ab572c674057ee1ac925684a4727",
+    "diagnostics.jsonl": "73106af953a79192c2246c05d5b26afc275ec086f651541e02f544b9a8876414"
+  }
+}

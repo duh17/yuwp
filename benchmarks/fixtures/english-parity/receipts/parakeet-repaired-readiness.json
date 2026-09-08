@@ -1,0 +1,58 @@
+{
+  "label": "READINESS-ONLY NON-ACCEPTANCE",
+  "command": [
+    "/tmp/yuwp-english-parity/adapter-readiness-repair/.build/arm64-apple-macosx/release/fluid-parity-adapter",
+    "--candidate",
+    "p1",
+    "--model-dir",
+    "/tmp/yuwp-english-parity/repair-assets/parakeet-tdt-0.6b-v2"
+  ],
+  "verified_assets": 21,
+  "binary_sha256": "00136ef255d812f0bf3263a2e0eba2a7170e17f70c8f4190c795fcff4bb0aedd",
+  "events": [
+    {
+      "command": "info",
+      "phase": "readiness",
+      "request": {
+        "id": 1,
+        "command": "info"
+      },
+      "request_binary_base64": "",
+      "write_start": 1763521.759956416,
+      "write_end": 1763521.7599915,
+      "raw_header_base64": "AAAAjQAAAAA=",
+      "raw_metadata_base64": "eyJtb2RlbCI6IlBhcmFrZWV0LVREVC0wLjZCLXYyLWVuLVAxIiwib2siOnRydWUsImZpbmFsX2FjY3VyYWN5X3Bhc3NfZW5hYmxlZCI6dHJ1ZSwiaWQiOjEsImNodW5rX3NlYyI6MSwic3RhdHVzIjoicmVhZHkiLCJzYW1wbGVfcmF0ZSI6MTYwMDB9",
+      "raw_binary_base64": "",
+      "read_end": 1763538.108784416,
+      "reply_end": 1763538.108814291,
+      "response": {
+        "model": "Parakeet-TDT-0.6B-v2-en-P1",
+        "ok": true,
+        "final_accuracy_pass_enabled": true,
+        "id": 1,
+        "chunk_sec": 1,
+        "status": "ready",
+        "sample_rate": 16000
+      }
+    },
+    {
+      "type": "process-exit",
+      "at": 1763538.111718625,
+      "returncode": -15
+    }
+  ],
+  "start_wall": 1788834571.40013,
+  "pid": 48587,
+  "result": "ready",
+  "info": {
+    "model": "Parakeet-TDT-0.6B-v2-en-P1",
+    "ok": true,
+    "final_accuracy_pass_enabled": true,
+    "id": 1,
+    "chunk_sec": 1,
+    "status": "ready",
+    "sample_rate": 16000
+  },
+  "spawn_to_ready_s": 16.35809004190378,
+  "end_wall": 1788834587.760313
+}

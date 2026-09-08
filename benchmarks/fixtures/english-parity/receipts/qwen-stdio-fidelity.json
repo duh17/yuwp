@@ -1,0 +1,198 @@
+{
+  "trials": 27,
+  "verified_model_final_chunk_rate": true,
+  "live_vad": "configured enabled by unchanged CLI defaults; per-trial runtime state not observable because stdio info omits VAD and YUWP_DIAGNOSTIC_LOGGING was not enabled",
+  "separate_HTTP_readiness_vad": true,
+  "batch_vad": "nil per unchanged stdio Runner; separate HTTP readiness verified batchVAD true",
+  "checks": [
+    {
+      "case_id": "ami-dev-segment-07",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ami-dev-segment-00",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-1089-long",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "probe-dev-noise",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ami-dev-segment-06",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ami-dev-segment-03",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-4077-long-cutoff",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-4077-long-noise20db",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-1089-short",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ami-dev-segment-01",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-4077-long-pause",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-6829-long",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-6829-short",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ami-dev-segment-02",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ami-dev-segment-04",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ami-dev-segment-08",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-4077-long",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-4077-long-silence-pad",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-3570-short",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "probe-dev-silence",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-908-long",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ami-dev-segment-05",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-8455-long",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-3570-long",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-4077-short",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-8455-short",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    },
+    {
+      "case_id": "ls-dev-908-short",
+      "final_accuracy_on": true,
+      "sample_rate": 16000,
+      "chunk_sec": 1.75,
+      "model": "qwen3-asr-1.7b"
+    }
+  ]
+}

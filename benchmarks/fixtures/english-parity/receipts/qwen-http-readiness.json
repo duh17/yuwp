@@ -1,0 +1,38 @@
+{
+  "command": [
+    "/Users/chenda/.config/oppi/worktrees/ZiMTM_cT/wt_feat-english-asr-parity-1pKFzkB2/.build/arm64-apple-macosx/release/yuwp-asr",
+    "serve",
+    "--model",
+    "/Users/chenda/.cache/huggingface/hub/models--mlx-community--Qwen3-ASR-1.7B-bf16/snapshots/e1f6c266914abc5a46e8756e02580f834a6cf8a7",
+    "--batch-model",
+    "/Users/chenda/.cache/huggingface/hub/models--mlx-community--Qwen3-ASR-1.7B-bf16/snapshots/e1f6c266914abc5a46e8756e02580f834a6cf8a7",
+    "--transport",
+    "http",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "50646"
+  ],
+  "purpose": "isolated readiness only, no audio inference",
+  "start": 1788831795.426004,
+  "pid": 83248,
+  "info": {
+    "vad": true,
+    "status": "ready",
+    "aligner": false,
+    "sample_rate": 16000,
+    "batch_vad": true,
+    "final_accuracy_pass_enabled": true,
+    "model": "e1f6c266914abc5a46e8756e02580f834a6cf8a7",
+    "chunk_sec": 1.75,
+    "internal_diagnostics": false,
+    "batch_chunking_requested": "automatic",
+    "model_id": "qwen3-asr-1.7b",
+    "batch_chunking_resolution": "duration-dependent",
+    "batch_chunking": "automatic",
+    "batch_chunking_vad_available": true
+  },
+  "result": "ready",
+  "exit": 0,
+  "end": 1788831797.4481611
+}

@@ -1,0 +1,70 @@
+--- a/Sources/FluidAdapter/Backend.swift
++++ b/Sources/FluidAdapter/Backend.swift
+@@ -59,6 +59,13 @@
+         return manager
+     }
+ 
++    static func validateParakeetDirectory(_ directory: URL) throws {
++        // FluidAudio's local cache basename differs from the Hugging Face repo.
++        guard directory.lastPathComponent == Repo.parakeetV2.folderName else {
++            throw AdapterError.invalid("P1 directory must use SDK local basename \(Repo.parakeetV2.folderName)")
++        }
++    }
++
+     func prepare() async throws {
+         guard ModelHub.offlineMode else { throw AdapterError.invalid("offline mode must be enabled") }
+         switch candidate {
+@@ -67,9 +74,7 @@
+             // Discard this manager; every create must initialize clean throwing state.
+             _ = try await newNemotron()
+         case .p1:
+-            guard directory.lastPathComponent == "parakeet-tdt-0.6b-v2-coreml" else {
+-                throw AdapterError.invalid("P1 directory must retain SDK repo basename parakeet-tdt-0.6b-v2-coreml")
+-            }
++            try Self.validateParakeetDirectory(directory)
+             for file in ["Preprocessor.mlmodelc", "Encoder.mlmodelc", "Decoder.mlmodelc", "JointDecision.mlmodelc", "parakeet_vocab.json"] {
+                 try require(file)
+             }
+--- a/Package.swift
++++ b/Package.swift
+@@ -12,6 +12,6 @@
+         .executableTarget(name: "FluidAdapter", dependencies: [
+             "AdapterCore", "ASRIPC", .product(name: "FluidAudio", package: "FluidAudio")
+         ]),
+-        .testTarget(name: "AdapterCoreTests", dependencies: ["AdapterCore", "ASRIPC"])
++        .testTarget(name: "AdapterCoreTests", dependencies: ["AdapterCore", "ASRIPC", "FluidAdapter"])
+     ]
+ )
+--- /dev/null
++++ b/Tests/AdapterCoreTests/LoaderPathTests.swift
+@@ -0,0 +1,10 @@
++import Foundation
++import Testing
++@testable import FluidAdapter
++
++@Test @MainActor func parakeetRequiresSDKLocalFolderNotHFRepoBasename() throws {
++    try FluidBackend.validateParakeetDirectory(URL(fileURLWithPath: "/tmp/assets/parakeet-tdt-0.6b-v2"))
++    #expect(throws: (any Error).self) {
++        try FluidBackend.validateParakeetDirectory(URL(fileURLWithPath: "/tmp/assets/parakeet-tdt-0.6b-v2-coreml"))
++    }
++}
+--- a/validate.sh
++++ b/validate.sh
+@@ -1,7 +1,7 @@
+ #!/bin/bash
+ # Build and model-free unit tests only. Never launch the adapter here.
+ set -euo pipefail
+-cd /tmp/yuwp-english-parity/adapter
++cd /tmp/yuwp-english-parity/adapter-readiness-repair
+ export TMPDIR="$PWD/tmp"
+ export CLANG_MODULE_CACHE_PATH="$PWD/cache/clang"
+ export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/cache/modules"
+@@ -21,7 +21,7 @@
+     printf 'SDK source diff SHA256: '; git -C "$SDK" diff HEAD | shasum -a 256
+     printf 'Package.resolved: absent (only local path dependency plus pinned binary artifact)\n'
+ } > logs/environment.txt 2>&1
+-shasum -a 256 Package.swift Sources/ASRIPC/Protocol.swift Sources/AdapterCore/Core.swift Sources/FluidAdapter/Backend.swift Sources/FluidAdapter/Main.swift Tests/AdapterCoreTests/AdapterTests.swift validate.sh > source-inventory.sha256
++shasum -a 256 Package.swift Sources/ASRIPC/Protocol.swift Sources/AdapterCore/Core.swift Sources/FluidAdapter/Backend.swift Sources/FluidAdapter/Main.swift Tests/AdapterCoreTests/AdapterTests.swift Tests/AdapterCoreTests/LoaderPathTests.swift validate.sh > source-inventory.sha256
+ shasum -a 256 source-inventory.sha256 > source-tree.sha256
+ shasum -a 256 .build/arm64-apple-macosx/release/fluid-parity-adapter > binary.sha256
+ printf 'Build and model-free tests passed. No model load or inference executed.\n'

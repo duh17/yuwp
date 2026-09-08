@@ -1,0 +1,114 @@
+{
+  "librispeech": {
+    "dataset": "LibriSpeech SLR12 test-clean",
+    "homepage": "https://www.openslr.org/12",
+    "license": "CC BY 4.0",
+    "authors": "Vassil Panayotov, Guoguo Chen, Daniel Povey, Sanjeev Khudanpur",
+    "reference_origin": "human-authored audiobook text, corpus segmentation/alignment; not bespoke verbatim dictation gold",
+    "archive_sha256": "39fde525e59672dc6d1551919b1478f724438a95aa55f874b576be21967e6c23",
+    "speaker_metadata_sha256": "3350f093382f8baa1d589c9f5a5cee8ec3705e656f521d6eafbaa31a5fcd8f76",
+    "license_sha256": "908b0b565ae9bf61b7b41447cb0b83564f320375723bcc884ec30e5537a0d5dc"
+  },
+  "ami": {
+    "version": 1,
+    "id": "ami-en2002b-d-0765-0945",
+    "language": "en",
+    "duration_seconds": 180.0,
+    "audio": {
+      "file": "audio.m4a",
+      "codec": "aac",
+      "sample_rate_hz": 16000,
+      "channels": 1,
+      "sha256": "8bd6fef1df8b84a87142915126f2e45b6825a8c7c5777a25719f0e5e265420ae"
+    },
+    "references": {
+      "human_segments": "human-segments.json",
+      "srt": "reference.srt",
+      "normalized_transcript": "reference.txt",
+      "segment_count": 10
+    },
+    "validation": {
+      "valid_for": [
+        "wer-smoke",
+        "subtitle-structure-smoke"
+      ],
+      "not_valid_for": [
+        "timestamp-accuracy",
+        "subtitle-segmentation-quality"
+      ],
+      "reason": "AMI word times are forced-alignment-derived and these human utterance segments are not professional subtitle cues."
+    },
+    "provenance": {
+      "dataset": "AMI Meeting Corpus",
+      "meeting_id": "EN2002b",
+      "speaker": "D",
+      "source_audio": "EN2002b.Headset-3.wav",
+      "source_start_seconds": 765.0,
+      "source_end_seconds": 945.0,
+      "source_url": "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/EN2002b/audio/EN2002b.Headset-3.wav",
+      "annotation_release": "ami_public_manual_1.6.2",
+      "annotation_url": "https://groups.inf.ed.ac.uk/ami/AMICorpusAnnotations/ami_public_manual_1.6.2.zip",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "text_origin": "human",
+      "time_origin": "human_segment",
+      "break_origin": "human_utterance",
+      "normalization": "Speaker labels and bracketed non-speech events are excluded from scoring. AMI underscore-spelled initialisms are joined by the WER normalizer.",
+      "notes": "Close-talking channel for one speaker. Word timings inside segments are forced alignments; cue boundaries are human-adjusted utterances, not professional subtitle breaks."
+    },
+    "tags": [
+      "long-form",
+      "meeting",
+      "single-speaker",
+      "close-talk",
+      "human-transcript"
+    ]
+  },
+  "excluded_earnings21": {
+    "reason": "Existing public source-nlp/4363614.nlp ts/endTs are empty; cannot safely pair short audio cuts with gold without new alignment. No old inference outputs opened or used for selection. No downloads or inference for Earnings-21."
+  },
+  "bounded_source_inspection": [
+    {
+      "repo": "google/fleurs",
+      "revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+      "readme_sha256": "688f79f2a5c731af3796e9f683eb02f9b3f09d040decd8c5625d0f37098e71c6",
+      "disposition": "Not materialized. Read-speech focus explicitly documented; does not close spontaneous dictation gap. en_us exists; accent diversity requires separate evidence."
+    },
+    {
+      "repo": "PolyAI/minds14",
+      "revision": "40ce77cb32a384e4d50a568e1ec39ac804019d33",
+      "readme_sha256": "3dd23ca4c7834f66ca043847996dbd7c9ca34c846749d86431a9fa19898f4f88",
+      "disposition": "Not materialized. Banking-intent speech; en-AU/en-GB/en-US, 8kHz, approx 600 examples/config, train-only. Potential future short/accent probe, not part of this frozen bounded preparation."
+    }
+  ],
+  "coverage_status": "BLOCK_GENERAL_PARITY",
+  "coverage_gaps": [
+    "No verified accent strata or speaker accent labels",
+    "No heldout spontaneous/self-correction corpus; AMI is one already-public dev-only speaker",
+    "LibriSpeech uppercase unpunctuated references cannot establish punctuation/case/number-formatting parity",
+    "Noise/pause/cutoff are deterministic synthetic diagnostics, not real environmental noise or natural endpoint timing",
+    "Read audiobooks may overlap model training/evaluation; corpus metadata/card exposure is not model-independent real-world evidence",
+    "Only 20 heldout speaker clusters and 40 clips; strict noninferiority can remain inconclusive"
+  ],
+  "data_reproduction": {
+    "command": "From worktree root: uv run --python 3.14 --no-project /tmp/yuwp-english-parity/data/materialize.py",
+    "materializer_sha256": "4406c6611e4d7526386dfbe2f311944ca807c6f6892e05f297d20f9eaa109f11",
+    "archive_extract": "tar -xzf /tmp/yuwp-english-parity/data/source/test-clean.tar.gz -C /tmp/yuwp-english-parity/data/source/extracted",
+    "no_model_execution": true
+  },
+  "metadata_downloads": {
+    "PolyAI-minds14.README.md": "3dd23ca4c7834f66ca043847996dbd7c9ca34c846749d86431a9fa19898f4f88",
+    "Qwen3-ASR-1.7B-bf16-config.json": "62fe9a2ba2de536820229e126fdfb35f9910b9a337dc46d3737c3b1ac0a9caa9",
+    "Qwen3-ASR-1.7B-bf16.README.md": "e8dbd283372fe894c095d08ec505c5bff21803db116622b7eb642a349879a18b",
+    "Qwen3-ASR-1.7B-bf16.metadata.json": "b75146f11384f7543e0c642f768895c377f0364a624e1b3a9fe406aea512b6cb",
+    "google-fleurs.README.md": "688f79f2a5c731af3796e9f683eb02f9b3f09d040decd8c5625d0f37098e71c6",
+    "nemotron-speech-streaming-en-0.6b-coreml-config.json": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "nemotron-speech-streaming-en-0.6b-coreml-nemotron_coreml_560ms_metadata.json": "e8d93e5afa1e5c87257f6e31a5c336058eeba7d6cacd36ba80fbf9758c3916dc",
+    "nemotron-speech-streaming-en-0.6b-coreml.README.md": "9d9d997e953780619073cdf31aef0d5c2e95ef609145127b6fc59950ad58286d",
+    "nemotron-speech-streaming-en-0.6b-coreml.metadata.json": "c2488a81598a34729646837e7c06724e6da1da7debcbf1f5eb425455dc5d080c",
+    "parakeet-tdt-0.6b-v2-coreml-Encoder.mlmodelc_metadata.json": "58222fbc48c13c49d9715567803cd50cb9c23e4360462e0f8ffcea59a2c73c63",
+    "parakeet-tdt-0.6b-v2-coreml-config.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "parakeet-tdt-0.6b-v2-coreml.README.md": "491eac9a160dc7b0f7ce1210dea4fff6df0222124e93ea83ae2cd72827b4ce02",
+    "parakeet-tdt-0.6b-v2-coreml.metadata.json": "212f8a9bad1ba3dadcfa3e542ee60d2bc34a14347ee7cc40f9005f397eec7b03"
+  }
+}

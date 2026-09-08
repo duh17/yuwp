@@ -51,6 +51,44 @@ Plot load benchmark JSON:
 uv run benchmarks/cli.py plot /tmp/yuwp-load.json --out-dir /tmp/yuwp-load-plots
 ```
 
+## Dev-only English diagnostics
+
+`english-parity` is **NON-ACCEPTANCE**: one Qwen/N1/P1 pass, at most 81
+trials, no heldout inference or retries. Read
+[the dev-only scope lock](fixtures/english-parity/dev-only-addendum.md) and
+[the protocol](fixtures/english-parity/protocol.md) before execution.
+
+Supply a JSON object with exactly `Qwen`, `Nemotron`, and `Parakeet` keys.
+Each value is the complete executable-and-arguments array for its approved
+isolated stdio process; no shell expansion or default model command is used.
+
+```bash
+# Plan only: does not spawn a process or read audio payloads.
+uv run benchmarks/cli.py asr english-parity \
+  --commands /tmp/english-commands.json --output /tmp/english-dev.jsonl
+
+# Only after owner/reviewer sign-off for diagnostic-only work under recorded load:
+uv run benchmarks/cli.py asr english-parity \
+  --commands /tmp/english-commands.json --output /tmp/english-dev.jsonl \
+  --execute --load-status diagnostic-under-load
+```
+
+The caller must record approved assets/binaries/settings and control machine
+clearance, competing benchmarks, and continuous telemetry. The runner records
+load snapshots, not load control; `no_load_control: true` remains explicit.
+It uses fresh processes, an unscored first-dev-short warm-up, a clean measured
+session, packet-end deadlines, and a four-hour total budget (`--max-seconds`
+can shorten it). Output is a new JSONL file with raw framed events, failures,
+transcripts, descriptive paired WER/C/S/D/I and latency summaries. Stderr goes
+to adjacent per-trial files. Missing metrics stay null; no confidence or
+promotion claim is made. Final-pass runtime is unavailable in common ASRIPC.
+
+For approved fake-peer transport checks, add `--case-limit 1 --max-seconds 10
+--load-status uncontrolled --execute`; any case limit labels the run as
+transport smoke, never a completed dev pass. The default load status blocks
+execution. Exit 1 means failed/missing trials; exit 2 means blocked execution
+or invalid arguments. No model smoke is authorized by this documentation.
+
 ## Layout
 
 ```text

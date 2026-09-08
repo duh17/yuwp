@@ -1,0 +1,92 @@
+{
+  "label": "NON-ACCEPTANCE",
+  "created_unix": 1788832679.7411578,
+  "source": "45cfcbcb8089f02aa3c2cb4c2a2709c32e57c022",
+  "commands": {
+    "Qwen": [
+      "/usr/bin/env",
+      "YUWP_ASR_SAVE_RECORDINGS=0",
+      "/Users/chenda/.config/oppi/worktrees/ZiMTM_cT/wt_feat-english-asr-parity-1pKFzkB2/.build/arm64-apple-macosx/release/yuwp-asr",
+      "serve",
+      "--model",
+      "/Users/chenda/.cache/huggingface/hub/models--mlx-community--Qwen3-ASR-1.7B-bf16/snapshots/e1f6c266914abc5a46e8756e02580f834a6cf8a7",
+      "--batch-model",
+      "/Users/chenda/.cache/huggingface/hub/models--mlx-community--Qwen3-ASR-1.7B-bf16/snapshots/e1f6c266914abc5a46e8756e02580f834a6cf8a7",
+      "--transport",
+      "stdio"
+    ],
+    "Nemotron": [
+      "/tmp/yuwp-english-parity/adapter/.build/arm64-apple-macosx/release/fluid-parity-adapter",
+      "--candidate",
+      "n1",
+      "--model-dir",
+      "/tmp/yuwp-english-parity/models/nemotron-speech-streaming-en-0.6b-coreml/nemotron_coreml_560ms"
+    ],
+    "Parakeet": [
+      "/tmp/yuwp-english-parity/adapter/.build/arm64-apple-macosx/release/fluid-parity-adapter",
+      "--candidate",
+      "p1",
+      "--model-dir",
+      "/tmp/yuwp-english-parity/models/parakeet-tdt-0.6b-v2-coreml"
+    ]
+  },
+  "hashes": {
+    "/Users/chenda/.config/oppi/worktrees/ZiMTM_cT/wt_feat-english-asr-parity-1pKFzkB2/Package.resolved": "0378ea76f7eb766941c1cf2a6a52a41caab9f8a6d2a737e92b68925830a41af4",
+    "/Users/chenda/.config/oppi/worktrees/ZiMTM_cT/wt_feat-english-asr-parity-1pKFzkB2/.build/arm64-apple-macosx/release/yuwp-asr": "b4ea2d713d8b7babe24da740b8ab9db73cf9c40af9c66592ad22fd6e5b133bd1",
+    "/Users/chenda/.config/oppi/worktrees/ZiMTM_cT/wt_feat-english-asr-parity-1pKFzkB2/.build/arm64-apple-macosx/release/mlx.metallib": "67412110099272b343e14ccec0b42ad495f54ce33f56d4a999e7dbe36f6134ef",
+    "/Users/chenda/.config/oppi/worktrees/ZiMTM_cT/wt_feat-english-asr-parity-1pKFzkB2/benchmarks/lib/english_parity.py": "18ad8ec3409bee1e2ef07018b1ee7a919fd1cf08c45bd95b0200f7d0e0567ca5",
+    "/Users/chenda/.config/oppi/worktrees/ZiMTM_cT/wt_feat-english-asr-parity-1pKFzkB2/benchmarks/lib/test_english_parity.py": "29b15e7ea141b451ae263af8e5f9b1b038764e7779b77a7524e8addfdb892539",
+    "/Users/chenda/.config/oppi/worktrees/ZiMTM_cT/wt_feat-english-asr-parity-1pKFzkB2/benchmarks/fixtures/english-parity/protocol.md": "24f86b164c34e7de0b10c3d6b41a60d39022255e569b062545a82e2b004c98bf",
+    "/Users/chenda/.config/oppi/worktrees/ZiMTM_cT/wt_feat-english-asr-parity-1pKFzkB2/benchmarks/fixtures/english-parity/dev-only-addendum.md": "c758831f71b3053ca45055755a2853412c3b2f7c8f16e53d8817ec0d366a8eaa",
+    "/tmp/yuwp-english-parity/adapter/.build/arm64-apple-macosx/release/fluid-parity-adapter": "ee21934dedf0418c778a6ab95e841823ab7a132bce95442be4b0f6e611c5f434",
+    "/tmp/yuwp-english-parity/adapter/source-inventory.sha256": "b23435e090bca5973904492ef5bf8876e0483c96f19c1fca4a1685471860575d",
+    "/tmp/yuwp-english-parity/model-assets.jsonl": "0cdf086a9c757062542678f7c46ea6581272fe7d016120719ba0de283df184dc",
+    "/tmp/yuwp-english-parity/qwen-model-assets.json": "4bd70a66b69538dde87c4f5adcc9796481960fa38d3c7f044f557613f446f9c2",
+    "/tmp/yuwp-english-parity/commands.json": "08e8b18692d0dc3b59c59c4e50337f10f94109d34426bfb51b851850fe713808"
+  },
+  "system": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A5416b\n",
+  "swift": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)\nTarget: arm64-apple-macosx28.0\n",
+  "hardware": "hw.model: Mac15,14\nhw.memsize: 549755813888\nhw.ncpu: 32\nmachdep.cpu.brand_string: Apple M3 Ultra\n",
+  "qwen_http_readiness": {
+    "command": [
+      "/Users/chenda/.config/oppi/worktrees/ZiMTM_cT/wt_feat-english-asr-parity-1pKFzkB2/.build/arm64-apple-macosx/release/yuwp-asr",
+      "serve",
+      "--model",
+      "/Users/chenda/.cache/huggingface/hub/models--mlx-community--Qwen3-ASR-1.7B-bf16/snapshots/e1f6c266914abc5a46e8756e02580f834a6cf8a7",
+      "--batch-model",
+      "/Users/chenda/.cache/huggingface/hub/models--mlx-community--Qwen3-ASR-1.7B-bf16/snapshots/e1f6c266914abc5a46e8756e02580f834a6cf8a7",
+      "--transport",
+      "http",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "50646"
+    ],
+    "purpose": "isolated readiness only, no audio inference",
+    "start": 1788831795.426004,
+    "pid": 83248,
+    "info": {
+      "vad": true,
+      "status": "ready",
+      "aligner": false,
+      "sample_rate": 16000,
+      "batch_vad": true,
+      "final_accuracy_pass_enabled": true,
+      "model": "e1f6c266914abc5a46e8756e02580f834a6cf8a7",
+      "chunk_sec": 1.75,
+      "internal_diagnostics": false,
+      "batch_chunking_requested": "automatic",
+      "model_id": "qwen3-asr-1.7b",
+      "batch_chunking_resolution": "duration-dependent",
+      "batch_chunking": "automatic",
+      "batch_chunking_vad_available": true
+    },
+    "result": "ready",
+    "exit": 0,
+    "end": 1788831797.4481611
+  },
+  "metal": "source-matched primary cache copied with explicit parent authority; not newly compiled; sources match mlx3b11207 and script hash591d42890ef3702198977a5aff602183",
+  "candidate_readiness": "not run before source approval",
+  "approval": "pending exact-source reviewer0d729ef7",
+  "heldout": "no inference authorized; no heldout outputs"
+}

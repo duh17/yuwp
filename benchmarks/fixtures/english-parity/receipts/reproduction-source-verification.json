@@ -1,0 +1,15 @@
+{
+  "python_syntax_files": 5,
+  "adapter_copy_exact": {
+    "benchmarks/fixtures/english-parity/reproduction/adapter/validate.sh": "e4b5ef25e8d00487034a3226fc7360fdbd1955f53865e38410a1e15ce8ba7d70",
+    "benchmarks/fixtures/english-parity/reproduction/adapter/Package.swift": "7e5e65b9bdd650fb92470227946cf550b836b129a3d57c02b00afd13d752f877",
+    "benchmarks/fixtures/english-parity/reproduction/adapter/Sources/ASRIPC/Protocol.swift": "5b17446695fdf18b3523977d87c062c0935132defbdf27e7f4dc40cbc0ea785c",
+    "benchmarks/fixtures/english-parity/reproduction/adapter/Sources/FluidAdapter/Backend.swift": "fd27f7f3be9e5de6b4a9f4b7fda44bb5cae6295c10d34c46e10073a7b3b167f5",
+    "benchmarks/fixtures/english-parity/reproduction/adapter/Sources/FluidAdapter/Main.swift": "873f9df6a655d97fa74f1df5942b344265e21fb1dda815e3c390a61e58e0142b",
+    "benchmarks/fixtures/english-parity/reproduction/adapter/Sources/AdapterCore/Core.swift": "a9f01e74859da10ea121c85ff6e542e89fe183b0f9a78f64898fc111a657b3f8",
+    "benchmarks/fixtures/english-parity/reproduction/adapter/Tests/AdapterCoreTests/AdapterTests.swift": "9f4630c4ade743f732ff972be75b458c79c8b3c129109e5bc466ca07d9c8987e"
+  },
+  "materializer_sha256": "4406c6611e4d7526386dfbe2f311944ca807c6f6892e05f297d20f9eaa109f11",
+  "patch_matches_repaired_sources": true,
+  "no_materialization_or_inference_run": true
+}

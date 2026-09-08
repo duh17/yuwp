@@ -1,0 +1,14 @@
+{
+  "status": "blocked-load-control",
+  "samples": 244,
+  "duration_s": 244.09254341712222,
+  "first_wall_time": 1788832610.658481,
+  "last_wall_time": 1788832853.739258,
+  "idle_min": 0.05238744884038199,
+  "idle_max": 0.777120315581854,
+  "load1_min": 25.81396484375,
+  "load1_max": 46.8046875,
+  "qualifying_samples": 0,
+  "acceleration_clearance": false,
+  "reason": "CPU/load thresholds violated; external workload exclusion and accelerator activity unverified. Diagnostic-only fallback authorized. No attempt to stop others."
+}
