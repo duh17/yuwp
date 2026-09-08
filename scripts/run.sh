@@ -48,13 +48,32 @@ fi
 echo "[yuwp] Internal diagnostics env: $YUWP_INTERNAL_DIAGNOSTICS"
 bash scripts/build.sh "$CONFIGURATION"
 
-# Kill old app binary if it is already running so we don't leave a stale copy alive.
-pkill -f "$APP/Contents/MacOS/Yuwp" >/dev/null 2>&1 || true
+# Remember a live TTS sidecar so we can replace it after the new binary is installed.
+TTS_RESTART_CMD=""
+TTS_PIDS=$(lsof -tiTCP:7937 -sTCP:LISTEN || true)
+if [ -n "$TTS_PIDS" ]; then
+    TTS_PID=$(echo "$TTS_PIDS" | awk 'NR==1 { print; exit }')
+    TTS_CMD=$(ps -o command= -p "$TTS_PID" 2>/dev/null || true)
+    case "$TTS_CMD" in
+        *yuwp-tts*) TTS_RESTART_CMD=$TTS_CMD ;;
+    esac
+fi
 
-# Clear any stale ASR server still holding the default HTTP port from an old dev run.
-OLD_SERVER_PIDS=$(lsof -tiTCP:7936 -sTCP:LISTEN || true)
-if [ -n "$OLD_SERVER_PIDS" ]; then
-    kill $OLD_SERVER_PIDS >/dev/null 2>&1 || true
+# Stop the previous app and helpers so a restart cannot leave stale HTTP servers.
+pkill -f "$APP/Contents/MacOS/Yuwp" >/dev/null 2>&1 || true
+pkill -f "$APP/Contents/MacOS/yuwp-asr" >/dev/null 2>&1 || true
+pkill -f "$APP/Contents/MacOS/yuwp-tts" >/dev/null 2>&1 || true
+for port in 7936 7937; do
+    OLD_SERVER_PIDS=$(lsof -tiTCP:$port -sTCP:LISTEN || true)
+    if [ -n "$OLD_SERVER_PIDS" ]; then
+        kill $OLD_SERVER_PIDS >/dev/null 2>&1 || true
+    fi
+done
+
+# Rebuild replaces .build/release/yuwp-asr; bounce the LaunchAgent onto the new binary.
+if launchctl print "gui/$(id -u)/com.yuwp.asr" >/dev/null 2>&1; then
+    echo "[yuwp] Restarting LaunchAgent com.yuwp.asr"
+    launchctl kickstart -k "gui/$(id -u)/com.yuwp.asr" >/dev/null 2>&1 || true
 fi
 sleep 1
 
@@ -191,4 +210,11 @@ if [ "$CAPTURE_RUN_LOG" = "1" ]; then
 else
     echo "Launching Yuwp.app..."
     open "$APP"
+fi
+
+if [ -n "$TTS_RESTART_CMD" ]; then
+    echo "[yuwp] Relaunching yuwp-tts sidecar on :7937"
+    # Command was captured from ps of the previous listener.
+    nohup $TTS_RESTART_CMD >>/tmp/yuwp-tts.log 2>&1 &
+    disown || true
 fi
