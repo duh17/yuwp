@@ -4,25 +4,7 @@ Instructions for AI coding agents working on this codebase.
 
 ## Architecture
 
-```
-┌───────────────────────────────────────────┐
-│            Yuwp.app (macOS)               │
-│  Hotkey → AudioCapture → NativeASRProvider│
-│                      ↕ stdio / HTTP :7936 │
-│               TextInjector (AX API)       │
-└───────────────────────┬───────────────────┘
-                        │
-           ┌────────────▼────────────┐
-           │  yuwp-asr serve         │
-           │  ┌──────────────────┐   │
-           │  │ StreamingSession │   │
-           │  │ (encoder cache,  │   │
-           │  │  KV reuse,       │   │
-           │  │  prefix rollback)│   │
-           │  └──────────────────┘   │
-           │   stdio / HTTP :7936    │
-           └─────────────────────────┘
-```
+Dictation flows from hotkey → AudioCapture → NativeASRProvider → `yuwp-asr serve` → text injection. StreamingSession owns encoder caching, KV reuse, and prefix rollback.
 
 The native `yuwp-asr serve` process loads the MLX model once and serves either
 stdio IPC (default) or HTTP.
@@ -112,14 +94,9 @@ Override host/port with `--host` / `--port` flags.
 - CGEvent tap callback uses `nonisolated(unsafe)` static state
 - MLX is NOT thread-safe — all inference MUST go through inferenceLock
 
-## Complexity Guardrails
+## Design
 
-Yuwp is still intentionally small, even after the native ASR split. Resist adding new top-level app files unless a file exceeds ~400 lines or the boundary is clearly reusable.
-Check the component table above before adding new files.
-
-```bash
-rg 'class |struct |enum |protocol ' Sources/*.swift
-```
+Keep the app small. Split files around coherent responsibilities, not line-count thresholds.
 
 ## Gotchas
 
@@ -137,16 +114,8 @@ rg 'class |struct |enum |protocol ' Sources/*.swift
 - **yuwp-asr must be built before running Yuwp** — the app launches `yuwp-asr serve`
   from the app bundle or `.build/arm64-apple-macosx/release/yuwp-asr`.
 
-## Style
+## Validation
 
-- Conventional commits: `feat:`, `fix:`, `chore:`, `docs:`
-- Technical prose, direct
-- Subject line under 72 chars
+Choose proof for the changed behavior: build and focused Swift tests for code, `/v1/info` readiness and ASR integration tests for server changes, or hotkey → record → transcribe → inject for dictation changes. Do not require every lane for unrelated edits; report checks not run.
 
-## Definition of Done
-
-1. `swift build` succeeds with no warnings
-2. `swift test` passes
-3. `yuwp-asr serve --transport http` starts and responds to `/v1/info` with `"status": "ready"`
-4. Integration tests pass: `swift test --filter "ASR Server"`
-5. Tested: hotkey → record → transcribe → inject text (manual, end-to-end)
+See `README.md` for setup, CLI/server usage, development, and benchmarks.
