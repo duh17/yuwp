@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "scope": "heldout-confirmation",
+  "dataset": "Earnings-21",
+  "heldout_manifest": "benchmarks/data/long-subtitle/earnings21/asr-heldout.jsonl",
+  "heldout_calls": ["4363614", "4386541"],
+  "heldout_consumed_once": true,
+  "technical_invalidity": false,
+  "frozen": {
+    "git_revision": "ad35a0649c89e20221b9709285d00ce08a4f4fcd",
+    "git_dirty": true,
+    "release_binary_sha256": "8dad352712c819a43692a9e65117d0ad1933f660df45ac432f80760b4f650283",
+    "mlx_metallib_sha256": "67412110099272b343e14ccec0b42ad495f54ce33f56d4a999e7dbe36f6134ef",
+    "asr_model": "mlx-community--Qwen3-ASR-0.6B-bf16",
+    "asr_config_sha256": "dae1fbfa8b858aceefe5afcc7ecc9184e4a6045bc4a1bca8a41834724f490874",
+    "aligner_model": "mlx-community--Qwen3-ForcedAligner-0.6B-8bit",
+    "aligner_config_sha256": "8dc126e1a4ac001acb02f3a9ca6277c8a20a25485fde293bc99eeab3aedc604d",
+    "production_source_manifest_sha256": "22df9303a7ce209d34f06df969914c6921b2e6779d170d08cd9fcc28aecf8bf2",
+    "scoring_setup_manifest_sha256": "3807257248590569327a7a28ff66f9f6ad5e4584b3cb35806a2da64194cf0451",
+    "pinned_benchmark_plan_sha256": "c9933c3cc5a0d552ce8def188a14e0bdbf897b121365d89ec1b322a11bc0e81b",
+    "heldout_manifest_sha256": "7f19ff14b32b3e7ed03f5a1ba055b7a70169322afb198568f9ea24f77b4cbd5e",
+    "heldout_subtitle_manifest_sha256": "db95ffaa44d6892c27b0172014ecbeecb780ebd55a769201050aac74acc9868b",
+    "scoring": "spoken-v1 + hirschberg-min-edit-v1",
+    "automatic_threshold_seconds": 120.0,
+    "automatic_policy": "<=120s VAD when available; >120s energy",
+    "explicit_vad_fallback": "energy"
+  },
+  "execution": {
+    "warmup": {
+      "audio": "dev:4346818",
+      "discarded": true,
+      "heldout_free": true
+    },
+    "baseline_vad": {
+      "port": 49971,
+      "server_command": ".build/arm64-apple-macosx/release/yuwp-asr serve --model \"mlx-community--Qwen3-ASR-0.6B-bf16\" --aligner-model \"mlx-community--Qwen3-ForcedAligner-0.6B-8bit\" --batch-chunking vad --transport http --host 127.0.0.1 --port 49971 --warmup",
+      "warmup_command": "curl -fsS -X POST http://127.0.0.1:49971/v1/audio/transcriptions -F file=@benchmarks/data/long-subtitle/earnings21/audio/4346818.mp3 -F response_format=json -o /dev/null",
+      "subtitle_command": "uv run benchmarks/lib/subtitles.py --manifest benchmarks/data/long-subtitle/earnings21/heldout-confirmation/subtitles-manifest.json --base-url http://127.0.0.1:49971 --out-dir benchmarks/data/long-subtitle/earnings21/heldout-confirmation/vad",
+      "resolved_mode": "vad",
+      "server_failures": 0
+    },
+    "candidate_automatic": {
+      "port": 49972,
+      "server_command": ".build/arm64-apple-macosx/release/yuwp-asr serve --model \"mlx-community--Qwen3-ASR-0.6B-bf16\" --aligner-model \"mlx-community--Qwen3-ForcedAligner-0.6B-8bit\" --batch-chunking automatic --transport http --host 127.0.0.1 --port 49972 --warmup",
+      "warmup_command": "curl -fsS -X POST http://127.0.0.1:49972/v1/audio/transcriptions -F file=@benchmarks/data/long-subtitle/earnings21/audio/4346818.mp3 -F response_format=json -o /dev/null",
+      "subtitle_command": "uv run benchmarks/lib/subtitles.py --manifest benchmarks/data/long-subtitle/earnings21/heldout-confirmation/subtitles-manifest.json --base-url http://127.0.0.1:49972 --out-dir benchmarks/data/long-subtitle/earnings21/heldout-confirmation/automatic",
+      "resolved_mode": "energy",
+      "resolved_mode_basis": "both decoded heldout durations exceed 120 seconds",
+      "server_failures": 0
+    }
+  },
+  "wer": {
+    "baseline_vad": {
+      "correct": 14097,
+      "substitutions": 1232,
+      "deletions": 973,
+      "insertions": 836,
+      "errors": 3041,
+      "reference_units": 16302,
+      "wer": 0.1865415286,
+      "decoded_duration_seconds": 6684.3260625,
+      "wall_seconds": 170.3426662,
+      "decoded_duration_rtf": 0.0254838954,
+      "cases": {
+        "4363614": {"correct": 11544, "substitutions": 1100, "deletions": 885, "insertions": 772, "errors": 2757, "reference_units": 13529, "wer": 0.2037844630, "decoded_duration_seconds": 5587.2260625, "wall_seconds": 139.5814575, "decoded_duration_rtf": 0.0249822463},
+        "4386541": {"correct": 2553, "substitutions": 132, "deletions": 88, "insertions": 64, "errors": 284, "reference_units": 2773, "wer": 0.1024161558, "decoded_duration_seconds": 1097.1, "wall_seconds": 30.7612088, "decoded_duration_rtf": 0.0280386554}
+      }
+    },
+    "candidate_automatic": {
+      "correct": 14442,
+      "substitutions": 1009,
+      "deletions": 851,
+      "insertions": 748,
+      "errors": 2608,
+      "reference_units": 16302,
+      "wer": 0.1599803705,
+      "decoded_duration_seconds": 6684.3260625,
+      "wall_seconds": 134.7081699,
+      "decoded_duration_rtf": 0.0201528424,
+      "cases": {
+        "4363614": {"correct": 11853, "substitutions": 908, "deletions": 768, "insertions": 708, "errors": 2384, "reference_units": 13529, "wer": 0.1762140587, "decoded_duration_seconds": 5587.2260625, "wall_seconds": 110.9062801, "decoded_duration_rtf": 0.0198499719},
+        "4386541": {"correct": 2589, "substitutions": 101, "deletions": 83, "insertions": 40, "errors": 224, "reference_units": 2773, "wer": 0.0807789398, "decoded_duration_seconds": 1097.1, "wall_seconds": 23.8018897, "decoded_duration_rtf": 0.0216952782}
+      }
+    }
+  },
+  "subtitle_structure": {
+    "diagnostic_only": true,
+    "duration_source": "server-reported decoded duration",
+    "cases": {
+      "4363614": {
+        "baseline_vad": {"entries": 2606, "gap_count": 72, "overlap_count": 3, "non_monotonic_count": 15, "invalid_range_count": 0, "empty_text_count": 0, "characters_per_line_violation_count": 553, "line_count_violation_count": 0, "reading_speed_violation_count": 1751, "min_duration_violation_count": 703, "max_duration_violation_count": 0, "min_gap_violation_count": 762, "single_word_cue_count": 317},
+        "candidate_automatic": {"entries": 2480, "gap_count": 62, "overlap_count": 0, "non_monotonic_count": 0, "invalid_range_count": 0, "empty_text_count": 0, "characters_per_line_violation_count": 607, "line_count_violation_count": 0, "reading_speed_violation_count": 1553, "min_duration_violation_count": 593, "max_duration_violation_count": 2, "min_gap_violation_count": 806, "single_word_cue_count": 308}
+      },
+      "4386541": {
+        "baseline_vad": {"entries": 452, "gap_count": 12, "overlap_count": 0, "non_monotonic_count": 0, "invalid_range_count": 0, "empty_text_count": 0, "characters_per_line_violation_count": 181, "line_count_violation_count": 0, "reading_speed_violation_count": 315, "min_duration_violation_count": 83, "max_duration_violation_count": 0, "min_gap_violation_count": 203, "single_word_cue_count": 38},
+        "candidate_automatic": {"entries": 452, "gap_count": 9, "overlap_count": 0, "non_monotonic_count": 0, "invalid_range_count": 0, "empty_text_count": 0, "characters_per_line_violation_count": 178, "line_count_violation_count": 0, "reading_speed_violation_count": 302, "min_duration_violation_count": 81, "max_duration_violation_count": 0, "min_gap_violation_count": 199, "single_word_cue_count": 44}
+      }
+    }
+  },
+  "acceptance": {
+    "candidate_lower_aggregate_wer": true,
+    "relative_wer_reduction": 0.1423873726,
+    "relative_reduction_requirement": 0.10,
+    "candidate_minus_baseline_wer_points": {"4363614": -2.7570404, "4386541": -2.1637216},
+    "max_allowed_regression_absolute_wer_points": 1.0,
+    "no_invalid_empty_outputs_or_server_failures": true,
+    "verdict": "accepted"
+  },
+  "discipline": {
+    "one_request_per_heldout_case_per_mode": true,
+    "retries": 0,
+    "references_read_only_after_hypotheses_existed_by_scorer": true,
+    "manual_transcript_or_error_inspection": false,
+    "audio_transcripts_hypotheses_in_tracked_artifact": false,
+    "port_7936_used": false
+  }
+}
