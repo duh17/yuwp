@@ -22,6 +22,13 @@ struct StreamingAudioAccumulator: Sendable {
         storage.append(contentsOf: samples)
     }
 
+    /// A preview must never move the canonical inference boundary.
+    func peekPrefix(_ requestedCount: Int) -> [Float]? {
+        precondition(requestedCount > 0)
+        guard count >= requestedCount else { return nil }
+        return Array(storage[readIndex..<(readIndex + requestedCount)])
+    }
+
     mutating func takePrefix(_ requestedCount: Int) -> [Float]? {
         precondition(requestedCount > 0)
         guard count >= requestedCount else { return nil }

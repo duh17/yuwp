@@ -704,7 +704,7 @@ public final class StreamingSession: @unchecked Sendable {
         var curLogits = logits
 
         for _ in 0 ..< maxTokens {
-            // Queue next forward while waiting for current sample
+            // Prepare the next graph while the current sample finishes.
             let tokId = y.asType(.int32).expandedDimensions(axis: 0).expandedDimensions(axis: 0)
             let tokEmbed = transcriber.model.model.embedTokens(tokId)
             (curLogits, _) = transcriber.model(
@@ -713,14 +713,14 @@ public final class StreamingSession: @unchecked Sendable {
             let nextY = sampleWithPenalty(
                 logits: curLogits, recent: Array(tokens.suffix(repWindow)), penalty: repPenalty
             )
-            asyncEval(nextY)
-
-            // Now read current token (blocks until y is ready)
             let token = y.item(Int.self)
             if eos.contains(token) { break }
             tokens.append(token)
-            if tokens.count >= 4 && Set(tokens.suffix(4)).count == 1 { break }
+            if tokens.count >= maxTokens
+                || (tokens.count >= 4 && Set(tokens.suffix(4)).count == 1) { break }
 
+            // Do not submit a speculative forward that cannot be consumed.
+            asyncEval(nextY)
             y = nextY
         }
         return tokens

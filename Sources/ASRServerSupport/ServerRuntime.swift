@@ -145,15 +145,18 @@ private final class ManagedStreamingSession: @unchecked Sendable {
     let session: StreamingSession
     let gate = SessionOperationGate()
     var pendingAudio = StreamingAudioAccumulator()
+    var preview = FirstPartialPreview()
     var lastActivity: Date
     var recordingData: Data?
     let recordingStartedAt: Date
     let language: String?
+    let contextualStrings: [String]
 
     init(
         session: StreamingSession,
         startedAt: Date,
         language: String?,
+        contextualStrings: [String],
         recordsAudio: Bool
     ) {
         self.session = session
@@ -161,6 +164,7 @@ private final class ManagedStreamingSession: @unchecked Sendable {
         self.recordingData = recordsAudio ? Data() : nil
         self.recordingStartedAt = startedAt
         self.language = language
+        self.contextualStrings = contextualStrings
     }
 }
 
@@ -226,6 +230,7 @@ final class StreamingSessionManager: @unchecked Sendable {
             session: session,
             startedAt: startedAt,
             language: language,
+            contextualStrings: contextualStrings,
             recordsAudio: recordingConfiguration.enabled
         )
         stateLock.lock()
@@ -261,6 +266,7 @@ final class StreamingSessionManager: @unchecked Sendable {
 
                 let speechHint = analyzeSpeechActivity(chunk, vad: vad)
                 let result = session.processChunk(chunk, speechHint: speechHint)
+                managedSession.preview.canonicalChunkProcessed(text: result.text)
                 if result.batchCorrected { batchCorrected = true }
                 processedChunksSinceCacheTrim += 1
                 if processedChunksSinceCacheTrim >= cacheTrimChunkInterval {
@@ -284,13 +290,53 @@ final class StreamingSessionManager: @unchecked Sendable {
 #endif
             }
 
+            attemptPreview(managedSession, sid: sid)
             return transcriptPayload(
                 session: session,
                 kind: batchCorrected ? "segment_commit" : "partial",
                 isFinal: false,
-                batchCorrected: batchCorrected
+                batchCorrected: batchCorrected,
+                preview: managedSession.preview
             )
         }
+    }
+
+    /// Called only while the session gate and inferenceLock are held. The
+    /// temporary decoder shares weights, never audio position or canonical KV.
+    private func attemptPreview(_ managedSession: ManagedStreamingSession, sid: String) {
+        guard let vad,
+              managedSession.preview.reserveInspection(
+                  pendingSamples: managedSession.pendingAudio.count,
+                  canonicalChunkSamples: bootstrapChunkSamples
+              ),
+              let audio = managedSession.pendingAudio.peekPrefix(FirstPartialPreview.sampleCount),
+              let speechHint = analyzeSpeechActivity(audio, vad: vad),
+              managedSession.preview.reserveDecode(speechHint: speechHint)
+        else { return }
+
+        let previewSession = StreamingSession(
+            transcriber: transcriber,
+            batchTranscriber: batchTranscriber,
+            config: StreamConfig(
+                maxNewTokens: FirstPartialPreview.maxNewTokens,
+                batchRetranscribe: batchRetranscribeEnabled
+            ),
+            language: managedSession.language,
+            vocabularyHints: managedSession.contextualStrings
+        )
+        let result = previewSession.processChunk(audio, speechHint: speechHint)
+        managedSession.preview.accept(text: result.text)
+#if YUWP_INTERNAL_DIAGNOSTICS
+        log(
+            "PERF sid=\(sid) preview=1 samples=\(audio.count) "
+                + "speech_hint=1 speech_sec=\(speechHint.speechDurationSec) "
+                + "encode_ms=\(Int(result.encodeMs.rounded())) "
+                + "prefill_ms=\(Int(result.prefillMs.rounded())) "
+                + "decode_ms=\(Int(result.decodeMs.rounded())) "
+                + "total_ms=\(Int(result.totalMs.rounded())) "
+                + "text_len=\(result.text.count)"
+        )
+#endif
     }
 
     func stop(_ sid: String) -> [String: Any]? {
@@ -360,16 +406,23 @@ final class StreamingSessionManager: @unchecked Sendable {
         session: StreamingSession,
         kind: String,
         isFinal: Bool,
-        batchCorrected: Bool
+        batchCorrected: Bool,
+        preview: FirstPartialPreview? = nil
     ) -> [String: Any] {
+        let canonicalText = session.finalText()
+        let canonicalActiveText = isFinal ? "" : session.activeSegmentText()
+        let visibleText = preview?.visibleText(canonicalText: canonicalText, isFinal: isFinal) ?? canonicalText
+        let showsPreview = !isFinal && canonicalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !visibleText.isEmpty
         var response: [String: Any] = [
-            "text": session.finalText(),
+            "text": visibleText,
             "committed_text": session.committedSegmentText(),
-            "active_text": isFinal ? "" : session.activeSegmentText(),
-            "update_kind": kind,
+            "active_text": isFinal ? "" : (preview?.visibleText(canonicalText: canonicalActiveText, isFinal: false) ?? canonicalActiveText),
+            "update_kind": showsPreview ? "partial" : kind,
             "is_final": isFinal,
         ]
-        if batchCorrected { response["batch_corrected"] = true }
+        if showsPreview { response["batch_corrected"] = false }
+        else if batchCorrected { response["batch_corrected"] = true }
         return response
     }
 

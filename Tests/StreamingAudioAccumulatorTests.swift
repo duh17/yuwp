@@ -27,6 +27,17 @@ struct StreamingAudioAccumulatorTests {
         #expect(accumulator.isEmpty)
     }
 
+    @Test func previewDoesNotConsumeOrChangeCanonicalChunkBoundaries() {
+        var accumulator = StreamingAudioAccumulator(compactionThreshold: 4)
+        accumulator.append(contentsOf: (0..<12).map(Float.init))
+        #expect(accumulator.peekPrefix(4) == [0, 1, 2, 3])
+        #expect(accumulator.count == 12)
+        #expect(accumulator.takePrefix(7) == (0..<7).map(Float.init))
+        #expect(accumulator.peekPrefix(3) == [7, 8, 9])
+        #expect(accumulator.peekPrefix(6) == nil)
+        #expect(accumulator.drain() == [7, 8, 9, 10, 11])
+    }
+
     @Test func emitsExactBoundaryWithoutLeavingATail() {
         var accumulator = StreamingAudioAccumulator()
         accumulator.append(contentsOf: [1, 2, 3, 4])
