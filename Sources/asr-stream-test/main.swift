@@ -174,7 +174,7 @@ private func printUsage() {
           --model <spec>          Model directory or repo id (overrides positional model-dir)
           --chunk-sec <sec>       Chunk duration in seconds (default: 2.25)
           --warmup                Warm up Metal shaders before streaming
-          --speech-trace          Include independent 32ms VAD/RMS frame annotations
+          --speech-trace          Include independent 36ms VAD/RMS frame annotations
           --no-batch              Skip batch baseline comparison
           --no-batch-retranscribe Disable the streaming segment batch-correction pass
           --full-session-retranscribe Opt into full-session batch on stop
