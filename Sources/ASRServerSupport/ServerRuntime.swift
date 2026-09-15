@@ -271,6 +271,8 @@ final class StreamingSessionManager: @unchecked Sendable {
                 log(
                     "PERF sid=\(sid) chunk=\(session.processedChunkCount) "
                         + "samples=\(chunk.count) "
+                        + "speech_hint=\(speechHint.map { $0.hasSpeech ? 1 : 0 } ?? -1) "
+                        + "speech_sec=\(speechHint?.speechDurationSec ?? -1) "
                         + "encode_ms=\(Int(result.encodeMs.rounded())) "
                         + "prefill_ms=\(Int(result.prefillMs.rounded())) "
                         + "decode_ms=\(Int(result.decodeMs.rounded())) "

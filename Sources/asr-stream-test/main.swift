@@ -110,7 +110,15 @@ private struct AccuracyMetrics: Codable {
     let streamCharCount: Int
 }
 
+private struct SpeechFrame: Codable {
+    let startSec: Double
+    let endSec: Double
+    let rms: Double
+    let probability: Float
+}
+
 private struct EvalReport: Codable {
+    let speechFrames: [SpeechFrame]?
     let config: ToolConfig
     let streaming: StreamingReport
     let batch: BatchReport?
@@ -136,6 +144,7 @@ private struct ParsedArgs {
     let emitJSON: Bool
     let compactJSON: Bool
     let jsonOutputPath: String?
+    let speechTrace: Bool
 }
 
 private enum EditOp: UInt8 {
@@ -165,6 +174,7 @@ private func printUsage() {
           --model <spec>          Model directory or repo id (overrides positional model-dir)
           --chunk-sec <sec>       Chunk duration in seconds (default: 2.25)
           --warmup                Warm up Metal shaders before streaming
+          --speech-trace          Include independent 32ms VAD/RMS frame annotations
           --no-batch              Skip batch baseline comparison
           --no-batch-retranscribe Disable the streaming segment batch-correction pass
           --full-session-retranscribe Opt into full-session batch on stop
@@ -203,6 +213,7 @@ private func parseArgs() -> ParsedArgs {
     var emitJSON = false
     var compactJSON = false
     var jsonOutputPath: String?
+    var speechTrace = false
 
     while !args.isEmpty {
         let arg = args.removeFirst()
@@ -221,6 +232,8 @@ private func parseArgs() -> ParsedArgs {
             chunkSec = value
         case "--warmup":
             warmup = true
+        case "--speech-trace":
+            speechTrace = true
         case "--no-batch":
             doBatch = false
         case "--no-batch-retranscribe":
@@ -271,7 +284,8 @@ private func parseArgs() -> ParsedArgs {
         finalizationPass: finalizationPass,
         emitJSON: emitJSON,
         compactJSON: compactJSON,
-        jsonOutputPath: jsonOutputPath
+        jsonOutputPath: jsonOutputPath,
+        speechTrace: speechTrace
     )
 }
 
@@ -504,6 +518,33 @@ private func analyzeSpeechActivity(_ audio: [Float], vad: SileroVAD?) -> SpeechA
     return SpeechActivity(hasSpeech: speechFrames > 0, speechDurationSec: speechDurationSec)
 }
 
+// This annotation pass is independent of inference chunk boundaries. The replay
+// harness freezes it at baseline so a candidate cannot improve its clock by
+// changing what counts as speech. Do not use chunk-start as speech onset.
+private func speechFrames(_ audio: [Float], vad: SileroVAD?) throws -> [SpeechFrame] {
+    guard let vad else {
+        throw NSError(domain: "stream-test", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "--speech-trace requires Silero VAD"
+        ])
+    }
+    vad.reset()
+    defer { vad.reset() }
+    var frames: [SpeechFrame] = []
+    for start in stride(from: 0, to: audio.count, by: SileroVAD.chunkSize) {
+        let end = min(start + SileroVAD.chunkSize, audio.count)
+        var frame = Array(audio[start..<end])
+        let rms = computeRMS(frame)
+        frame.append(contentsOf: repeatElement(0, count: SileroVAD.chunkSize - frame.count))
+        frames.append(SpeechFrame(
+            startSec: Double(start) / Double(ASRAudio.sampleRate),
+            endSec: Double(end) / Double(ASRAudio.sampleRate),
+            rms: rms,
+            probability: try vad.process(frame)
+        ))
+    }
+    return frames
+}
+
 private func writeJSON<T: Encodable>(_ value: T, to path: String, compact: Bool) throws {
     let encoder = JSONEncoder()
     if compact {
@@ -541,6 +582,7 @@ private func runMain() throws {
     }
 
     let audio = try loadAudioFile(wavURL)
+    let annotations = parsed.speechTrace ? try speechFrames(audio, vad: vad) : nil
     let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
     let audioDurationText = fmt(audioDuration, "%.2f")
     fputs("[stream-test] Audio: \(audioDurationText)s, \(audio.count) samples\n", stderr)
@@ -838,6 +880,7 @@ private func runMain() throws {
     )
 
     let report = EvalReport(
+        speechFrames: annotations,
         config: ToolConfig(
             wavFile: wavURL.path,
             modelDir: modelURL.path,
