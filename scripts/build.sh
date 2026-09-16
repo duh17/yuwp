@@ -15,14 +15,21 @@ else
     echo "[yuwp] Internal diagnostics: OFF"
 fi
 
+# Swift 6.4 SwiftPM defaults to Swift Build, which compiles mlx-swift Metal
+# sources and fails unless the standalone Metal toolchain is installed.
+# Native keeps .build/arm64-apple-macosx and the separate mlx.metallib script.
+swift_build() {
+    swift build --build-system native "$@"
+}
+
 if [ ${#SWIFT_FLAGS[@]} -gt 0 ]; then
-    swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product Yuwp
-    swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product yuwp-asr
-    swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product yuwp-tts
+    swift_build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product Yuwp
+    swift_build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product yuwp-asr
+    swift_build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product yuwp-tts
 else
-    swift build -c "$CONFIGURATION" --product Yuwp
-    swift build -c "$CONFIGURATION" --product yuwp-asr
-    swift build -c "$CONFIGURATION" --product yuwp-tts
+    swift_build -c "$CONFIGURATION" --product Yuwp
+    swift_build -c "$CONFIGURATION" --product yuwp-asr
+    swift_build -c "$CONFIGURATION" --product yuwp-tts
 fi
 bash scripts/build_mlx_metallib.sh "$CONFIGURATION"
 

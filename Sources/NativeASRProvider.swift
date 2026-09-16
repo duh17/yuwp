@@ -302,7 +302,7 @@ private actor NativeASRServerLifecycle {
         }
 
         guard let serverBin = NativeASRProvider.findServerBinary() else {
-            yuwpLog("yuwp-asr binary not found — run: swift build -c release --product yuwp-asr")
+            yuwpLog("yuwp-asr binary not found — run: swift build --build-system native -c release --product yuwp-asr")
             process = nil
             return .error("yuwp-asr not found")
         }

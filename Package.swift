@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.4
 import PackageDescription
 
 let package = Package(
@@ -25,7 +25,7 @@ let package = Package(
                 "ASRIPC",
             ],
             path: "Sources",
-            exclude: ["NativeASR", "NativeTTS", "YuwpHTTPServerSupport", "ASRServerSupport", "ASRIPC", "asr-test", "tts-test", "yuwp-tts", "asr-bench", "asr-stream-test", "yuwp-asr", "align-test", "asr-stitch-debug"]
+            exclude: ["NativeASR", "NativeTTS", "YuwpHTTPServerSupport", "ASRServerSupport", "ASRIPC", "asr-test", "tts-test", "yuwp-tts", "asr-bench", "asr-stream-test", "yuwp-asr", "align-test", "asr-stitch-debug", "qwen-asr-metal"]
         ),
         .target(
             name: "YuwpHTTPServerSupport",

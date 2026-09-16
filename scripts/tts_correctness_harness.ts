@@ -131,14 +131,14 @@ function main() {
 function ensureBuildArtifacts() {
 	if (!existsSync(ttsBin)) {
 		const args = buildConfiguration === "release"
-			? ["build", "-c", "release", "--product", "yuwp-tts"]
-			: ["build", "--product", "yuwp-tts"];
+			? ["build", "--build-system", "native", "-c", "release", "--product", "yuwp-tts"]
+			: ["build", "--build-system", "native", "--product", "yuwp-tts"];
 		run("swift", args, { label: "build yuwp-tts" });
 	}
 	if (!existsSync(asrBin)) {
 		const args = (process.env.ASR_BUILD_CONFIGURATION || "debug") === "release"
-			? ["build", "-c", "release", "--product", "yuwp-asr"]
-			: ["build", "--product", "yuwp-asr"];
+			? ["build", "--build-system", "native", "-c", "release", "--product", "yuwp-asr"]
+			: ["build", "--build-system", "native", "--product", "yuwp-asr"];
 		run("swift", args, { label: "build yuwp-asr" });
 	}
 	const metallib = buildConfiguration === "release"

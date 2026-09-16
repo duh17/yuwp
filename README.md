@@ -11,6 +11,7 @@ Yuwp is local dictation for macOS. Press a hotkey, speak, and Yuwp inserts the t
 
 - macOS 14+
 - Apple Silicon
+- Swift 6.4 / Xcode 27+
 
 ## Install
 
@@ -47,8 +48,8 @@ scripts/run.sh
 Build CLIs:
 
 ```bash
-swift build -c release --product yuwp-asr
-swift build -c release --product yuwp-tts
+swift build --build-system native -c release --product yuwp-asr
+swift build --build-system native -c release --product yuwp-tts
 bash scripts/build_mlx_metallib.sh release
 ```
 
@@ -108,13 +109,13 @@ TTS exposes `POST /v1/audio/speech` for full WAV responses and `POST /v1/audio/s
 ## Development
 
 ```bash
-swift build
-swift test
+swift build --build-system native
+swift test --build-system native
 scripts/build.sh
 scripts/run.sh
 ```
 
-Fresh clone note: `swift test` works on a clean clone. `scripts/build.sh` / `scripts/run.sh` require the Metal toolchain to produce `mlx.metallib`.
+Swift 6.4's SwiftPM defaults to Swift Build, which tries to compile mlx-swift Metal sources and fails unless the standalone Metal toolchain is installed. Pass `--build-system native`. Fresh clone note: `swift test --build-system native` works on a clean clone. `scripts/build.sh` / `scripts/run.sh` still need the Metal toolchain to produce `mlx.metallib`.
 
 ## Benchmarks
 

@@ -63,7 +63,7 @@ private func runServe(arguments: [String]) -> Int32 {
 private func runCompanion(commandName: String, command: CompanionCommand, arguments: [String]) -> Int32 {
     guard let binary = findCompanionBinary(named: command.binaryName) else {
         fputs(
-            "Error: could not find \(command.binaryName). Build it with `swift build --product \(command.binaryName)`.\n",
+            "Error: could not find \(command.binaryName). Build it with `swift build --build-system native --product \(command.binaryName)`.\n",
             stderr
         )
         return 1

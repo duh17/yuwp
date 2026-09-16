@@ -45,7 +45,7 @@ Build it first if the repo-local binary is missing:
 
 ```bash
 cd ~/workspace/yuwp
-swift build -c release --product yuwp-asr
+swift build --build-system native -c release --product yuwp-asr
 bash scripts/build_mlx_metallib.sh release
 ```
 

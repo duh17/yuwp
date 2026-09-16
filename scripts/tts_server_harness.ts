@@ -77,8 +77,8 @@ if (failures.length) {
 }
 
 function ensureArtifacts() {
-  if (!existsSync(ttsBin)) run("swift", ["build", "-c", "release", "--product", "yuwp-tts"], "build yuwp-tts");
-  if (!existsSync(asrBin)) run("swift", ["build", "--product", "yuwp-asr"], "build yuwp-asr");
+  if (!existsSync(ttsBin)) run("swift", ["build", "--build-system", "native", "-c", "release", "--product", "yuwp-tts"], "build yuwp-tts");
+  if (!existsSync(asrBin)) run("swift", ["build", "--build-system", "native", "--product", "yuwp-asr"], "build yuwp-asr");
 }
 
 function transcribe(audio: string): string {

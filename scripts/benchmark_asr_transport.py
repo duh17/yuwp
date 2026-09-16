@@ -264,7 +264,7 @@ def resolve_server_binary(explicit: str | None) -> pathlib.Path:
     for candidate in candidates:
         if candidate.exists():
             return candidate.resolve()
-    raise BenchError("Could not find yuwp-asr binary. Build it first with `swift build --product yuwp-asr`.")
+    raise BenchError("Could not find yuwp-asr binary. Build it first with `swift build --build-system native --product yuwp-asr`.")
 
 
 def load_wav_pcm16(path: pathlib.Path) -> tuple[bytes, int, float]:

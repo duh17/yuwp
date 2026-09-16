@@ -16,11 +16,12 @@ External clients can use the same HTTP API when the server runs with
 
 ```bash
 # Build everything (app + ASR/TTS CLIs)
-swift build
-swift build -c release --product yuwp-asr
+# Swift 6.4 SwiftPM defaults to Swift Build; Yuwp must keep native until Metal works.
+swift build --build-system native
+swift build --build-system native -c release --product yuwp-asr
 bash scripts/build_mlx_metallib.sh release  # compile Metal shaders
 
-swift run Yuwp
+swift run --build-system native Yuwp
 ```
 
 Use `scripts/build.sh` to codesign with a stable identifier (preserves
@@ -91,9 +92,9 @@ Override host/port with `--host` / `--port` flags.
 ## Code Quality
 
 ### Swift
-- Swift 6 strict concurrency (swift-tools-version: 6.0)
+- Swift 6 strict concurrency (swift-tools-version: 6.4, Xcode 27 / Swift 6.4)
 - No SwiftUI — pure AppKit for minimal overhead
-- No Xcode project — Swift Package only (`swift build` / `swift run`)
+- No Xcode project — Swift Package only (`swift build --build-system native` / `swift run --build-system native`)
 - Target macOS 14+
 - No force unwraps in production code
 - All async work on dedicated actors or `Task.detached`
@@ -120,6 +121,10 @@ Keep the app small. Split files around coherent responsibilities, not line-count
   for swallowing Return during active dictation.
 - **yuwp-asr must be built before running Yuwp** — the app launches `yuwp-asr serve`
   from the app bundle or `.build/arm64-apple-macosx/release/yuwp-asr`.
+- **Swift 6.4 SwiftPM defaults to Swift Build**, which compiles mlx-swift `.metal`
+  sources and fails without `xcodebuild -downloadComponent MetalToolchain`.
+  Pass `--build-system native` (scripts/build.sh already does). Native is deprecated
+  but preserves Yuwp's binary layout and separate `mlx.metallib` pipeline.
 
 ## Validation
 
