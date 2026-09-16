@@ -192,6 +192,7 @@ public final class Qwen3ASRModel: Module {
 
         try model.update(parameters: ModuleParameters.unflattened(weights), verify: .noUnusedKeys)
         model.train(false)
+        eval(model)
         return model
     }
 }
