@@ -38,14 +38,14 @@ Fresh DMG install:
 Repo checkout:
 
 ```bash
-~/workspace/yuwp/.build/arm64-apple-macosx/release/yuwp-asr transcribe recording.m4a
+~/workspace/yuwp/.build/out/Products/Release/yuwp-asr transcribe recording.m4a
 ```
 
 Build it first if the repo-local binary is missing:
 
 ```bash
 cd ~/workspace/yuwp
-swift build --build-system native -c release --product yuwp-asr
+swift build -c release --product yuwp-asr
 bash scripts/build_mlx_metallib.sh release
 ```
 

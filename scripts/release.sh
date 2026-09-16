@@ -43,7 +43,6 @@ SPARKLE_PUBLIC_ED_KEY="${YUWP_SPARKLE_PUBLIC_ED_KEY:-$DEFAULT_SPARKLE_PUBLIC_ED_
 
 CONFIGURATION="release"
 export YUWP_INTERNAL_DIAGNOSTICS=0
-BIN_DIR=".build/arm64-apple-macosx/$CONFIGURATION"
 RELEASE_DIR="release"
 APP="$RELEASE_DIR/Yuwp.app"
 MACOS_DIR="$APP/Contents/MacOS"
@@ -70,6 +69,7 @@ fi
 # ── Build ──────────────────────────────────────────────────────────────
 echo "=== Building Yuwp $VERSION ==="
 bash scripts/build.sh "$CONFIGURATION"
+BIN_DIR=$(swift build --show-bin-path -c "$CONFIGURATION")
 
 # ── Assemble Bundle ────────────────────────────────────────────────────
 echo "=== Assembling app bundle ==="

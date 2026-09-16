@@ -23,7 +23,6 @@ MACOS_DIR="$APP/Contents/MacOS"
 RES_DIR="$APP/Contents/Resources"
 FRAMEWORKS_DIR="$APP/Contents/Frameworks"
 OPEN_SOURCE_DIR="$RES_DIR/OpenSource"
-BIN_DIR=".build/arm64-apple-macosx/$CONFIGURATION"
 VENDORED_LICENSES_DIR="third_party/licenses"
 CAPTURE_RUN_LOG="${YUWP_CAPTURE_RUN_LOG:-0}"
 LOGFILE="${YUWP_LOG_FILE:-/tmp/yuwp.log}"
@@ -47,6 +46,7 @@ fi
 
 echo "[yuwp] Internal diagnostics env: $YUWP_INTERNAL_DIAGNOSTICS"
 bash scripts/build.sh "$CONFIGURATION"
+BIN_DIR=$(swift build --show-bin-path -c "$CONFIGURATION")
 
 # Remember a live TTS sidecar so we can replace it after the new binary is installed.
 TTS_RESTART_CMD=""

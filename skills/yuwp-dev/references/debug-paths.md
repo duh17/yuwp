@@ -85,11 +85,11 @@ All local server traffic uses `127.0.0.1:9748` by default.
 
 | What | Path |
 |------|------|
-| Release binary dir | `~/workspace/yuwp/.build/arm64-apple-macosx/release/` |
-| Debug binary dir | `~/workspace/yuwp/.build/arm64-apple-macosx/debug/` |
-| Release app binary | `~/workspace/yuwp/.build/arm64-apple-macosx/release/Yuwp` |
-| Release server binary | `~/workspace/yuwp/.build/arm64-apple-macosx/release/asr-server` |
-| Release Metal lib | `~/workspace/yuwp/.build/arm64-apple-macosx/release/mlx.metallib` |
+| Release binary dir | `~/workspace/yuwp/.build/out/Products/Release/` |
+| Debug binary dir | `~/workspace/yuwp/.build/out/Products/Debug/` |
+| Release app binary | `~/workspace/yuwp/.build/out/Products/Release/Yuwp` |
+| Release server binary | `~/workspace/yuwp/.build/out/Products/Release/yuwp-asr` |
+| Release Metal lib | `~/workspace/yuwp/.build/out/Products/Release/mlx.metallib` |
 
 ## Useful Commands
 

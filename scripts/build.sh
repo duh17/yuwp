@@ -16,22 +16,26 @@ else
 fi
 
 # Swift 6.4 SwiftPM defaults to Swift Build, which compiles mlx-swift Metal
-# sources and fails unless the standalone Metal toolchain is installed.
-# Native keeps .build/arm64-apple-macosx and the separate mlx.metallib script.
-swift_build() {
-    swift build --build-system native "$@"
-}
-
+# into mlx-swift_Cmlx.bundle. Requires: xcodebuild -downloadComponent MetalToolchain
 if [ ${#SWIFT_FLAGS[@]} -gt 0 ]; then
-    swift_build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product Yuwp
-    swift_build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product yuwp-asr
-    swift_build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product yuwp-tts
+    swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product Yuwp
+    swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product yuwp-asr
+    swift build -c "$CONFIGURATION" "${SWIFT_FLAGS[@]}" --product yuwp-tts
 else
-    swift_build -c "$CONFIGURATION" --product Yuwp
-    swift_build -c "$CONFIGURATION" --product yuwp-asr
-    swift_build -c "$CONFIGURATION" --product yuwp-tts
+    swift build -c "$CONFIGURATION" --product Yuwp
+    swift build -c "$CONFIGURATION" --product yuwp-asr
+    swift build -c "$CONFIGURATION" --product yuwp-tts
 fi
-bash scripts/build_mlx_metallib.sh "$CONFIGURATION"
+
+BIN_DIR=$(swift build --show-bin-path -c "$CONFIGURATION")
+SWIFTPM_METALLIB="$BIN_DIR/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
+if [ -f "$SWIFTPM_METALLIB" ]; then
+    cp -f "$SWIFTPM_METALLIB" "$BIN_DIR/mlx.metallib"
+    echo "[yuwp] Installed mlx.metallib from SwiftPM Cmlx bundle"
+else
+    echo "[yuwp] SwiftPM Cmlx metallib missing; compiling kernels"
+    YUWP_BIN_DIR="$BIN_DIR" bash scripts/build_mlx_metallib.sh "$CONFIGURATION"
+fi
 
 echo "[yuwp] Built Yuwp + yuwp-asr + yuwp-tts ($CONFIGURATION)"
-echo "[yuwp] Binaries: .build/arm64-apple-macosx/$CONFIGURATION/{Yuwp,yuwp-asr,yuwp-tts,mlx.metallib}"
+echo "[yuwp] Binaries: $BIN_DIR/{Yuwp,yuwp-asr,yuwp-tts,mlx.metallib}"

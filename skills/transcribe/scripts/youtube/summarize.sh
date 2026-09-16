@@ -71,6 +71,10 @@ resolve_yuwp_asr() {
         echo "/Applications/Yuwp.app/Contents/MacOS/yuwp-asr"
         return 0
     fi
+    if [ -x "$HOME/workspace/yuwp/.build/out/Products/Release/yuwp-asr" ]; then
+        echo "$HOME/workspace/yuwp/.build/out/Products/Release/yuwp-asr"
+        return 0
+    fi
     if [ -x "$HOME/workspace/yuwp/.build/arm64-apple-macosx/release/yuwp-asr" ]; then
         echo "$HOME/workspace/yuwp/.build/arm64-apple-macosx/release/yuwp-asr"
         return 0

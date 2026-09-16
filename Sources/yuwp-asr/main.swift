@@ -36,17 +36,17 @@ private func printUsage() {
 private func findCompanionBinary(named binaryName: String) -> String? {
     let executableURL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
     let executableDir = executableURL.deletingLastPathComponent()
+    let repositoryRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
     let candidates = [
         executableDir.appendingPathComponent(binaryName).path,
         Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/\(binaryName)").path,
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent(".build/arm64-apple-macosx/release/\(binaryName)").path,
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent(".build/arm64-apple-macosx/debug/\(binaryName)").path,
+        repositoryRoot.appendingPathComponent(".build/out/Products/Release/\(binaryName)").path,
+        repositoryRoot.appendingPathComponent(".build/out/Products/Debug/\(binaryName)").path,
+        repositoryRoot.appendingPathComponent(".build/arm64-apple-macosx/release/\(binaryName)").path,
+        repositoryRoot.appendingPathComponent(".build/arm64-apple-macosx/debug/\(binaryName)").path,
     ]
     return candidates.first { FileManager.default.fileExists(atPath: $0) }
 }
@@ -63,7 +63,7 @@ private func runServe(arguments: [String]) -> Int32 {
 private func runCompanion(commandName: String, command: CompanionCommand, arguments: [String]) -> Int32 {
     guard let binary = findCompanionBinary(named: command.binaryName) else {
         fputs(
-            "Error: could not find \(command.binaryName). Build it with `swift build --build-system native --product \(command.binaryName)`.\n",
+            "Error: could not find \(command.binaryName). Build it with `swift build --product \(command.binaryName)`.\n",
             stderr
         )
         return 1

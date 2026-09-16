@@ -40,7 +40,7 @@ for round in $(seq 1 "$ROUNDS"); do
     AUDIO_STRESS_SETTLE_MS="$AUDIO_STRESS_SETTLE_MS" \
     AUDIO_STRESS_START_TIMEOUT_MS="$AUDIO_STRESS_START_TIMEOUT_MS" \
     AUDIO_STRESS_STOP_TIMEOUT_MS="$AUDIO_STRESS_STOP_TIMEOUT_MS" \
-    swift test --build-system native --filter AudioCaptureStressTests
+    swift test --filter AudioCaptureStressTests
 
 done
 

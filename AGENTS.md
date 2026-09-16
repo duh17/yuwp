@@ -16,12 +16,13 @@ External clients can use the same HTTP API when the server runs with
 
 ```bash
 # Build everything (app + ASR/TTS CLIs)
-# Swift 6.4 SwiftPM defaults to Swift Build; Yuwp must keep native until Metal works.
-swift build --build-system native
-swift build --build-system native -c release --product yuwp-asr
-bash scripts/build_mlx_metallib.sh release  # compile Metal shaders
+# Swift 6.4 SwiftPM uses Swift Build; install Metal first on a fresh machine:
+#   xcodebuild -downloadComponent MetalToolchain
+swift build
+swift build -c release --product yuwp-asr
+scripts/build.sh release
 
-swift run --build-system native Yuwp
+swift run Yuwp
 ```
 
 Use `scripts/build.sh` to codesign with a stable identifier (preserves
@@ -44,7 +45,7 @@ appcast URL or public key with `YUWP_SPARKLE_FEED_URL` or
 ### Standalone ASR server (no GUI)
 
 ```bash
-.build/arm64-apple-macosx/release/yuwp-asr serve --model <model-dir> --transport http [--port 7936] [--host 127.0.0.1]
+.build/out/Products/Release/yuwp-asr serve --model <model-dir> --transport http [--port 7936] [--host 127.0.0.1]
 ```
 
 ## Key Components
@@ -94,7 +95,7 @@ Override host/port with `--host` / `--port` flags.
 ### Swift
 - Swift 6 strict concurrency (swift-tools-version: 6.4, Xcode 27 / Swift 6.4)
 - No SwiftUI — pure AppKit for minimal overhead
-- No Xcode project — Swift Package only (`swift build --build-system native` / `swift run --build-system native`)
+- No Xcode project — Swift Package only (`swift build` / `swift run`)
 - Target macOS 14+
 - No force unwraps in production code
 - All async work on dedicated actors or `Task.detached`
@@ -120,11 +121,10 @@ Keep the app small. Split files around coherent responsibilities, not line-count
 - **Global dictation shortcut** uses Carbon hotkeys now. The CGEvent tap is only
   for swallowing Return during active dictation.
 - **yuwp-asr must be built before running Yuwp** — the app launches `yuwp-asr serve`
-  from the app bundle or `.build/arm64-apple-macosx/release/yuwp-asr`.
-- **Swift 6.4 SwiftPM defaults to Swift Build**, which compiles mlx-swift `.metal`
-  sources and fails without `xcodebuild -downloadComponent MetalToolchain`.
-  Pass `--build-system native` (scripts/build.sh already does). Native is deprecated
-  but preserves Yuwp's binary layout and separate `mlx.metallib` pipeline.
+  from the app bundle or `.build/out/Products/Release/yuwp-asr`.
+- **Swift 6.4 SwiftPM uses Swift Build.** It compiles mlx-swift Metal into
+  `mlx-swift_Cmlx.bundle` and puts binaries in `.build/out/Products/{Debug,Release}`.
+  Fresh machines need `xcodebuild -downloadComponent MetalToolchain`.
 
 ## Validation
 

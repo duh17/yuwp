@@ -141,9 +141,12 @@ function scoreTranscript(transcript: string, expected: string[]) {
 }
 
 function binaryPath(product: string, configuration: string): string {
-  const candidates = configuration === "release"
-    ? [join(repo, ".build", "arm64-apple-macosx", "release", product), join(repo, ".build", "release", product)]
-    : [join(repo, ".build", "debug", product), join(repo, ".build", "arm64-apple-macosx", "debug", product)];
+  const swiftBuild = configuration === "release" ? "Release" : "Debug";
+  const candidates = [
+    join(repo, ".build", "out", "Products", swiftBuild, product),
+    join(repo, ".build", "arm64-apple-macosx", configuration, product),
+    join(repo, ".build", configuration, product),
+  ];
   return candidates.find((candidate) => existsSync(candidate)) || candidates[0];
 }
 function mean(values: number[]) { return values.reduce((a, b) => a + b, 0) / Math.max(values.length, 1); }

@@ -48,9 +48,8 @@ scripts/run.sh
 Build CLIs:
 
 ```bash
-swift build --build-system native -c release --product yuwp-asr
-swift build --build-system native -c release --product yuwp-tts
-bash scripts/build_mlx_metallib.sh release
+swift build -c release --product yuwp-asr
+swift build -c release --product yuwp-tts
 ```
 
 Fresh app-bundle / DMG installs also include:
@@ -63,7 +62,7 @@ Fresh app-bundle / DMG installs also include:
 Transcribe a file:
 
 ```bash
-.build/arm64-apple-macosx/release/yuwp-asr transcribe Tests/fixtures/jfk.wav
+.build/out/Products/Release/yuwp-asr transcribe Tests/fixtures/jfk.wav
 # or from an installed app bundle / DMG
 /Applications/Yuwp.app/Contents/MacOS/yuwp-asr transcribe Tests/fixtures/jfk.wav
 ```
@@ -71,7 +70,7 @@ Transcribe a file:
 Run standalone ASR HTTP server (default transport is stdio, so pass `--transport http`):
 
 ```bash
-.build/arm64-apple-macosx/release/yuwp-asr serve --model <asr-model-dir> --transport http --host 127.0.0.1 --port 7936
+.build/out/Products/Release/yuwp-asr serve --model <asr-model-dir> --transport http --host 127.0.0.1 --port 7936
 curl -sf http://127.0.0.1:7936/v1/info | jq .
 ```
 
@@ -92,14 +91,14 @@ its duration-dependent/fallback resolution, and batch-VAD availability separatel
 Run standalone TTS HTTP server:
 
 ```bash
-.build/arm64-apple-macosx/release/yuwp-tts serve --transport http --model <qwen3-tts-model-dir> --host 127.0.0.1 --port 7937
+.build/out/Products/Release/yuwp-tts serve --transport http --model <qwen3-tts-model-dir> --host 127.0.0.1 --port 7937
 curl -sf http://127.0.0.1:7937/v1/info | jq .
 ```
 
 Generate speech directly from the CLI:
 
 ```bash
-.build/arm64-apple-macosx/release/yuwp-tts --model <qwen3-tts-model-dir> --text "Hello from Yuwp" --out /tmp/hello.wav
+.build/out/Products/Release/yuwp-tts --model <qwen3-tts-model-dir> --text "Hello from Yuwp" --out /tmp/hello.wav
 # or from an installed app bundle / DMG
 /Applications/Yuwp.app/Contents/MacOS/yuwp-tts --model <qwen3-tts-model-dir> --text "Hello from Yuwp" --out /tmp/hello.wav
 ```
@@ -109,13 +108,13 @@ TTS exposes `POST /v1/audio/speech` for full WAV responses and `POST /v1/audio/s
 ## Development
 
 ```bash
-swift build --build-system native
-swift test --build-system native
+swift build
+swift test
 scripts/build.sh
 scripts/run.sh
 ```
 
-Swift 6.4's SwiftPM defaults to Swift Build, which tries to compile mlx-swift Metal sources and fails unless the standalone Metal toolchain is installed. Pass `--build-system native`. Fresh clone note: `swift test --build-system native` works on a clean clone. `scripts/build.sh` / `scripts/run.sh` still need the Metal toolchain to produce `mlx.metallib`.
+Swift 6.4 SwiftPM uses Swift Build. Binaries land in `.build/out/Products/{Debug,Release}`. Fresh machines need `xcodebuild -downloadComponent MetalToolchain` before `swift build` can compile mlx-swift Metal sources.
 
 ## Benchmarks
 

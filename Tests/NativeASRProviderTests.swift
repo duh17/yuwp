@@ -59,6 +59,22 @@ struct NativeASRProviderTests {
     }
 }
 
+@Suite("Yuwp build layout")
+struct YuwpBuildLayoutTests {
+    @Test func developmentASRBinarySearchIncludesSwiftBuildProducts() {
+        let root = URL(fileURLWithPath: "/tmp/yuwp-repo", isDirectory: true)
+        let paths = YuwpBuildLayout.developmentExecutableCandidates(
+            named: "yuwp-asr",
+            repositoryRoot: root
+        ).map(\.path)
+
+        #expect(paths.contains { $0.hasSuffix(".build/out/Products/Release/yuwp-asr") })
+        #expect(paths.contains { $0.hasSuffix(".build/out/Products/Debug/yuwp-asr") })
+        #expect(paths.contains { $0.hasSuffix(".build/arm64-apple-macosx/release/yuwp-asr") })
+        #expect(paths.contains { $0.hasSuffix(".build/arm64-apple-macosx/debug/yuwp-asr") })
+    }
+}
+
 @Suite("NativeASRProvider lifecycle")
 struct NativeASRProviderLifecycleTests {
     @Test func offModeTransitionsToDisabledSynchronously() async {

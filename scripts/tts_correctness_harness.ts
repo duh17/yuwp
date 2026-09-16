@@ -131,20 +131,20 @@ function main() {
 function ensureBuildArtifacts() {
 	if (!existsSync(ttsBin)) {
 		const args = buildConfiguration === "release"
-			? ["build", "--build-system", "native", "-c", "release", "--product", "yuwp-tts"]
-			: ["build", "--build-system", "native", "--product", "yuwp-tts"];
+			? ["build", "-c", "release", "--product", "yuwp-tts"]
+			: ["build", "--product", "yuwp-tts"];
 		run("swift", args, { label: "build yuwp-tts" });
 	}
 	if (!existsSync(asrBin)) {
 		const args = (process.env.ASR_BUILD_CONFIGURATION || "debug") === "release"
-			? ["build", "--build-system", "native", "-c", "release", "--product", "yuwp-asr"]
-			: ["build", "--build-system", "native", "--product", "yuwp-asr"];
+			? ["build", "-c", "release", "--product", "yuwp-asr"]
+			: ["build", "--product", "yuwp-asr"];
 		run("swift", args, { label: "build yuwp-asr" });
 	}
-	const metallib = buildConfiguration === "release"
-		? join(repo, ".build", "arm64-apple-macosx", "release", "mlx.metallib")
-		: join(repo, ".build", "debug", "mlx.metallib");
-	if (!existsSync(metallib)) {
+	const metallib = productDirs(buildConfiguration)
+		.map((dir) => join(dir, "mlx.metallib"))
+		.find((candidate) => existsSync(candidate));
+	if (!metallib) {
 		run("bash", ["scripts/build_mlx_metallib.sh", buildConfiguration === "release" ? "release" : "debug"], { label: "build mlx.metallib" });
 	}
 }
@@ -250,16 +250,17 @@ function metric(name: string, value: number) {
 	console.log(`METRIC ${name}=${Number.isFinite(value) ? value.toFixed(6) : value}`);
 }
 
+function productDirs(configuration: string): string[] {
+	const swiftBuild = configuration === "release" ? "Release" : "Debug";
+	return [
+		join(repo, ".build", "out", "Products", swiftBuild),
+		join(repo, ".build", "arm64-apple-macosx", configuration),
+		join(repo, ".build", configuration),
+	];
+}
+
 function binaryPath(product: string, configuration: string): string {
-	const candidates = configuration === "release"
-		? [
-			join(repo, ".build", "arm64-apple-macosx", "release", product),
-			join(repo, ".build", "release", product),
-		]
-		: [
-			join(repo, ".build", "debug", product),
-			join(repo, ".build", "arm64-apple-macosx", "debug", product),
-		];
+	const candidates = productDirs(configuration).map((dir) => join(dir, product));
 	return candidates.find((candidate) => existsSync(candidate)) || candidates[0];
 }
 

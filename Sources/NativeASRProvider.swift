@@ -302,7 +302,7 @@ private actor NativeASRServerLifecycle {
         }
 
         guard let serverBin = NativeASRProvider.findServerBinary() else {
-            yuwpLog("yuwp-asr binary not found — run: swift build --build-system native -c release --product yuwp-asr")
+            yuwpLog("yuwp-asr binary not found — run: swift build -c release --product yuwp-asr")
             process = nil
             return .error("yuwp-asr not found")
         }
@@ -698,19 +698,15 @@ final class NativeASRProvider: SttProvider {
 
     /// Find the yuwp-asr binary in expected locations.
     nonisolated static func findServerBinary() -> String? {
-        let candidates = [
-            // App bundle
-            Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/yuwp-asr").path,
-            // Development: build directory (release preferred)
-            URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent(".build/arm64-apple-macosx/release/yuwp-asr").path,
-            URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent(".build/arm64-apple-macosx/debug/yuwp-asr").path,
-        ]
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let candidates =
+            [Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/yuwp-asr").path]
+            + YuwpBuildLayout.developmentExecutableCandidates(
+                named: "yuwp-asr",
+                repositoryRoot: repositoryRoot
+            ).map(\.path)
         return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
 

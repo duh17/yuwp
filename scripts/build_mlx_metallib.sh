@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Build mlx.metallib from mlx-swift Metal kernel sources.
+# Fallback: build mlx.metallib from mlx-swift Metal kernel sources.
 #
-# swift build compiles Swift code but does NOT produce mlx.metallib.
-# Without it, MLX fails at runtime: "Failed to load the default metallib."
+# Swift Build already compiles default.metallib into mlx-swift_Cmlx.bundle.
+# scripts/build.sh copies that next to the binaries as mlx.metallib.
+# Use this script only when that bundle is missing.
 #
 # Usage: ./scripts/build_mlx_metallib.sh [release|debug]
 #
@@ -21,7 +22,7 @@ set -euo pipefail
 
 CONFIGURATION="${1:-release}"
 ALLOW_STALE_METALLIB="${YUWP_ALLOW_STALE_METALLIB:-0}"
-BUILD_DIR=".build/arm64-apple-macosx/${CONFIGURATION}"
+BUILD_DIR="${YUWP_BIN_DIR:-.build/arm64-apple-macosx/${CONFIGURATION}}"
 CHECKOUT_DIR=".build/checkouts/mlx-swift"
 METAL_SRC_DIR="${CHECKOUT_DIR}/Source/Cmlx/mlx/mlx/backend/metal/kernels"
 TARGET_METALLIB="${BUILD_DIR}/mlx.metallib"
