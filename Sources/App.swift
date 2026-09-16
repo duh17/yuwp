@@ -57,7 +57,7 @@ struct YuwpApp {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Infrastructure — live for the app's lifetime
-    private let updaterController = AppDelegate.makeUpdaterController()
+    private lazy var updaterController: SPUStandardUpdaterController? = makeUpdaterController()
     private let hotkeyManager = HotkeyManager()
     private let audioInputCatalog = SystemAudioInputCatalog()
     private let asrProvider: NativeASRProvider = {
@@ -93,6 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var audioInputMenuItem: NSMenuItem!
     private var audioInputSubmenu: NSMenu!
     private var saveRecordingsMenuItem: NSMenuItem!
+    private var updateMenuItem: NSMenuItem?
+    private var sparkleUpdateAvailable = false
     private var settingsWindowController: SettingsWindowController?
     private var permissionTimer: Timer?
     private var hotkeyRecordingActive = false
@@ -189,7 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private static func makeUpdaterController() -> SPUStandardUpdaterController? {
+    private func makeUpdaterController() -> SPUStandardUpdaterController? {
         let info = Bundle.main.infoDictionary ?? [:]
         let feedURL = (info["SUFeedURL"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let publicKey = (info["SUPublicEDKey"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -198,8 +200,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return nil
         }
         return SPUStandardUpdaterController(
-            startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil
+            startingUpdater: true, updaterDelegate: nil, userDriverDelegate: self
         )
+    }
+
+    private func setSparkleUpdateAvailable(_ available: Bool) {
+        sparkleUpdateAvailable = available
+        updateMenuItem?.title = available ? "Update Available..." : "Check for Updates..."
     }
 
     private func syncAppStateFromConfig() {
@@ -583,12 +590,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let updaterController {
             menu.addItem(.separator())
             let updateItem = makeMenuItem(
-                title: "Check for Updates...",
+                title: sparkleUpdateAvailable ? "Update Available..." : "Check for Updates...",
                 symbolName: "arrow.trianglehead.clockwise",
                 action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
                 keyEquivalent: "",
                 target: updaterController
             )
+            updateMenuItem = updateItem
             menu.addItem(updateItem)
         }
 
@@ -1367,6 +1375,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             yuwpLog("Failed to save recording: \(error)")
             return nil
+        }
+    }
+}
+
+extension AppDelegate: SPUStandardUserDriverDelegate {
+    nonisolated var supportsGentleScheduledUpdateReminders: Bool { true }
+
+    nonisolated func standardUserDriverShouldHandleShowingScheduledUpdate(
+        _ update: SUAppcastItem,
+        andInImmediateFocus immediateFocus: Bool
+    ) -> Bool {
+        immediateFocus
+    }
+
+    nonisolated func standardUserDriverWillHandleShowingUpdate(
+        _ handleShowingUpdate: Bool,
+        forUpdate update: SUAppcastItem,
+        state: SPUUserUpdateState
+    ) {
+        guard !handleShowingUpdate else { return }
+        Task { @MainActor in
+            self.setSparkleUpdateAvailable(true)
+        }
+    }
+
+    nonisolated func standardUserDriverDidReceiveUserAttention(forUpdate update: SUAppcastItem) {
+        Task { @MainActor in
+            self.setSparkleUpdateAvailable(false)
+        }
+    }
+
+    nonisolated func standardUserDriverWillFinishUpdateSession() {
+        Task { @MainActor in
+            self.setSparkleUpdateAvailable(false)
         }
     }
 }
