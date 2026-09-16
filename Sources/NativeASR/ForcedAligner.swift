@@ -93,11 +93,12 @@ public final class ForcedAlignerModel: Module {
         _lmHead.wrappedValue = Linear(config.textConfig.hiddenSize, config.classifyNum, bias: false)
     }
 
-    /// Forward pass: audio + text → timestamp class logits [1, seqLen, classifyNum].
+    /// Forward pass: audio + text → timestamp class logits at the requested positions.
     public func callAsFunction(
         inputIds: MLXArray,
         inputFeatures: MLXArray,
-        featureAttentionMask: MLXArray? = nil
+        featureAttentionMask: MLXArray? = nil,
+        logitPositions: [Int]
     ) -> MLXArray {
         // Encode audio
         let audioFeatures = audioTower(inputFeatures, featureAttentionMask: featureAttentionMask)
@@ -122,8 +123,11 @@ public final class ForcedAlignerModel: Module {
         // Decode (single pass, no KV cache reuse)
         let (hidden, _) = model(inputEmbeddings: embeds, cache: nil)
 
-        // Classify to timestamp classes
-        return lmHead(hidden)
+        // Alignment consumes logits only at <timestamp> markers. Projecting every
+        // audio and text position needlessly materializes a large seqLen × 5000 tensor.
+        let positionIndices = MLXArray(logitPositions.map(Int32.init))
+        let selectedHidden = hidden.squeezed(axis: 0)[positionIndices].expandedDimensions(axis: 0)
+        return lmHead(selectedHidden)
     }
 
     // MARK: - Weight Loading
@@ -176,7 +180,6 @@ public final class ForcedAlignerModel: Module {
 
         try model.update(parameters: ModuleParameters.unflattened(weights), verify: .noUnusedKeys)
         model.train(false)
-        eval(model)
         return model
     }
 }
@@ -481,25 +484,22 @@ public final class ForcedAligner: @unchecked Sendable {
             config: model.config
         )
         let inputIds = MLXArray(inputIdValues).expandedDimensions(axis: 0)
+        let tsId = Int32(model.config.timestampTokenId)
+        let tsPositions = inputIdValues.indices.filter { inputIdValues[$0] == tsId }
 
-        // Single forward pass
-        let logits = model(inputIds: inputIds, inputFeatures: inputFeatures, featureAttentionMask: attnMask)
+        // Single forward pass, projecting only the positions consumed below.
+        let logits = model(
+            inputIds: inputIds,
+            inputFeatures: inputFeatures,
+            featureAttentionMask: attnMask,
+            logitPositions: tsPositions
+        )
         let outputIds = MLX.argMax(logits, axis: -1).squeezed(axis: 0)
         eval(outputIds)
 
-        // Extract predicted timestamps at <timestamp> token positions
-        let tsId = Int32(model.config.timestampTokenId)
         let segTime = model.config.timestampSegmentTime
-
-        var tsPositions: [Int] = []
-        for (i, id) in inputIdValues.enumerated() {
-            if id == tsId { tsPositions.append(i) }
-        }
-
-        var rawTimestamps: [Int] = []
-        for pos in tsPositions {
-            let classIdx = outputIds[pos].item(Int.self)
-            rawTimestamps.append(Int(Float(classIdx) * segTime))
+        let rawTimestamps = outputIds.asArray(Int32.self).map {
+            Int(Float($0) * segTime)
         }
 
         // Fix non-monotonic predictions

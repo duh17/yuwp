@@ -29,6 +29,26 @@ public struct TranscriptionResult: Sendable {
 
 // MARK: - Transcriber
 
+private final class TokenizerLoadBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<Qwen3ASRTokenizer, Error>?
+
+    func store(_ result: Result<Qwen3ASRTokenizer, Error>) {
+        lock.lock()
+        self.result = result
+        lock.unlock()
+    }
+
+    func get() throws -> Qwen3ASRTokenizer {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let result else {
+            throw Qwen3ASRError.tokenizerLoadFailed("Tokenizer load did not complete")
+        }
+        return try result.get()
+    }
+}
+
 public final class Qwen3ASRTranscriber: @unchecked Sendable {
     public let model: Qwen3ASRModel
     public let tokenizer: Qwen3ASRTokenizer
@@ -59,8 +79,20 @@ public final class Qwen3ASRTranscriber: @unchecked Sendable {
         fputs("[NativeASR] Loading model from \(directory.path)...\n", stderr)
         let t0 = Date()
 
-        let model = try Qwen3ASRModel.load(from: directory)
-        let tokenizer = try Qwen3ASRTokenizer.load(from: directory)
+        // Tokenizer parsing is CPU-only and independent of MLX. Overlap it with
+        // safetensor/model setup while keeping all MLX work on this thread.
+        let tokenizerGroup = DispatchGroup()
+        let tokenizerBox = TokenizerLoadBox()
+        tokenizerGroup.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            tokenizerBox.store(Result { try Qwen3ASRTokenizer.load(from: directory) })
+            tokenizerGroup.leave()
+        }
+
+        let modelResult = Result { try Qwen3ASRModel.load(from: directory) }
+        tokenizerGroup.wait()
+        let model = try modelResult.get()
+        let tokenizer = try tokenizerBox.get()
 
         let elapsed = Date().timeIntervalSince(t0)
         fputs("[NativeASR] Model loaded in \(String(format: "%.1f", elapsed))s\n", stderr)

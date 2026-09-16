@@ -43,6 +43,16 @@ public final class Qwen3ASRTokenizer: @unchecked Sendable {
     private let tokenToId: [String: Int]
     private let bpeRanks: [BPEPair: Int]
 
+    private struct LoadCacheEntry {
+        let vocabData: Data
+        let mergesData: Data
+        let tokenizer: Qwen3ASRTokenizer
+    }
+
+    private static let loadCacheLock = NSLock()
+    nonisolated(unsafe) private static var loadCache: [LoadCacheEntry] = []
+    private static let loadCacheCapacity = 4
+
     // GPT-2 byte-to-unicode decoder: unicode char → original byte
     private static let bytesDecoder: [Character: UInt8] = buildBytesDecoder()
     private static let bytesEncoder: [UInt8: Character] = {
@@ -67,28 +77,57 @@ public final class Qwen3ASRTokenizer: @unchecked Sendable {
             throw Qwen3ASRError.tokenizerLoadFailed("vocab.json not found at \(vocabURL.path)")
         }
         let vocabData = try Data(contentsOf: vocabURL)
-        let vocab = try JSONDecoder().decode([String: Int].self, from: vocabData)
-        let idToToken = Dictionary(uniqueKeysWithValues: vocab.map { ($1, $0) })
 
         // Load merges.txt
         let mergesURL = directory.appendingPathComponent("merges.txt")
         guard FileManager.default.fileExists(atPath: mergesURL.path) else {
             throw Qwen3ASRError.tokenizerLoadFailed("merges.txt not found at \(mergesURL.path)")
         }
-        let mergesText = try String(contentsOf: mergesURL, encoding: .utf8)
-        var bpeRanks: [BPEPair: Int] = [:]
+        let mergesData = try Data(contentsOf: mergesURL)
+
+        loadCacheLock.lock()
+        if let cached = loadCache.first(where: {
+            $0.vocabData == vocabData && $0.mergesData == mergesData
+        }) {
+            loadCacheLock.unlock()
+            return cached.tokenizer
+        }
+        loadCacheLock.unlock()
+
+        let vocab = try JSONDecoder().decode([String: Int].self, from: vocabData)
+        let idToToken = Dictionary(uniqueKeysWithValues: vocab.map { ($1, $0) })
+        guard let mergesText = String(data: mergesData, encoding: .utf8) else {
+            throw Qwen3ASRError.tokenizerLoadFailed("merges.txt is not valid UTF-8 at \(mergesURL.path)")
+        }
+        var bpeRanks: [BPEPair: Int] = .init(minimumCapacity: mergesData.count / 10)
         var rank = 0
         for line in mergesText.split(separator: "\n") {
-            let trimmed = String(line).trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-            let parts = trimmed.split(separator: " ", maxSplits: 1)
+            let parts = line.split(separator: " ", maxSplits: 1)
+            if parts.first?.hasPrefix("#") == true { continue }
             if parts.count == 2 {
                 bpeRanks[BPEPair(String(parts[0]), String(parts[1]))] = rank
                 rank += 1
             }
         }
 
-        return Qwen3ASRTokenizer(idToToken: idToToken, tokenToId: vocab, bpeRanks: bpeRanks)
+        let tokenizer = Qwen3ASRTokenizer(idToToken: idToToken, tokenToId: vocab, bpeRanks: bpeRanks)
+        loadCacheLock.lock()
+        if let cached = loadCache.first(where: {
+            $0.vocabData == vocabData && $0.mergesData == mergesData
+        }) {
+            loadCacheLock.unlock()
+            return cached.tokenizer
+        }
+        if loadCache.count >= loadCacheCapacity {
+            loadCache.removeFirst()
+        }
+        loadCache.append(LoadCacheEntry(
+            vocabData: vocabData,
+            mergesData: mergesData,
+            tokenizer: tokenizer
+        ))
+        loadCacheLock.unlock()
+        return tokenizer
     }
 
     // MARK: - Prompt Building

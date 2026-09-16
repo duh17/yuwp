@@ -172,6 +172,26 @@ struct Qwen3ASRTokenizerTests {
         #expect(tokenizer.cleanOutput("<|im_start|>hello<|im_end|>") == "hello")
     }
 
+    @Test func loadReusesParsedTokenizerForIdenticalFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let firstDirectory = root.appendingPathComponent("first")
+        let secondDirectory = root.appendingPathComponent("second")
+        try FileManager.default.createDirectory(at: firstDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let vocabData = try JSONSerialization.data(withJSONObject: ["cache-fixture": 4242], options: [.sortedKeys])
+        let mergesData = Data("#version: 0.2\n".utf8)
+        for directory in [firstDirectory, secondDirectory] {
+            try vocabData.write(to: directory.appendingPathComponent("vocab.json"))
+            try mergesData.write(to: directory.appendingPathComponent("merges.txt"))
+        }
+
+        let first = try Qwen3ASRTokenizer.load(from: firstDirectory)
+        let second = try Qwen3ASRTokenizer.load(from: secondDirectory)
+        #expect(first === second)
+    }
+
     @Test func loadFailsWhenRequiredFilesAreMissing() {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
