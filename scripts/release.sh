@@ -6,7 +6,8 @@
 #
 # Required environment variables:
 #   YUWP_SIGN_IDENTITY  — Developer ID Application identity
-#   Notarization auth (choose one):
+#                         (optional; auto-detected like scripts/run.sh when unset)
+#   Notarization auth (choose one; checked just before notarize):
 #     - YUWP_NOTARY_PROFILE (preferred; keychain profile for notarytool)
 #     - YUWP_TEAM_ID + YUWP_APPLE_ID + YUWP_APP_PASSWORD
 #   YUWP_SPARKLE_FEED_URL   — optional Sparkle appcast URL override
@@ -24,17 +25,28 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "Error: version must use numeric SemVer form (for example, 0.1.3)"
     exit 1
 fi
-SIGN_IDENTITY="${YUWP_SIGN_IDENTITY:?Set YUWP_SIGN_IDENTITY}"
+SIGN_IDENTITY="${YUWP_SIGN_IDENTITY:-}"
+if [ -z "$SIGN_IDENTITY" ]; then
+    SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+        | awk -F '"' '/Developer ID Application:/ { print $2 }' \
+        | awk '!seen[$0]++' \
+        | head -n 1)
+    if [ -n "$SIGN_IDENTITY" ]; then
+        echo "[yuwp] Using auto-detected signing identity: $SIGN_IDENTITY"
+    else
+        echo "Error: Set YUWP_SIGN_IDENTITY, or install a Developer ID Application identity"
+        exit 1
+    fi
+elif [ "$SIGN_IDENTITY" = "-" ]; then
+    echo "Error: ad-hoc signing is not allowed for release builds"
+    exit 1
+else
+    echo "[yuwp] Using configured signing identity: $SIGN_IDENTITY"
+fi
 NOTARY_PROFILE="${YUWP_NOTARY_PROFILE:-}"
 TEAM_ID="${YUWP_TEAM_ID:-}"
 APPLE_ID="${YUWP_APPLE_ID:-}"
 APP_PASSWORD="${YUWP_APP_PASSWORD:-}"
-
-if [ -z "$NOTARY_PROFILE" ]; then
-    [ -n "$TEAM_ID" ] || { echo "Set YUWP_NOTARY_PROFILE, or set YUWP_TEAM_ID + YUWP_APPLE_ID + YUWP_APP_PASSWORD"; exit 1; }
-    [ -n "$APPLE_ID" ] || { echo "Set YUWP_NOTARY_PROFILE, or set YUWP_TEAM_ID + YUWP_APPLE_ID + YUWP_APP_PASSWORD"; exit 1; }
-    [ -n "$APP_PASSWORD" ] || { echo "Set YUWP_NOTARY_PROFILE, or set YUWP_TEAM_ID + YUWP_APPLE_ID + YUWP_APP_PASSWORD"; exit 1; }
-fi
 
 DEFAULT_SPARKLE_FEED_URL="https://github.com/duh17/yuwp/releases/latest/download/appcast.xml"
 DEFAULT_SPARKLE_PUBLIC_ED_KEY="wnLCIfY048anOcj7/J/Iv6Lp9Fmba4zQ0EjCL7k/M+E=" # gitleaks:allow public Sparkle key
@@ -53,23 +65,31 @@ DMG_STAGE="$RELEASE_DIR/dmg-root"
 DMG="$RELEASE_DIR/Yuwp-$VERSION.dmg"
 VENDORED_LICENSES_DIR="third_party/licenses"
 
-SPARKLE_FW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
-SPARKLE_TOOLS_DIR=".build/artifacts/sparkle/Sparkle/bin"
-SPARKLE_SIGN_UPDATE="$SPARKLE_TOOLS_DIR/sign_update"
-SPARKLE_GENERATE_KEYS="$SPARKLE_TOOLS_DIR/generate_keys"
+# ── Build ──────────────────────────────────────────────────────────────
+echo "=== Building Yuwp $VERSION ==="
+bash scripts/build.sh "$CONFIGURATION"
+BIN_DIR=$(swift build --show-bin-path -c "$CONFIGURATION")
+# shellcheck source=sparkle_paths.sh
+source "$(dirname "$0")/sparkle_paths.sh"
+yuwp_resolve_sparkle_paths "$BIN_DIR" "$(pwd)"
 
-[ -x "$SPARKLE_SIGN_UPDATE" ] || { echo "Error: missing Sparkle sign_update at $SPARKLE_SIGN_UPDATE"; exit 1; }
-[ -x "$SPARKLE_GENERATE_KEYS" ] || { echo "Error: missing Sparkle generate_keys at $SPARKLE_GENERATE_KEYS"; exit 1; }
+if [ -z "${SPARKLE_FW:-}" ]; then
+    echo "Error: Sparkle.framework not found next to $BIN_DIR or in .build/artifacts/sparkle."
+    echo "Run 'swift build --product Yuwp' first."
+    exit 1
+fi
+echo "[yuwp] Using Sparkle.framework from $SPARKLE_FW"
+
+[ -n "${SPARKLE_SIGN_UPDATE:-}" ] && [ -x "$SPARKLE_SIGN_UPDATE" ] \
+    || { echo "Error: missing Sparkle sign_update next to $BIN_DIR or in .build/artifacts/sparkle/Sparkle/bin"; exit 1; }
+[ -n "${SPARKLE_GENERATE_KEYS:-}" ] && [ -x "$SPARKLE_GENERATE_KEYS" ] \
+    || { echo "Error: missing Sparkle generate_keys next to $BIN_DIR or in .build/artifacts/sparkle/Sparkle/bin"; exit 1; }
+echo "[yuwp] Using sign_update from $SPARKLE_SIGN_UPDATE"
 KEYCHAIN_PUBLIC_ED_KEY=$("$SPARKLE_GENERATE_KEYS" -p)
 if [ "$KEYCHAIN_PUBLIC_ED_KEY" != "$SPARKLE_PUBLIC_ED_KEY" ]; then
     echo "Error: configured Sparkle public key does not match the private key in Keychain"
     exit 1
 fi
-
-# ── Build ──────────────────────────────────────────────────────────────
-echo "=== Building Yuwp $VERSION ==="
-bash scripts/build.sh "$CONFIGURATION"
-BIN_DIR=$(swift build --show-bin-path -c "$CONFIGURATION")
 
 # ── Assemble Bundle ────────────────────────────────────────────────────
 echo "=== Assembling app bundle ==="
@@ -104,10 +124,6 @@ ditto "$VENDORED_LICENSES_DIR" "$OPEN_SOURCE_DIR/licenses"
 # Add it here so the packaged app can load Sparkle.framework at runtime.
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/Yuwp"
 
-if [ ! -d "$SPARKLE_FW" ]; then
-    echo "Error: Sparkle.framework not found. Run 'swift package resolve' first."
-    exit 1
-fi
 ditto "$SPARKLE_FW" "$FRAMEWORKS_DIR/Sparkle.framework"
 
 cat > "$APP/Contents/Info.plist" << PLIST
@@ -209,6 +225,13 @@ codesign --force --sign "$SIGN_IDENTITY" "$DMG"
 
 # ── Notarize ───────────────────────────────────────────────────────────
 echo "=== Notarizing (this may take several minutes) ==="
+if [ -z "$NOTARY_PROFILE" ]; then
+    if [ -z "$TEAM_ID" ] || [ -z "$APPLE_ID" ] || [ -z "$APP_PASSWORD" ]; then
+        echo "Error: Set YUWP_NOTARY_PROFILE, or set YUWP_TEAM_ID + YUWP_APPLE_ID + YUWP_APP_PASSWORD"
+        echo "Signed package left at: $DMG"
+        exit 1
+    fi
+fi
 if [ -n "$NOTARY_PROFILE" ]; then
     echo "Using notarytool keychain profile: $NOTARY_PROFILE"
     xcrun notarytool submit "$DMG" \

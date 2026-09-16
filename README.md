@@ -114,7 +114,7 @@ scripts/build.sh
 scripts/run.sh
 ```
 
-Swift 6.4 SwiftPM uses Swift Build. Binaries land in `.build/out/Products/{Debug,Release}`. Fresh machines need `xcodebuild -downloadComponent MetalToolchain` before `swift build` can compile mlx-swift Metal sources.
+Swift 6.4 SwiftPM uses Swift Build. Binaries land in `.build/out/Products/{Debug,Release}`, including `Sparkle.framework`. Packaging scripts prefer that copy (`swift build --show-bin-path`) and fall back to `.build/artifacts/sparkle/...`. Fresh machines need `xcodebuild -downloadComponent MetalToolchain` before `swift build` can compile mlx-swift Metal sources.
 
 ## Benchmarks
 

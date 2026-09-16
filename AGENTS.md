@@ -33,14 +33,19 @@ to build and launch as a proper .app bundle with TCC-compatible Info.plist.
 
 ```bash
 scripts/release.sh <version>
-# Requires: YUWP_SIGN_IDENTITY and either:
+# YUWP_SIGN_IDENTITY is optional (auto-detected like scripts/run.sh).
+# Notarization requires either:
 #   - YUWP_NOTARY_PROFILE, or
 #   - YUWP_TEAM_ID + YUWP_APPLE_ID + YUWP_APP_PASSWORD
 ```
 
 Sparkle is wired through the generated Info.plist by default. Override the
 appcast URL or public key with `YUWP_SPARKLE_FEED_URL` or
-`YUWP_SPARKLE_PUBLIC_ED_KEY` when needed.
+`YUWP_SPARKLE_PUBLIC_ED_KEY` when needed. Packaging locates
+`Sparkle.framework` next to `swift build --show-bin-path`
+(`.build/out/Products/{Debug,Release}/Sparkle.framework`) and falls back to
+`.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework`.
+`sign_update` / `generate_keys` use the same Products-then-artifacts lookup.
 
 ### Standalone ASR server (no GUI)
 
@@ -125,6 +130,10 @@ Keep the app small. Split files around coherent responsibilities, not line-count
 - **Swift 6.4 SwiftPM uses Swift Build.** It compiles mlx-swift Metal into
   `mlx-swift_Cmlx.bundle` and puts binaries in `.build/out/Products/{Debug,Release}`.
   Fresh machines need `xcodebuild -downloadComponent MetalToolchain`.
+- **Sparkle.framework** is copied into `.build/out/Products/{Debug,Release}`.
+  `scripts/run.sh` and `scripts/release.sh` prefer that copy via
+  `swift build --show-bin-path` and fall back to `.build/artifacts/sparkle/...`.
+  Do not hardcode the native-only xcframework path.
 
 ## Validation
 

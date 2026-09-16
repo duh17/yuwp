@@ -47,6 +47,9 @@ fi
 echo "[yuwp] Internal diagnostics env: $YUWP_INTERNAL_DIAGNOSTICS"
 bash scripts/build.sh "$CONFIGURATION"
 BIN_DIR=$(swift build --show-bin-path -c "$CONFIGURATION")
+# shellcheck source=sparkle_paths.sh
+source "$(dirname "$0")/sparkle_paths.sh"
+yuwp_resolve_sparkle_paths "$BIN_DIR" "$(pwd)"
 
 # Remember a live TTS sidecar so we can replace it after the new binary is installed.
 TTS_RESTART_CMD=""
@@ -112,13 +115,13 @@ ditto "$VENDORED_LICENSES_DIR" "$OPEN_SOURCE_DIR/licenses"
 # Add it here so the packaged app can load Sparkle.framework at runtime.
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/Yuwp"
 
-# Embed Sparkle.framework
-SPARKLE_FW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
-if [ -d "$SPARKLE_FW" ]; then
+# Embed Sparkle.framework from Swift Build Products, falling back to artifacts.
+if [ -n "${SPARKLE_FW:-}" ]; then
+    echo "[yuwp] Embedding Sparkle.framework from $SPARKLE_FW"
     rm -rf "$FRAMEWORKS_DIR/Sparkle.framework"
     ditto "$SPARKLE_FW" "$FRAMEWORKS_DIR/Sparkle.framework"
 else
-    echo "Warning: Sparkle.framework not found at $SPARKLE_FW — run 'swift package resolve' first"
+    echo "Warning: Sparkle.framework not found next to $BIN_DIR or in .build/artifacts/sparkle — run 'swift build --product Yuwp' first"
 fi
 
 cat > "$APP/Contents/Info.plist" << EOF
