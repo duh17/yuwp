@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIGURATION="release"
-VERSION="${YUWP_VERSION:-0.1.0}"
+VERSION="${YUWP_VERSION:-0.2.0}"
 : "${YUWP_INTERNAL_DIAGNOSTICS:=0}"
 export YUWP_INTERNAL_DIAGNOSTICS
 DEFAULT_SPARKLE_FEED_URL="https://github.com/duh17/yuwp/releases/latest/download/appcast.xml"
