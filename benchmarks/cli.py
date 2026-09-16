@@ -16,7 +16,7 @@ if str(BENCHMARK_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_ROOT))
 
 COMMANDS = {
-    "asr": ("lib.asr", "Unified ASR benchmark scenarios: load, quality, compare, remote, subtitles"),
+    "asr": ("lib.asr", "Unified ASR benchmark scenarios: headline, load, quality, compare, remote, subtitles"),
     "plot": ("lib.plot_native", "Plot benchmark JSON from `asr load --json`"),
 }
 

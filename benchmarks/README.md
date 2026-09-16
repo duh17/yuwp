@@ -9,6 +9,10 @@ uv run benchmarks/cli.py asr <scenario> [options]
 ## ASR scenarios
 
 ```bash
+# Headline numbers used in the README (hot batch + live stdio + CLI)
+uv run benchmarks/cli.py asr headline
+# Writes benchmarks/fixtures/public-jfk.json
+
 # Local server load / latency / memory across models and concurrency
 uv run benchmarks/cli.py asr load small --balanced 5 --concurrency 1 2 4 --json /tmp/yuwp-load.json
 
@@ -27,6 +31,14 @@ uv run benchmarks/cli.py asr subtitles --file sample.wav
 # Materialize pinned local-only long-form dev/heldout data
 uv run benchmarks/cli.py asr prepare-long-form earnings21
 ```
+
+README clocks (do not mix with cloud “time to final after end of speech”):
+
+- Headline first text: `jfk.wav` energy onset (0.30 s) → first nonempty stdio partial
+- Headline finalize: stop request → final transcript
+- Transcribe: `yuwp-asr transcribe` wall time on `Tests/fixtures/jfk.wav`
+- Speak: `yuwp-tts` wall time to write the WAV (Studio only)
+- The 505 ms Studio 1.7B figure is a separate Silero speech-onset canary, not the jfk energy-onset clock
 
 Long-form evaluator runs use explicit batch modes (`vad`, `energy`, or
 `automatic`); production `automatic` keeps VAD for inputs up to 120 seconds and
@@ -95,6 +107,8 @@ or invalid arguments. No model smoke is authorized by this documentation.
 benchmarks/
   cli.py              # public entrypoint
   lib/asr.py          # scenario router
+  lib/headline.py     # implementation for `asr headline`
+  fixtures/public-jfk.json  # last headline numbers used in the README
   lib/native_server.py      # implementation for `asr load`
   lib/stream_quality.py     # implementation for `asr quality`
   lib/batch_compare.py      # implementation for `asr compare`

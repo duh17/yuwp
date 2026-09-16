@@ -47,6 +47,11 @@ SCENARIOS: dict[str, tuple[str, str, str]] = {
         "lib.external_benchmark_data",
         "benchmarks/cli.py asr prepare-long-form earnings21",
     ),
+    "headline": (
+        "Hot batch, live stdio dictation, CLI transcribe, CLI TTS on jfk.wav",
+        "lib.headline",
+        "benchmarks/cli.py asr headline",
+    ),
 }
 
 

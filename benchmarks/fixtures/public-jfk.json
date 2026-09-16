@@ -1,0 +1,90 @@
+{
+  "clip": "Tests/fixtures/jfk.wav",
+  "duration_s": 11.0,
+  "energy_onset_s": 0.3,
+  "machine": {
+    "cpu": "Apple M3 Ultra",
+    "mem_gb": 512,
+    "macos": "27.0",
+    "build": "26A428"
+  },
+  "internal_canary_1_7B_bf16": {
+    "pipe": "stdio",
+    "clock": "speech-onset to first nonempty stdio partial, Silero 36ms p>=0.5",
+    "baseline_ms": 899,
+    "preview_ms": 505,
+    "commit": "3568b75"
+  },
+  "asr": {
+    "0.6B-bf16": {
+      "stdio_file_start_ttft_ms_median": 918,
+      "stdio_energy_onset_ttft_ms_median": 618,
+      "stdio_finalize_ms_median": 132,
+      "transcribe_wall_s_median": 1.25,
+      "transcribe_rtf_median": 0.114,
+      "peak_rss_mb": 1626
+    },
+    "0.6B-4bit": {
+      "stdio_file_start_ttft_ms_median": 920,
+      "stdio_energy_onset_ttft_ms_median": 620,
+      "stdio_finalize_ms_median": 94,
+      "transcribe_wall_s_median": 1.18,
+      "transcribe_rtf_median": 0.107,
+      "peak_rss_mb": 805
+    },
+    "1.7B-bf16": {
+      "stdio_file_start_ttft_ms_median": 944,
+      "stdio_energy_onset_ttft_ms_median": 644,
+      "stdio_finalize_ms_median": 181,
+      "transcribe_wall_s_median": 1.55,
+      "transcribe_rtf_median": 0.141,
+      "peak_rss_mb": 4017
+    },
+    "1.7B-4bit": {
+      "stdio_file_start_ttft_ms_median": 925,
+      "stdio_energy_onset_ttft_ms_median": 625,
+      "stdio_finalize_ms_median": 150,
+      "transcribe_wall_s_median": 1.23,
+      "transcribe_rtf_median": 0.112,
+      "peak_rss_mb": 1663
+    }
+  },
+  "tts": {
+    "1.7B-CustomVoice": {
+      "pipe": "yuwp-tts CLI",
+      "wall_s_median": 2.05,
+      "audio_s_median": 4.16,
+      "rtf_median": 0.49
+    }
+  },
+  "mini": {
+    "machine": {
+      "cpu": "Apple M4 Pro",
+      "mem_gb": 64,
+      "macos": "27.0",
+      "build": "26A428"
+    },
+    "asr": {
+      "0.6B-4bit": {
+        "stdio_energy_onset_ttft_ms_median": 1210,
+        "stdio_finalize_ms_median": 176,
+        "transcribe_wall_s_median": 0.71
+      },
+      "0.6B-bf16": {
+        "stdio_energy_onset_ttft_ms_median": 1247,
+        "stdio_finalize_ms_median": 247,
+        "transcribe_wall_s_median": 0.84
+      },
+      "1.7B-4bit": {
+        "stdio_energy_onset_ttft_ms_median": 1274,
+        "stdio_finalize_ms_median": 323,
+        "transcribe_wall_s_median": 0.90
+      },
+      "1.7B-bf16": {
+        "stdio_energy_onset_ttft_ms_median": 1375,
+        "stdio_finalize_ms_median": 383,
+        "transcribe_wall_s_median": 1.33
+      }
+    }
+  }
+}
