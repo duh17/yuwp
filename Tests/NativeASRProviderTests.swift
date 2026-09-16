@@ -75,6 +75,26 @@ struct YuwpBuildLayoutTests {
     }
 }
 
+@Suite("NativeASRProvider server launch")
+struct NativeASRProviderServerLaunchTests {
+    @Test func installedAlignerIsPassedToHTTPServer() {
+        let arguments = NativeASRProvider.argumentsByAddingAligner(
+            to: ["serve", "--transport", "http"],
+            alignerModelPath: "/models/aligner"
+        )
+
+        #expect(arguments.suffix(2) == ["--aligner-model", "/models/aligner"])
+    }
+
+    @Test func missingAlignerLeavesServerArgumentsUnchanged() {
+        let original = ["serve", "--transport", "http"]
+        #expect(NativeASRProvider.argumentsByAddingAligner(
+            to: original,
+            alignerModelPath: nil
+        ) == original)
+    }
+}
+
 @Suite("NativeASRProvider lifecycle")
 struct NativeASRProviderLifecycleTests {
     @Test func offModeTransitionsToDisabledSynchronously() async {

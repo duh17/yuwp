@@ -333,6 +333,14 @@ private actor NativeASRServerLifecycle {
         } else {
             arguments += ["--disable-batch-retranscribe"]
         }
+        if transport == .http {
+            arguments = NativeASRProvider.argumentsByAddingAligner(
+                to: arguments,
+                alignerModelPath: NativeASRProvider.resolveModelPath(
+                    NativeASRProvider.defaultAlignerModel
+                )
+            )
+        }
         proc.arguments = arguments
         var childEnvironment = ProcessInfo.processInfo.environment
         childEnvironment["YUWP_DIAGNOSTIC_LOGGING"] = configuration.diagnosticLoggingEnabled ? "1" : "0"
@@ -694,6 +702,14 @@ final class NativeASRProvider: SttProvider {
     /// Resolve a model spec (Hugging Face repo id or local directory) to a local directory path.
     nonisolated static func resolveModelPath(_ spec: String) -> String? {
         ModelLocator.resolve(spec)?.path
+    }
+
+    nonisolated static func argumentsByAddingAligner(
+        to arguments: [String],
+        alignerModelPath: String?
+    ) -> [String] {
+        guard let alignerModelPath else { return arguments }
+        return arguments + ["--aligner-model", alignerModelPath]
     }
 
     /// Find the yuwp-asr binary in expected locations.

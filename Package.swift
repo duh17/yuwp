@@ -42,7 +42,7 @@ let package = Package(
             ],
             path: "Sources/NativeASR",
             resources: [
-                .copy("Resources")
+                .copy("Resources/silero_vad.mlmodelc")
             ]
         ),
         .target(
