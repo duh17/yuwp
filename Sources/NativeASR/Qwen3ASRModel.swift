@@ -90,8 +90,8 @@ public final class Qwen3ASRModel: Module {
 
     /// Full forward pass.
     /// - Returns: Last-position logits shaped `[batch, 1, vocabulary]` and the
-    ///   updated KV caches. This method does not return logits for earlier input
-    ///   positions.
+    ///   updated KV caches. Set `logitPositions` to verify a bounded draft block;
+    ///   the default still projects only the last position, including for prefill.
     ///
     /// PERFORMANCE: The LM head (vocab projection) is only computed for the last
     /// token position. All callers sample from `logits[0, -1]`, so computing
@@ -101,28 +101,31 @@ public final class Qwen3ASRModel: Module {
     public func callAsFunction(
         inputIds: MLXArray,
         inputEmbeddings: MLXArray? = nil,
-        cache: [KVCache]? = nil
+        cache: [KVCache]? = nil,
+        logitPositions: Int = 1
     ) -> (MLXArray, [KVCache]) {
         let embeds = inputEmbeddings ?? model.embedTokens(inputIds)
 
         let (hidden, newCache) = model(inputEmbeddings: embeds, cache: cache)
 
-        // Slice to last position before the expensive vocab projection
+        // Never project the entire audio prefill just to verify a short draft.
         let seqLen = hidden.shape[1]
-        let lastHidden = seqLen > 1
-            ? hidden[0..., (seqLen - 1) ..< seqLen, 0...]
+        precondition(logitPositions > 0 && logitPositions <= seqLen)
+        let lastHidden = seqLen > logitPositions
+            ? hidden[0..., (seqLen - logitPositions) ..< seqLen, 0...]
             : hidden
 
-        let logits: MLXArray
+        return (project(lastHidden), newCache)
+    }
+
+    private func project(_ hidden: MLXArray) -> MLXArray {
         if config.textConfig.tieWordEmbeddings {
-            logits = model.embedTokens.asLinear(lastHidden)
+            return model.embedTokens.asLinear(hidden)
         } else if let lmHead {
-            logits = lmHead(lastHidden)
+            return lmHead(hidden)
         } else {
             fatalError("No LM head and embeddings not tied")
         }
-
-        return (logits, newCache)
     }
 
     /// Create fresh KV caches for all decoder layers.

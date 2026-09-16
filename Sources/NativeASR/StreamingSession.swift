@@ -197,18 +197,31 @@ public final class StreamingSession: @unchecked Sendable {
     /// Concatenated text from all previously committed segments. Frozen — never
     /// rewritten by streaming or batch passes after a commit fires.
     private var committedText: String = ""
-    private static let silenceRMS: Float = 0.003
-    private static let speechStartRMS: Float = 0.010
+#if YUWP_INTERNAL_DIAGNOSTICS
+    enum StopTailTestSessionContext: Equatable, Sendable {
+        case real
+        case unavailable
+        case empty
+        case text(String)
+    }
+
+    /// Injected session-context result for stop-tail fixtures. Default keeps the real path.
+    var stopTailTestSessionContext: StopTailTestSessionContext = .real
+    /// When set, stop-tail fixtures skip MLX decode/extract and use this streaming text.
+    var stopTailTestForcedActiveText: String?
+#endif
+    static let silenceRMS: Float = 0.003
+    static let speechStartRMS: Float = 0.010
     private static let pauseRMS: Float = 0.020
-    private static let pauseChunks = 1
+    static let pauseChunks = 1
     private static let stallRefreshRMS: Float = 0.008
     private static let liveBatchRefreshPolicy = LiveBatchRefreshPolicy.default
     // Session-context retranscribe walks the whole session buffer. Cap that path
     // for long sessions to avoid multi-second stalls during live dictation.
-    private static let maxSessionContextSamples = ASRAudio.sampleRate * 45
+    static let maxSessionContextSamples = ASRAudio.sampleRate * 45
     // Cap expensive mid-session batch correction windows. For longer active
     // segments we commit the streaming text directly and keep moving.
-    private static let maxLiveBatchSegmentSamples = ASRAudio.sampleRate * 12
+    static let maxLiveBatchSegmentSamples = ASRAudio.sampleRate * 12
 
     public init(
         transcriber: Qwen3ASRTranscriber,
@@ -237,9 +250,53 @@ public final class StreamingSession: @unchecked Sendable {
         )
     }
 
+    private enum ChunkAdmission {
+        case finished(ChunkResult)
+        case admitted(rms: Float)
+    }
+
     /// Process one chunk of audio. Returns partial transcription result.
     public func processChunk(_ audioChunk: [Float], speechHint: SpeechActivityHint? = nil) -> ChunkResult {
         let t0 = Date()
+        switch admitChunk(audioChunk, speechHint: speechHint, startedAt: t0) {
+        case .finished(let result):
+            return result
+        case .admitted(let rms):
+            return decodeAdmittedChunk(startedAt: t0, speechHint: speechHint, rms: rms)
+        }
+    }
+
+    static func chunkWouldProvisionallyDecode(
+        chunkHasSpeech: Bool,
+        rms: Float,
+        consecutiveSilenceAfterChunk: Int,
+        batchRetranscribe: Bool,
+        batchDoneForPause: Bool,
+        hasRawTokens: Bool,
+        hasEnoughSpeechAfterIngest: Bool,
+        alreadyHasSpeech: Bool
+    ) -> Bool {
+        if batchRetranscribe
+            && consecutiveSilenceAfterChunk >= pauseChunks
+            && !batchDoneForPause
+            && hasRawTokens
+            && hasEnoughSpeechAfterIngest
+        {
+            return false
+        }
+        if !chunkHasSpeech && rms < silenceRMS {
+            return false
+        }
+        return alreadyHasSpeech || chunkHasSpeech
+    }
+
+    /// Append session audio and speech evidence. Decode is a separate step so
+    /// stop can skip an unexposed tail pass when final accuracy will replace it.
+    private func admitChunk(
+        _ audioChunk: [Float],
+        speechHint: SpeechActivityHint?,
+        startedAt t0: Date
+    ) -> ChunkAdmission {
         sessionAudioBuffer.append(contentsOf: audioChunk)
         let stats = Self.computeAudioStats(audioChunk)
         activeSpeechEvidence.ingest(stats: stats, speechHint: speechHint)
@@ -262,10 +319,10 @@ public final class StreamingSession: @unchecked Sendable {
                 resetActiveSegment()
                 lastText = committedText
                 chunkIdx += 1
-                return ChunkResult(
+                return .finished(ChunkResult(
                     text: committedText, isPartial: true, batchCorrected: true,
                     totalMs: Date().timeIntervalSince(t0) * 1000
-                )
+                ))
             }
         }
 
@@ -274,18 +331,41 @@ public final class StreamingSession: @unchecked Sendable {
             let activeText = rawTokens.isEmpty ? "" : extractText(rawTokens)
             let combined = Self.appendSegment(committedText, activeText)
             lastText = combined
-            return ChunkResult(text: combined, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000)
+            return .finished(ChunkResult(
+                text: combined, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000
+            ))
         }
 
         if chunkHasSpeech { hasSpeech = true }
         if !hasSpeech {
             audioBuffer.append(contentsOf: audioChunk)
             chunkIdx += 1
-            return ChunkResult(text: committedText, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000)
+            return .finished(ChunkResult(
+                text: committedText, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000
+            ))
         }
 
         audioBuffer.append(contentsOf: audioChunk)
+        return .admitted(rms: rms)
+    }
 
+    private func decodeAdmittedChunk(
+        startedAt t0: Date,
+        speechHint: SpeechActivityHint?,
+        rms: Float
+    ) -> ChunkResult {
+#if YUWP_INTERNAL_DIAGNOSTICS
+        if let forced = stopTailTestForcedActiveText {
+            if rawTokens.isEmpty { rawTokens = [1] }
+            let combined = Self.appendSegment(committedText, forced)
+            lastText = combined
+            chunkIdx += 1
+            return ChunkResult(
+                text: combined, isPartial: true,
+                totalMs: Date().timeIntervalSince(t0) * 1000
+            )
+        }
+#endif
         // 1. Encode
         let encT0 = Date()
         let encOutput = encodeIncremental()
@@ -461,6 +541,179 @@ public final class StreamingSession: @unchecked Sendable {
         return extractText(rawTokens).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    public func finishOnStop(
+        pendingAudio: [Float],
+        speechHint: SpeechActivityHint?
+    ) -> StopFinishResult {
+        let plan = stopTailPlan(pendingAudio: pendingAudio, speechHint: speechHint)
+        var admission: ChunkAdmission?
+        let startedAt = Date()
+        let (text, execution) = StopTailExecutor.execute(
+            plan: plan,
+            processThenFinalize: {
+                _ = processChunk(pendingAudio, speechHint: speechHint)
+                return finalize()
+            },
+            finalizeOnly: { finalize() },
+            ingestWithoutDecode: {
+                admission = admitChunk(pendingAudio, speechHint: speechHint, startedAt: startedAt)
+            },
+            finalizeBatch: {
+                guard case .admitted = admission else { return nil }
+                return tryUsableStopBatchCorrection()
+            },
+            fallbackDecodeThenText: {
+                if case .admitted(let rms) = admission {
+                    _ = decodeAdmittedChunk(
+                        startedAt: startedAt, speechHint: speechHint, rms: rms
+                    )
+                }
+                return appendActiveTextFallback()
+            }
+        )
+        return StopFinishResult(
+            text: text,
+            skippedProvisionalDecode: execution == .skippedProvisionalDecode
+                || execution == .skippedThenFallbackDecoded,
+            usedFallbackDecode: execution == .skippedThenFallbackDecoded,
+            pendingSampleCount: pendingAudio.count,
+            sessionSampleCount: sessionAudioBuffer.count
+        )
+    }
+
+    private func stopTailPlan(
+        pendingAudio: [Float],
+        speechHint: SpeechActivityHint?
+    ) -> StopTailPlan {
+        Self.stopTailPlan(
+            pendingAudio: pendingAudio,
+            speechHint: speechHint,
+            activeSpeechEvidence: activeSpeechEvidence,
+            consecutiveSilence: consecutiveSilence,
+            batchDoneForPause: batchDoneForPause,
+            hasRawTokens: !rawTokens.isEmpty,
+            hasSpeech: hasSpeech,
+            sessionAudioSampleCount: sessionAudioBuffer.count,
+            activeAudioSampleCount: audioBuffer.count,
+            config: config
+        )
+    }
+
+    /// Same eligibility mapping `finishOnStop` uses. Exposed for stop-tail fixtures.
+    static func stopTailPlan(
+        pendingAudio: [Float],
+        speechHint: SpeechActivityHint?,
+        activeSpeechEvidence: SpeechEvidence,
+        consecutiveSilence: Int,
+        batchDoneForPause: Bool,
+        hasRawTokens: Bool,
+        hasSpeech: Bool,
+        sessionAudioSampleCount: Int,
+        activeAudioSampleCount: Int,
+        config: StreamConfig
+    ) -> StopTailPlan {
+        guard !pendingAudio.isEmpty else { return .finalizeOnly }
+        let stats = Self.computeAudioStats(pendingAudio)
+        var evidence = activeSpeechEvidence
+        evidence.ingest(stats: stats, speechHint: speechHint)
+        let chunkHasSpeech = speechHint?.hasSpeech ?? (stats.rms >= Self.speechStartRMS)
+        let consecutive = chunkHasSpeech ? 0 : consecutiveSilence + 1
+        let wouldDecode = Self.chunkWouldProvisionallyDecode(
+            chunkHasSpeech: chunkHasSpeech,
+            rms: stats.rms,
+            consecutiveSilenceAfterChunk: consecutive,
+            batchRetranscribe: config.batchRetranscribe,
+            batchDoneForPause: batchDoneForPause,
+            hasRawTokens: hasRawTokens,
+            hasEnoughSpeechAfterIngest: evidence.hasEnoughSpeech,
+            alreadyHasSpeech: hasSpeech
+        )
+        let sessionAfter = sessionAudioSampleCount + pendingAudio.count
+        let activeAfter = wouldDecode ? activeAudioSampleCount + pendingAudio.count : activeAudioSampleCount
+        let strategy = Self.stopBatchStrategy(
+            config: config,
+            sessionAudioSampleCount: sessionAfter,
+            activeAudioSampleCount: activeAfter,
+            activeSpeechEvidence: evidence
+        )
+        return StopTailExecutor.plan(
+            StopTailPlanInputs(
+                pendingSampleCount: pendingAudio.count,
+                batchRetranscribe: config.batchRetranscribe,
+                wouldProvisionallyDecode: wouldDecode,
+                strategy: strategy,
+                sessionAudioSampleCountAfterIngest: sessionAfter,
+                activeAudioSampleCountAfterIngest: activeAfter,
+                maxSessionContextSamples: Self.maxSessionContextSamples,
+                maxLiveBatchSegmentSamples: Self.maxLiveBatchSegmentSamples,
+                hasEnoughSpeechAfterIngest: evidence.hasEnoughSpeech
+            )
+        )
+    }
+
+#if YUWP_INTERNAL_DIAGNOSTICS
+    func seedStopTailTestState(
+        sessionAndActiveSampleCount: Int,
+        evidence: SpeechEvidence,
+        hasSpeech: Bool = true
+    ) {
+        let audio = [Float](repeating: 0, count: sessionAndActiveSampleCount)
+        sessionAudioBuffer = audio
+        audioBuffer = audio
+        activeSpeechEvidence = evidence
+        self.hasSpeech = hasSpeech
+        committedText = ""
+        lastText = ""
+        rawTokens = []
+        consecutiveSilence = 0
+        batchDoneForPause = false
+    }
+#endif
+
+    private func tryUsableStopBatchCorrection() -> String? {
+#if YUWP_INTERNAL_DIAGNOSTICS
+        if ProcessInfo.processInfo.environment["YUWP_TEST_FAIL_STOP_BATCH"] == "1" {
+            return nil
+        }
+#endif
+        switch Self.stopBatchStrategy(
+            config: config,
+            sessionAudioSampleCount: sessionAudioBuffer.count,
+            activeAudioSampleCount: audioBuffer.count,
+            activeSpeechEvidence: activeSpeechEvidence
+        ) {
+        case .fullSession:
+            guard let fullText = batchRetranscribeFullSession(),
+                  StopTailExecutor.isUsableBatchText(fullText) else { return nil }
+            committedText = fullText
+            rawTokens = []
+            lastText = committedText
+            return committedText
+        case .activeSegmentOnly:
+            guard let segmentText = batchFinalizeSegmentText(
+                allowStreamingLongSegmentFallback: false
+            ), StopTailExecutor.isUsableBatchText(segmentText) else { return nil }
+            committedText = Self.appendSegment(committedText, segmentText)
+            lastText = committedText
+            return committedText
+        case .none:
+            return nil
+        }
+    }
+
+    private func appendActiveTextFallback() -> String {
+        let activeText = rawTokens.isEmpty ? "" : extractText(rawTokens)
+        if Self.shouldAppendActiveTextFallback(
+            config: config,
+            activeText: activeText,
+            activeSpeechEvidence: activeSpeechEvidence
+        ) {
+            committedText = Self.appendSegment(committedText, activeText)
+        }
+        lastText = committedText
+        return committedText
+    }
+
     /// Finalize the session on stop. By default we batch only the trailing
     /// active segment and preserve every previously committed segment verbatim.
     /// Full-session retranscribe is available only as an explicit opt-in for
@@ -491,16 +744,7 @@ public final class StreamingSession: @unchecked Sendable {
             break
         }
 
-        let activeText = rawTokens.isEmpty ? "" : extractText(rawTokens)
-        if Self.shouldAppendActiveTextFallback(
-            config: config,
-            activeText: activeText,
-            activeSpeechEvidence: activeSpeechEvidence
-        ) {
-            committedText = Self.appendSegment(committedText, activeText)
-        }
-        lastText = committedText
-        return committedText
+        return appendActiveTextFallback()
     }
 
     static func stopBatchStrategy(
@@ -682,12 +926,15 @@ public final class StreamingSession: @unchecked Sendable {
         return (embeds, prompt.audioPadStartIndex)
     }
 
-    private func transcribeWithSessionContext(_ audio: [Float]) throws -> TranscriptionResult {
+    private func transcribeWithSessionContext(
+        _ audio: [Float], draftText: String
+    ) throws -> TranscriptionResult {
         let batcher = batchTranscriber ?? transcriber
         return try batcher.transcribe(
             audio: audio,
             language: asrContext.language,
-            vocabularyHints: asrContext.vocabularyHints
+            vocabularyHints: asrContext.vocabularyHints,
+            draftText: draftText
         )
     }
 
@@ -740,6 +987,11 @@ public final class StreamingSession: @unchecked Sendable {
     }
 
     private func extractText(_ tokens: [Int]) -> String {
+#if YUWP_INTERNAL_DIAGNOSTICS
+        if let forced = stopTailTestForcedActiveText {
+            return forced
+        }
+#endif
         let cleaned = transcriber.tokenizer.cleanTokenOutput(tokens)
         return cleaned == "None" ? "" : cleaned
     }
@@ -777,7 +1029,9 @@ public final class StreamingSession: @unchecked Sendable {
         guard audioBuffer.count >= ASRAudio.sampleRate else { return nil }
 
         do {
-            let result = try transcribeWithSessionContext(audioBuffer)
+            let result = try transcribeWithSessionContext(
+                audioBuffer, draftText: activeSegmentText()
+            )
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
                 rawTokens = transcriber.tokenizer.encode(text)
@@ -814,7 +1068,9 @@ public final class StreamingSession: @unchecked Sendable {
         return batchRetranscribeActiveSegment(reason: "pause commit")
     }
 
-    private func batchFinalizeSegmentText() -> String? {
+    private func batchFinalizeSegmentText(
+        allowStreamingLongSegmentFallback: Bool = true
+    ) -> String? {
         if let activeText = sessionContextActiveText(), !activeText.isEmpty {
             fputs("[StreamingSession] Session-context final segment: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s audio → \(activeText.count) chars\n", stderr)
             return activeText
@@ -823,6 +1079,7 @@ public final class StreamingSession: @unchecked Sendable {
         // Hard guard: avoid giant end-of-session batch retranscribes that can
         // spike GPU memory after long uninterrupted dictation.
         if audioBuffer.count > Self.maxLiveBatchSegmentSamples {
+            guard allowStreamingLongSegmentFallback else { return nil }
             let streamed = extractText(rawTokens).trimmingCharacters(in: .whitespacesAndNewlines)
             if !streamed.isEmpty {
                 fputs("[StreamingSession] Finalize using streaming text (segment too long: \(audioBuffer.count / ASRAudio.sampleRate)s)\n", stderr)
@@ -835,13 +1092,28 @@ public final class StreamingSession: @unchecked Sendable {
     }
 
     private func sessionContextActiveText() -> String? {
+#if YUWP_INTERNAL_DIAGNOSTICS
+        switch stopTailTestSessionContext {
+        case .real:
+            break
+        case .unavailable:
+            return nil
+        case .empty:
+            return ""
+        case .text(let text):
+            return text
+        }
+#endif
         if sessionAudioBuffer.count > Self.maxSessionContextSamples {
             fputs("[StreamingSession] Session-context skipped (session too long: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s)\n", stderr)
             return nil
         }
 
         do {
-            let result = try transcribeWithSessionContext(sessionAudioBuffer)
+            let result = try transcribeWithSessionContext(
+                sessionAudioBuffer,
+                draftText: Self.appendSegment(committedText, activeSegmentText())
+            )
             let fullText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if let activeText = Self.deriveActiveText(fromSessionText: fullText, committedText: committedText) {
                 return activeText
@@ -859,7 +1131,10 @@ public final class StreamingSession: @unchecked Sendable {
 
     private func batchRetranscribeFullSession() -> String? {
         do {
-            let result = try transcribeWithSessionContext(sessionAudioBuffer)
+            let result = try transcribeWithSessionContext(
+                sessionAudioBuffer,
+                draftText: Self.appendSegment(committedText, activeSegmentText())
+            )
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             fputs("[StreamingSession] Final full-session batch: \(sessionAudioBuffer.count / ASRAudio.sampleRate)s audio → \(text.count) chars\n", stderr)
             return text

@@ -349,17 +349,23 @@ final class StreamingSessionManager: @unchecked Sendable {
 
             inferenceLock.lock()
             defer { inferenceLock.unlock() }
-            if !pending.isEmpty {
-                let speechHint = analyzeSpeechActivity(pending, vad: vad)
-                _ = session.processChunk(pending, speechHint: speechHint)
-            }
-            let text = session.finalize()
+            let speechHint = pending.isEmpty ? nil : analyzeSpeechActivity(pending, vad: vad)
+            let finished = session.finishOnStop(pendingAudio: pending, speechHint: speechHint)
+            let text = finished.text
             let response = transcriptPayload(
                 session: session,
                 kind: "final",
                 isFinal: true,
                 batchCorrected: false
             )
+#if YUWP_INTERNAL_DIAGNOSTICS
+            log(
+                "PERF sid=\(sid) stop_skip_provisional=\(finished.skippedProvisionalDecode ? 1 : 0) "
+                    + "stop_fallback_decode=\(finished.usedFallbackDecode ? 1 : 0) "
+                    + "pending_samples=\(finished.pendingSampleCount) "
+                    + "session_samples=\(finished.sessionSampleCount)"
+            )
+#endif
             return (response, text, managedSession.recordingData)
         }
         guard let stopped else { return nil }

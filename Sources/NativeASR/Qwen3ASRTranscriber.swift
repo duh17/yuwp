@@ -40,6 +40,17 @@ public final class Qwen3ASRTranscriber: @unchecked Sendable {
         self.modelDirectory = modelDirectory
     }
 
+#if YUWP_INTERNAL_DIAGNOSTICS
+    /// Tiny in-memory transcriber for stop-tail session fixtures. Not a product path.
+    static func testingTranscriber(
+        model: Qwen3ASRModel,
+        tokenizer: Qwen3ASRTokenizer,
+        modelDirectory: URL = URL(fileURLWithPath: "/tmp/yuwp-stop-tail-test", isDirectory: true)
+    ) -> Qwen3ASRTranscriber {
+        Qwen3ASRTranscriber(model: model, tokenizer: tokenizer, modelDirectory: modelDirectory)
+    }
+#endif
+
     // MARK: - Loading
 
     /// Load model and tokenizer from a local directory.
@@ -91,7 +102,8 @@ public final class Qwen3ASRTranscriber: @unchecked Sendable {
         language: String? = nil,
         maxTokens: Int = 4096,
         temperature: Float = 0.0,
-        vocabularyHints: [String] = []
+        vocabularyHints: [String] = [],
+        draftText: String? = nil
     ) throws -> TranscriptionResult {
         guard audio.count >= ASRAudio.nFft else {
             return TranscriptionResult(text: "", language: language, audioDuration: Double(audio.count) / Double(ASRAudio.sampleRate), processingTime: 0)
@@ -127,8 +139,36 @@ public final class Qwen3ASRTranscriber: @unchecked Sendable {
             numAudioTokens: numAudioTokens, audioStartIndex: prompt.audioPadStartIndex
         )
 
-        // Phase 4: Autoregressive decode with KV cache
-        //
+        // Phase 4: The draft is an acceleration hint, not a prompt prefix. Only
+        // greedy decoding can use exact argmax verification; sampling is unchanged.
+        let draftTokens = temperature <= 0 ? draftText.map(tokenizer.encodeData) ?? [] : []
+        let generatedTokens: [Int]
+        if !draftTokens.isEmpty, tokenCap > 0 {
+            generatedTokens = decodeWithDraft(
+                inputIds: inputIds, inputEmbeds: inputEmbeds,
+                tokenCap: tokenCap, draftTokens: draftTokens
+            )
+        } else {
+            generatedTokens = decodeSerial(
+                inputIds: inputIds, inputEmbeds: inputEmbeds,
+                tokenCap: tokenCap, temperature: temperature
+            )
+        }
+
+        let cleanedText = language == nil
+            ? tokenizer.cleanTokenOutput(generatedTokens)
+            : tokenizer.cleanOutput(tokenizer.decode(generatedTokens))
+        return TranscriptionResult(
+            text: Self.trimPathologicalRepetition(in: cleanedText),
+            language: language,
+            audioDuration: audioDuration,
+            processingTime: Date().timeIntervalSince(t0)
+        )
+    }
+
+    private func decodeSerial(
+        inputIds: MLXArray, inputEmbeds: MLXArray, tokenCap: Int, temperature: Float
+    ) -> [Int] {
         // Double-buffer pattern matching Python's mlx_lm generate_step:
         // 1. Prefill: run full prompt through model
         // 2. Sample first token, queue next step, async eval
@@ -178,18 +218,42 @@ public final class Qwen3ASRTranscriber: @unchecked Sendable {
             asyncEval(nextY)
         }
 
-        // Phase 5: Decode and clean
-        let cleanedText = language == nil
-            ? tokenizer.cleanTokenOutput(generatedTokens)
-            : tokenizer.cleanOutput(tokenizer.decode(generatedTokens))
-        let finalizedText = Self.trimPathologicalRepetition(in: cleanedText)
+        return generatedTokens
+    }
 
-        return TranscriptionResult(
-            text: finalizedText,
-            language: language,
-            audioDuration: audioDuration,
-            processingTime: Date().timeIntervalSince(t0)
+    private func decodeWithDraft(
+        inputIds: MLXArray, inputEmbeds: MLXArray, tokenCap: Int, draftTokens: [Int]
+    ) -> [Int] {
+        let (logits, cache) = model(inputIds: inputIds, inputEmbeddings: inputEmbeds)
+        let firstToken = sampleToken(logits: logits, temperature: 0).item(Int.self)
+        var forwardCalls = 0
+        var verifiedPositions = 0
+        var rejectedPositions = 0
+        let result = TranscriptDraft.greedyDecode(
+            firstToken: firstToken,
+            maxTokens: tokenCap,
+            eosTokens: Qwen3ASRTokenizer.eosTokens,
+            draft: TranscriptDraft(tokens: draftTokens),
+            verify: { inputs in
+                let ids = MLXArray(inputs.map { Int32($0) }).expandedDimensions(axis: 0)
+                let (blockLogits, _) = model(
+                    inputIds: ids, cache: cache, logitPositions: inputs.count
+                )
+                let choices = MLX.argMax(blockLogits, axis: -1)
+                eval(choices)
+                forwardCalls += 1
+                verifiedPositions += inputs.count
+                return choices.asArray(Int32.self).map(Int.init)
+            },
+            rewind: { count in
+                rejectedPositions += count
+                for layer in cache { layer.trim(n: count) }
+            }
         )
+        #if YUWP_INTERNAL_DIAGNOSTICS
+        fputs("[NativeASR] DRAFT calls=\(forwardCalls) positions=\(verifiedPositions) rejected=\(rejectedPositions) emitted=\(result.count)\n", stderr)
+        #endif
+        return result
     }
 
     private static func trimPathologicalRepetition(in text: String) -> String {
