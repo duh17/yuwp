@@ -1,5 +1,5 @@
 #!/bin/bash
-# One-time PyTorch → MLX conversion for AuK-Flash. Runtime inference is Swift/MLX only.
+# One-time PyTorch → MLX conversion for AuK-Flash or AuK Base. Runtime inference is Swift/MLX only.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN=""

@@ -22,9 +22,11 @@ func runAuKConvert(_ args: [String]) throws {
         case "--bits": bits = takeValue().flatMap(Int.init)
         case "--help", "-h":
             print("""
-            Usage: yuwp-tts convert-auk --src <AuK-Flash-dir> --thinker-src <Qwen2.5-Omni-3B> --out <mlx-dir> [--bits 8]
+            Usage: yuwp-tts convert-auk --src <AuK-Flash-or-AuK-dir> --thinker-src <Qwen2.5-Omni-3B or auk-flash-mlx> --out <mlx-dir> [--bits 8]
 
-            Converts official PyTorch AuK-Flash + Qwen2.5-Omni Thinker weights to MLX safetensors.
+            Converts official PyTorch AuK-Flash or AuK Base weights to MLX safetensors.
+            Detects the variant from the source directory (auk_flash.safetensors vs auk_base.safetensors).
+            --thinker-src may be Qwen2.5-Omni-3B or an already-converted mlx directory (reuses thinker).
             Runtime inference is pure Swift/MLX and does not call Python.
             """)
             return
@@ -45,8 +47,15 @@ func runAuKConvert(_ args: [String]) throws {
         output: URL(fileURLWithPath: output).standardizedFileURL,
         bits: bits
     )
+    let variant: String
+    switch inspectAuKModelDirectory(result.outputDirectory) {
+    case .converted(let detected), .pytorchSource(let detected):
+        variant = detected.rawValue
+    case .unknown:
+        variant = "unknown"
+    }
     fputs(
-        "Converted AuK-Flash to \(result.outputDirectory.path) (vae=\(result.vaeTensors) dit=\(result.ditTensors) thinker=\(result.thinkerTensors))\n",
+        "Converted AuK (\(variant)) to \(result.outputDirectory.path) (vae=\(result.vaeTensors) dit=\(result.ditTensors) thinker=\(result.thinkerTensors))\n",
         stderr
     )
 }
@@ -55,14 +64,7 @@ func runAuKGenerate(options: TTSTestOptions) async throws {
     guard let modelPath = options.modelPath else {
         throw AuKError.invalidInput("--model <auk-mlx-dir> is required")
     }
-    guard let instruction = aukResolveInstruction(
-        instruction: options.instruction,
-        instructions: nil,
-        input: options.text
-    ) else {
-        throw AuKError.invalidInput("AuK-Flash requires --instruction (or --text)")
-    }
-    _ = try aukResolveGenSeconds(options.genSeconds, hasReferenceAudio: options.referenceAudioPath != nil)
+    let plan = try aukPlan(from: options)
     let thinkerURL = options.thinkerPath.map { URL(fileURLWithPath: $0).standardizedFileURL }
     let engine = try await AuKEngine.load(
         modelDirectory: URL(fileURLWithPath: modelPath).standardizedFileURL,
@@ -70,20 +72,38 @@ func runAuKGenerate(options: TTSTestOptions) async throws {
         bits: options.bits
     )
     let refURL = options.referenceAudioPath.map { URL(fileURLWithPath: $0).standardizedFileURL }
-    let (samples, sampleRate) = try engine.generate(
-        instruction: instruction,
-        referenceAudioURL: refURL,
-        genSeconds: options.genSeconds,
-        seed: options.seed
+    var chunkSamples: [[Float]] = []
+    for (index, chunk) in plan.chunks.enumerated() {
+        let (samples, _) = try engine.generate(
+            instruction: chunk.instruction,
+            referenceAudioURL: refURL,
+            genSeconds: chunk.genSeconds,
+            seed: options.seed,
+            nfe: options.nfe,
+            cfgStrength: options.cfg,
+            sway: options.sway
+        )
+        chunkSamples.append(samples)
+        if options.stream {
+            fputs(
+                "AuK \(engine.variant.rawValue) chunk \(index + 1)/\(plan.chunks.count): \(String(format: "%.2f", Double(samples.count) / Double(engine.sampleRate)))s\n",
+                stderr
+            )
+        }
+    }
+    let samples = aukConcatenateTTSChunks(
+        chunkSamples,
+        sampleRate: engine.sampleRate,
+        pauseSeconds: plan.pauseSeconds
     )
     try AudioUtils.writeWavFile(
         samples: samples,
-        sampleRate: Double(sampleRate),
+        sampleRate: Double(engine.sampleRate),
         fileURL: URL(fileURLWithPath: options.outputPath)
     )
-    let duration = Double(samples.count) / Double(sampleRate)
+    let duration = Double(samples.count) / Double(engine.sampleRate)
     fputs(
-        "AuK-Flash synthesized \(String(format: "%.2f", duration))s audio -> \(options.outputPath)\n",
+        "\(engine.modelName) synthesized \(String(format: "%.2f", duration))s audio (\(plan.chunks.count) chunk(s)) -> \(options.outputPath)\n",
         stderr
     )
     if options.play {
@@ -109,6 +129,7 @@ func runAuKServe(options: TTSTestOptions) async throws {
     let loadSeconds = Date().timeIntervalSince(loadStart)
     let modelName = URL(fileURLWithPath: modelPath).lastPathComponent
     let gate = AsyncGate()
+    let sampling = engine.defaultSampling
 
     if options.transport == "http" {
         startHTTPServer(
@@ -117,16 +138,21 @@ func runAuKServe(options: TTSTestOptions) async throws {
                 let path = request.path.split(separator: "?").first.map(String.init) ?? request.path
                 if path == "/v1/info" {
                     guard request.method == "GET" else { return jsonResponse(status: 405, ["error": "method not allowed"]) }
-                    return jsonResponse(status: 200, [
+                    var info: [String: Any] = [
                         "status": "ready",
                         "service": "yuwp-tts",
                         "model": modelName,
-                        "backend": "auk-flash",
+                        "backend": engine.backend,
+                        "variant": engine.variant.rawValue,
                         "sample_rate": engine.sampleRate,
                         "load_seconds": loadSeconds,
-                        "nfe": 4,
-                        "cfg": 0,
-                    ])
+                        "nfe": sampling.nfe,
+                        "cfg": sampling.cfgStrength,
+                    ]
+                    if engine.variant == .base {
+                        info["sway"] = sampling.sway as Any
+                    }
+                    return jsonResponse(status: 200, info)
                 }
                 guard path == "/v1/audio/speech" || path == "/v1/audio/speech/stream" else {
                     return jsonResponse(status: 404, ["error": "unknown endpoint: \(request.method) \(path)"])
@@ -138,6 +164,12 @@ func runAuKServe(options: TTSTestOptions) async throws {
                 } catch {
                     return jsonResponse(status: 400, ["error": "invalid JSON request: \(error.localizedDescription)"])
                 }
+                switch aukPlanResult(from: speechRequest, options: options) {
+                case .rejected(let rejection):
+                    return jsonResponse(status: 400, rejection.jsonObject)
+                case .plan:
+                    break
+                }
                 if path == "/v1/audio/speech/stream" || speechRequest.stream == true {
                     return streamingResponse(status: 200, contentType: "application/x-ndjson; charset=utf-8") { writer in
                         let semaphore = DispatchSemaphore(value: 0)
@@ -145,8 +177,7 @@ func runAuKServe(options: TTSTestOptions) async throws {
                             await writeAuKSpeechStream(
                                 engine: engine,
                                 request: speechRequest,
-                                defaultRef: options.referenceAudioPath,
-                                defaultSeconds: options.genSeconds,
+                                options: options,
                                 gate: gate,
                                 writer: writer
                             )
@@ -162,8 +193,7 @@ func runAuKServe(options: TTSTestOptions) async throws {
                     box.response = await aukSpeechResponse(
                         engine: engine,
                         request: speechRequest,
-                        defaultRef: options.referenceAudioPath,
-                        defaultSeconds: options.genSeconds,
+                        options: options,
                         gate: gate
                     )
                     semaphore.signal()
@@ -178,7 +208,10 @@ func runAuKServe(options: TTSTestOptions) async throws {
         "event": "ready",
         "sampleRate": engine.sampleRate,
         "loadSeconds": loadSeconds,
-        "backend": "auk-flash",
+        "backend": engine.backend,
+        "variant": engine.variant.rawValue,
+        "nfe": sampling.nfe,
+        "cfg": sampling.cfgStrength,
     ])
 
     let decoder = JSONDecoder()
@@ -195,55 +228,135 @@ func runAuKServe(options: TTSTestOptions) async throws {
         }
         let requestID = request.id ?? UUID().uuidString
         let outputPath = request.out ?? "/tmp/yuwp-tts-serve-\(requestID).wav"
-        let instruction = aukResolveInstruction(
-            instruction: request.instruction,
-            instructions: nil,
-            input: request.text
-        )
-        guard let instruction else {
-            emitJSON(["event": "error", "id": requestID, "error": "instruction/text is required"])
-            continue
-        }
-        let refPath = request.refAudio ?? options.referenceAudioPath
-        let genSeconds: Double?
-        do {
-            genSeconds = try aukResolveGenSeconds(request.genSeconds ?? options.genSeconds, hasReferenceAudio: refPath != nil)
-        } catch {
-            emitJSON(["event": "error", "id": requestID, "error": error.localizedDescription])
-            continue
-        }
-        await gate.enter()
-        do {
-            let (samples, sampleRate) = try engine.generate(
-                instruction: instruction,
-                referenceAudioURL: refPath.map { URL(fileURLWithPath: $0) },
-                genSeconds: genSeconds,
-                seed: options.seed
-            )
-            try AudioUtils.writeWavFile(
-                samples: samples,
-                sampleRate: Double(sampleRate),
-                fileURL: URL(fileURLWithPath: outputPath)
-            )
-            await gate.leave()
+        switch aukPlanResult(from: request, options: options) {
+        case .rejected(let rejection):
             emitJSON([
-                "event": "done",
+                "event": "error",
                 "id": requestID,
-                "out": outputPath,
-                "audioDurationSeconds": Double(samples.count) / Double(sampleRate),
+                "error": rejection.message,
+                "code": rejection.code,
+                "options": rejection.options,
             ])
-        } catch {
-            await gate.leave()
-            emitJSON(["event": "error", "id": requestID, "error": error.localizedDescription])
+            continue
+        case .plan(let plan):
+            let refPath = request.refAudio ?? options.referenceAudioPath
+            await gate.enter()
+            do {
+                var chunkSamples: [[Float]] = []
+                var chunkCount = 0
+                let synthStart = Date()
+                var firstAudio: TimeInterval?
+                for chunk in plan.chunks {
+                    let (samples, sampleRate) = try engine.generate(
+                        instruction: chunk.instruction,
+                        referenceAudioURL: refPath.map { URL(fileURLWithPath: $0) },
+                        genSeconds: chunk.genSeconds,
+                        seed: options.seed,
+                        nfe: request.nfe ?? options.nfe,
+                        cfgStrength: request.cfgStrength ?? request.cfg ?? options.cfg,
+                        sway: request.sway ?? options.sway
+                    )
+                    if firstAudio == nil {
+                        firstAudio = Date().timeIntervalSince(synthStart)
+                    }
+                    chunkCount += 1
+                    chunkSamples.append(samples)
+                    if request.emitChunks == true {
+                        emitJSON([
+                            "event": "chunk",
+                            "id": requestID,
+                            "chunk": chunkCount,
+                            "samples": samples.count,
+                            "seconds": Double(samples.count) / Double(sampleRate),
+                            "elapsedSeconds": Date().timeIntervalSince(synthStart),
+                        ])
+                    }
+                }
+                let samples = aukConcatenateTTSChunks(
+                    chunkSamples,
+                    sampleRate: engine.sampleRate,
+                    pauseSeconds: plan.pauseSeconds
+                )
+                try AudioUtils.writeWavFile(
+                    samples: samples,
+                    sampleRate: Double(engine.sampleRate),
+                    fileURL: URL(fileURLWithPath: outputPath)
+                )
+                await gate.leave()
+                emitJSON([
+                    "event": "done",
+                    "id": requestID,
+                    "out": outputPath,
+                    "firstAudioSeconds": firstAudio ?? -1,
+                    "audioDurationSeconds": Double(samples.count) / Double(engine.sampleRate),
+                    "wallSeconds": Date().timeIntervalSince(synthStart),
+                    "chunks": chunkCount,
+                ])
+            } catch {
+                await gate.leave()
+                emitJSON(["event": "error", "id": requestID, "error": error.localizedDescription])
+            }
         }
     }
 }
 
-private func aukInstruction(from request: OpenAISpeechRequest) -> String? {
-    aukResolveInstruction(
-        instruction: request.instruction,
-        instructions: request.instructions,
-        input: request.input
+private func aukPlan(from options: TTSTestOptions) throws -> AuKSpeechPlan {
+    switch aukPlanResult(from: options) {
+    case .plan(let plan):
+        return plan
+    case .rejected(let rejection):
+        throw AuKError.invalidInput(rejection.message)
+    }
+}
+
+private func aukPlanResult(from options: TTSTestOptions) -> AuKSpeechPlanResult {
+    AuKSpeechPlanner.plan(
+        AuKSpeechPlanRequest(
+            task: options.task,
+            input: options.textSet || options.instruction == nil ? options.text : nil,
+            instruction: options.instruction,
+            hasSourceAudio: options.referenceAudioPath != nil,
+            autoChunk: options.autoChunk,
+            interChunkPauseSeconds: options.chunkPauseMs.map { $0 / 1000 },
+            genSeconds: options.genSeconds
+        )
+    )
+}
+
+private func aukPlanResult(from request: OpenAISpeechRequest, options: TTSTestOptions) -> AuKSpeechPlanResult {
+    AuKSpeechPlanner.plan(
+        AuKSpeechPlanRequest(
+            task: request.task,
+            mode: request.mode,
+            input: request.input,
+            instruction: request.instruction,
+            instructions: request.instructions,
+            hasSourceAudio: (request.refAudio ?? options.referenceAudioPath) != nil,
+            autoChunk: request.autoChunk,
+            chunkTargetCharacters: request.chunkTargetCharacters,
+            chunkHardCharacterLimit: request.chunkHardCharacterLimit,
+            interChunkPauseSeconds: request.resolvedPauseSeconds ?? options.chunkPauseMs.map { $0 / 1000 },
+            genSeconds: request.genSeconds ?? options.genSeconds
+        )
+    )
+}
+
+private func aukPlanResult(from request: TTSServeRequest, options: TTSTestOptions) -> AuKSpeechPlanResult {
+    AuKSpeechPlanner.plan(
+        AuKSpeechPlanRequest(
+            task: request.task ?? options.task,
+            mode: request.mode,
+            input: request.text,
+            instruction: request.instruction,
+            hasSourceAudio: (request.refAudio ?? options.referenceAudioPath) != nil,
+            autoChunk: request.autoChunk ?? options.autoChunk,
+            chunkTargetCharacters: request.chunkTargetCharacters,
+            chunkHardCharacterLimit: request.chunkHardCharacterLimit,
+            interChunkPauseSeconds: request.interChunkPauseSeconds
+                ?? request.chunkPauseMs.map { $0 / 1000 }
+                ?? options.chunkPauseMs.map { $0 / 1000 },
+            genSeconds: request.genSeconds ?? options.genSeconds
+        )
     )
 }
 
@@ -265,36 +378,45 @@ private func aukHTTPError(_ error: Error) -> HTTPResponse {
 private func aukSpeechResponse(
     engine: AuKEngine,
     request: OpenAISpeechRequest,
-    defaultRef: String?,
-    defaultSeconds: Double?,
+    options: TTSTestOptions,
     gate: AsyncGate
 ) async -> HTTPResponse {
     let responseFormat = request.responseFormat?.lowercased() ?? "wav"
     guard responseFormat == "wav" else {
         return jsonResponse(status: 400, ["error": "unsupported response_format '\(responseFormat)'; only wav is currently supported"])
     }
-    guard let instruction = aukInstruction(from: request) else {
-        return jsonResponse(status: 400, ["error": "instruction/input is required"])
+    let plan: AuKSpeechPlan
+    switch aukPlanResult(from: request, options: options) {
+    case .rejected(let rejection):
+        return jsonResponse(status: 400, rejection.jsonObject)
+    case .plan(let prepared):
+        plan = prepared
     }
-    let refPath = request.refAudio ?? defaultRef
-    let genSeconds: Double?
-    do {
-        genSeconds = try aukResolveGenSeconds(request.genSeconds ?? defaultSeconds, hasReferenceAudio: refPath != nil)
-    } catch {
-        return jsonResponse(status: 400, ["error": error.localizedDescription])
-    }
+    let refPath = request.refAudio ?? options.referenceAudioPath
     await gate.enter()
     do {
-        let (samples, sampleRate) = try engine.generate(
-            instruction: instruction,
-            referenceAudioURL: refPath.map { URL(fileURLWithPath: $0) },
-            genSeconds: genSeconds,
-            seed: nil
+        var chunkSamples: [[Float]] = []
+        for chunk in plan.chunks {
+            let (samples, _) = try engine.generate(
+                instruction: chunk.instruction,
+                referenceAudioURL: refPath.map { URL(fileURLWithPath: $0) },
+                genSeconds: chunk.genSeconds,
+                seed: nil,
+                nfe: request.nfe ?? options.nfe,
+                cfgStrength: request.resolvedCFG ?? options.cfg,
+                sway: request.sway ?? options.sway
+            )
+            chunkSamples.append(samples)
+        }
+        let samples = aukConcatenateTTSChunks(
+            chunkSamples,
+            sampleRate: engine.sampleRate,
+            pauseSeconds: plan.pauseSeconds
         )
         let outputPath = "/tmp/yuwp-tts-http-\(UUID().uuidString).wav"
         try AudioUtils.writeWavFile(
             samples: samples,
-            sampleRate: Double(sampleRate),
+            sampleRate: Double(engine.sampleRate),
             fileURL: URL(fileURLWithPath: outputPath)
         )
         let data = try Data(contentsOf: URL(fileURLWithPath: outputPath))
@@ -310,8 +432,7 @@ private func aukSpeechResponse(
 private func writeAuKSpeechStream(
     engine: AuKEngine,
     request: OpenAISpeechRequest,
-    defaultRef: String?,
-    defaultSeconds: Double?,
+    options: TTSTestOptions,
     gate: AsyncGate,
     writer: HTTPStreamWriter
 ) async {
@@ -324,41 +445,44 @@ private func writeAuKSpeechStream(
         writer.write(payload)
     }
 
-    guard let instruction = aukInstruction(from: request) else {
-        emit(["event": "error", "error": "instruction/input is required"])
+    let plan: AuKSpeechPlan
+    switch aukPlanResult(from: request, options: options) {
+    case .rejected(let rejection):
+        emit(rejection.jsonObject.merging(["event": "error"]) { _, new in new })
         return
+    case .plan(let prepared):
+        plan = prepared
     }
-    let refPath = request.refAudio ?? defaultRef
-    let genSeconds: Double?
-    do {
-        genSeconds = try aukResolveGenSeconds(request.genSeconds ?? defaultSeconds, hasReferenceAudio: refPath != nil)
-    } catch {
-        emit(["event": "error", "error": error.localizedDescription])
-        return
-    }
-    emit([
-        "event": "metadata",
-        "format": "pcm_s16le",
-        "sample_rate": engine.sampleRate,
-        "channels": 1,
-        "backend": "auk-flash",
-    ])
+    let refPath = request.refAudio ?? options.referenceAudioPath
     await gate.enter()
     do {
-        let (samples, sampleRate) = try engine.generate(
-            instruction: instruction,
-            referenceAudioURL: refPath.map { URL(fileURLWithPath: $0) },
-            genSeconds: genSeconds,
-            seed: nil
+        try AuKStreamSession.run(
+            sampleRate: engine.sampleRate,
+            backend: engine.backend,
+            variant: engine.variant.rawValue,
+            plan: plan,
+            generate: { chunk in
+                let (samples, _) = try engine.generate(
+                    instruction: chunk.instruction,
+                    referenceAudioURL: refPath.map { URL(fileURLWithPath: $0) },
+                    genSeconds: chunk.genSeconds,
+                    seed: nil,
+                    nfe: request.nfe ?? options.nfe,
+                    cfgStrength: request.resolvedCFG ?? options.cfg,
+                    sway: request.sway ?? options.sway
+                )
+                return samples
+            },
+            emit: { event in
+                switch event {
+                case .audio(let audio):
+                    emit(aukSpeechStreamJSON(event, audioBase64: pcm16Base64(samples: audio.pcm)))
+                default:
+                    emit(aukSpeechStreamJSON(event))
+                }
+            }
         )
         await gate.leave()
-        emit([
-            "event": "audio",
-            "audio": pcm16Base64(samples: samples),
-            "samples": samples.count,
-            "sample_rate": sampleRate,
-        ])
-        emit(["event": "done"])
     } catch {
         await gate.leave()
         emit(["event": "error", "error": error.localizedDescription])

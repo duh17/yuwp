@@ -34,11 +34,11 @@ The packaged macOS app also ships these notices plus the vendored license files 
 - License: MIT
 - Vendored license text: `third_party/licenses/mlx-swift-lm-LICENSE.txt`
 
-### Tencent AuK (AuK-Flash native MLX port)
+### Tencent AuK (AuK-Flash and AuK Base native MLX port)
 
 - Upstream: <https://github.com/Tencent-Hunyuan/AuK>
 - Reference revision: `feat/mlx-apple-silicon` at `6943a1e967409e8c73139a7a345f2a611cfb3dd6`
-- What Yuwp ships: a native Swift/MLX inference port of the official AuK-Flash MLX backend in `Sources/NativeTTS` (`AuK*.swift`), plus a one-time PyTorch→MLX converter invoked as `yuwp-tts convert-auk`. Runtime inference does not bundle or call Python.
+- What Yuwp ships: a native Swift/MLX inference port of the official AuK-Flash and AuK Base MLX backend in `Sources/NativeTTS` (`AuK*.swift`), plus a one-time PyTorch→MLX converter invoked as `yuwp-tts convert-auk`. Runtime inference does not bundle or call Python.
 - License: MIT
 - Vendored license text: `third_party/licenses/auk-LICENSE.txt`
 - Credit: Tencent / Hunyuan for AuK training and inference code, including the official MLX Apple Silicon backend
@@ -116,12 +116,14 @@ party dependencies of the product.
 - Vendored Apache 2.0 text: `third_party/licenses/Apache-2.0.txt`
 - Credit: Qwen team for the underlying ASR model family
 
-### AuK-Flash And Qwen2.5-Omni-3B
+### AuK-Flash, AuK Base, And Qwen2.5-Omni-3B
 
 - Upstream model cards / repositories:
   - <https://github.com/Tencent-Hunyuan/AuK>
+  - <https://huggingface.co/tencent/AuK>
+  - <https://huggingface.co/tencent/AuK-Flash>
   - <https://huggingface.co/Qwen/Qwen2.5-Omni-3B>
-- Role in Yuwp: runtime-downloaded weights for native AuK-Flash TTS / audio editing (`yuwp-tts`). The Thinker encoder is Qwen2.5-Omni-3B; AuK-Flash DiT + VAE weights are converted locally to MLX safetensors.
+- Role in Yuwp: runtime-downloaded weights for native AuK-Flash / AuK Base TTS and audio editing (`yuwp-tts`). The Thinker encoder is Qwen2.5-Omni-3B; AuK DiT + VAE weights are converted locally to MLX safetensors.
 - License: MIT (AuK weights/code as published by Tencent); Apache License 2.0 (Qwen2.5-Omni)
 - Vendored license text:
   - `third_party/licenses/auk-LICENSE.txt`

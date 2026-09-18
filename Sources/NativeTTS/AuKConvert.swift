@@ -143,13 +143,23 @@ public enum AuKConvert {
         let fm = FileManager.default
         try fm.createDirectory(at: output, withIntermediateDirectories: true)
 
+        let variant: AuKVariant
+        switch inspectAuKModelDirectory(source) {
+        case .pytorchSource(let detected), .converted(let detected):
+            variant = detected
+        case .unknown:
+            throw AuKError.unsupportedVariant(
+                "source is not AuK-Flash or AuK Base: \(source.path)"
+            )
+        }
+
         let vaeSrc = source.appendingPathComponent("vae.safetensors")
-        let ditSrc = source.appendingPathComponent("auk_flash.safetensors")
+        let ditSrc = source.appendingPathComponent(variant.pytorchWeightFileName)
         guard fm.fileExists(atPath: vaeSrc.path) else {
             throw AuKError.missingWeights("vae.safetensors not found in \(source.path)")
         }
         guard fm.fileExists(atPath: ditSrc.path) else {
-            throw AuKError.missingWeights("auk_flash.safetensors not found in \(source.path)")
+            throw AuKError.missingWeights("\(variant.pytorchWeightFileName) not found in \(source.path)")
         }
 
         let vaeOut = try convertVAE(try MLX.loadArrays(url: vaeSrc))
@@ -162,32 +172,71 @@ public enum AuKConvert {
         }
         eval(inv)
         try aukProveCompleteLoad(AuKFlux2Edit(invFreq: inv.asArray(Float.self)), weights: ditConverted.dit, label: "DiT")
-        try MLX.save(arrays: ditConverted.dit, url: output.appendingPathComponent("dit_flash.safetensors"))
-        try MLX.save(arrays: ditConverted.fusion, url: output.appendingPathComponent("fusion_flash.safetensors"))
+        try MLX.save(arrays: ditConverted.dit, url: output.appendingPathComponent(variant.ditFileName))
+        try MLX.save(arrays: ditConverted.fusion, url: output.appendingPathComponent(variant.fusionFileName))
 
-        var thinkerWeights: [String: MLXArray] = [:]
-        let thinkerFiles = try fm.contentsOfDirectory(at: thinkerSource, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "safetensors" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        if thinkerFiles.isEmpty {
-            throw AuKError.missingWeights("no safetensors found in thinker source \(thinkerSource.path)")
-        }
-        for file in thinkerFiles {
-            let shard = try MLX.loadArrays(url: file)
-            for (key, value) in shard {
-                switch remapThinkerKey(key) {
-                case .thinker:
-                    thinkerWeights[key] = value
-                default:
-                    continue
+        let thinkerCount: Int
+        if let convertedThinker = aukConvertedThinker(from: thinkerSource) {
+            try copyConvertedThinker(convertedThinker, to: output)
+            thinkerCount = try MLX.loadArrays(
+                url: output.appendingPathComponent("thinker/thinker.safetensors")
+            ).count
+        } else {
+            var thinkerWeights: [String: MLXArray] = [:]
+            let thinkerFiles = try fm.contentsOfDirectory(at: thinkerSource, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "safetensors" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            if thinkerFiles.isEmpty {
+                throw AuKError.missingWeights("no safetensors found in thinker source \(thinkerSource.path)")
+            }
+            for file in thinkerFiles {
+                let shard = try MLX.loadArrays(url: file)
+                for (key, value) in shard {
+                    switch remapThinkerKey(key) {
+                    case .thinker:
+                        thinkerWeights[key] = value
+                    default:
+                        continue
+                    }
                 }
             }
+            let thinkerOut = try convertThinker(thinkerWeights)
+            try aukProveCompleteLoad(AuKThinkerEncoder(), weights: thinkerOut, label: "Thinker")
+            let thinkerDir = output.appendingPathComponent("thinker")
+            try fm.createDirectory(at: thinkerDir, withIntermediateDirectories: true)
+            try MLX.save(arrays: thinkerOut, url: thinkerDir.appendingPathComponent("thinker.safetensors"))
+            try writeThinkerConfig(to: thinkerDir.appendingPathComponent("thinker_config.json"))
+            try copyProcessorFiles(from: thinkerSource, to: output)
+            thinkerCount = thinkerOut.count
         }
-        let thinkerOut = try convertThinker(thinkerWeights)
-        try aukProveCompleteLoad(AuKThinkerEncoder(), weights: thinkerOut, label: "Thinker")
-        let thinkerDir = output.appendingPathComponent("thinker")
-        try fm.createDirectory(at: thinkerDir, withIntermediateDirectories: true)
-        try MLX.save(arrays: thinkerOut, url: thinkerDir.appendingPathComponent("thinker.safetensors"))
+
+        let yamlSrc = source.appendingPathComponent("config.yaml")
+        if fm.fileExists(atPath: yamlSrc.path) {
+            try copyReplacing(yamlSrc, output.appendingPathComponent("config.yaml"))
+        }
+        let meta: [String: Any] = [
+            "name": variant.modelName,
+            "variant": variant.rawValue,
+            "sample_rate": AuKFlashConfig.sampleRate,
+            "downsample_rate": AuKFlashConfig.downsampleRate,
+            "latent_dim": AuKFlashConfig.latentDim,
+        ]
+        let metaData = try JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted, .sortedKeys])
+        try metaData.write(to: output.appendingPathComponent("auk_config.json"))
+
+        if let bits, bits == 4 || bits == 8 {
+            try quantizeConvertedWeights(at: output, variant: variant, bits: bits, fusion: ditConverted.fusion)
+        }
+
+        return AuKConvertResult(
+            ditTensors: ditConverted.dit.count,
+            vaeTensors: vaeOut.count,
+            thinkerTensors: thinkerCount,
+            outputDirectory: output
+        )
+    }
+
+    private static func writeThinkerConfig(to url: URL) throws {
         let thinkerConfig: [String: Any] = [
             "text": [
                 "hidden_size": AuKFlashConfig.thinkerHidden,
@@ -211,33 +260,7 @@ public enum AuKConvert {
             ],
         ]
         let thinkerConfigData = try JSONSerialization.data(withJSONObject: thinkerConfig, options: [.prettyPrinted, .sortedKeys])
-        try thinkerConfigData.write(to: thinkerDir.appendingPathComponent("thinker_config.json"))
-
-        try copyProcessorFiles(from: thinkerSource, to: output)
-        let yamlSrc = source.appendingPathComponent("config.yaml")
-        if fm.fileExists(atPath: yamlSrc.path) {
-            try copyReplacing(yamlSrc, output.appendingPathComponent("config.yaml"))
-        }
-        let meta: [String: Any] = [
-            "name": AuKFlashConfig.name,
-            "variant": AuKFlashConfig.variant,
-            "sample_rate": AuKFlashConfig.sampleRate,
-            "downsample_rate": AuKFlashConfig.downsampleRate,
-            "latent_dim": AuKFlashConfig.latentDim,
-        ]
-        let metaData = try JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted, .sortedKeys])
-        try metaData.write(to: output.appendingPathComponent("auk_config.json"))
-
-        if let bits, bits == 4 || bits == 8 {
-            try quantizeConvertedWeights(at: output, bits: bits, fusion: ditConverted.fusion)
-        }
-
-        return AuKConvertResult(
-            ditTensors: ditConverted.dit.count,
-            vaeTensors: vaeOut.count,
-            thinkerTensors: thinkerOut.count,
-            outputDirectory: output
-        )
+        try thinkerConfigData.write(to: url)
     }
 
     private static func isVAEConvWeight(_ mapped: String) -> Bool {
@@ -276,7 +299,12 @@ public enum AuKConvert {
         }
     }
 
-    private static func quantizeConvertedWeights(at output: URL, bits: Int, fusion: [String: MLXArray]) throws {
+    private static func quantizeConvertedWeights(
+        at output: URL,
+        variant: AuKVariant,
+        bits: Int,
+        fusion: [String: MLXArray]
+    ) throws {
         guard let inv = fusion["inv_freq"] else {
             throw AuKError.conversionFailed("missing inv_freq for quantization")
         }
@@ -285,13 +313,13 @@ public enum AuKConvert {
         let dit = AuKFlux2Edit(invFreq: invFreq)
         try aukProveCompleteLoad(
             dit,
-            weights: try MLX.loadArrays(url: output.appendingPathComponent("dit_flash.safetensors")),
+            weights: try MLX.loadArrays(url: output.appendingPathComponent(variant.ditFileName)),
             label: "DiT"
         )
         quantize(model: dit, groupSize: 64, bits: bits)
         try MLX.save(
             arrays: flattenedParameterDict(dit.parameters()),
-            url: output.appendingPathComponent("dit_flash.q\(bits).safetensors")
+            url: output.appendingPathComponent(variant.quantizedDitFileName(bits: bits))
         )
 
         let thinker = AuKThinkerEncoder()
@@ -305,6 +333,41 @@ public enum AuKConvert {
             arrays: flattenedParameterDict(thinker.parameters()),
             url: output.appendingPathComponent("thinker/thinker.q\(bits).safetensors")
         )
+    }
+
+    fileprivate struct ConvertedThinker {
+        var thinkerDirectory: URL
+        var processorDirectory: URL
+    }
+
+    fileprivate static func aukConvertedThinker(from thinkerSource: URL) -> ConvertedThinker? {
+        let fm = FileManager.default
+        let nested = thinkerSource.appendingPathComponent("thinker/thinker.safetensors")
+        if fm.fileExists(atPath: nested.path) {
+            return ConvertedThinker(
+                thinkerDirectory: thinkerSource.appendingPathComponent("thinker"),
+                processorDirectory: thinkerSource
+            )
+        }
+        let direct = thinkerSource.appendingPathComponent("thinker.safetensors")
+        if fm.fileExists(atPath: direct.path) {
+            let parent = thinkerSource.deletingLastPathComponent()
+            let processor = fm.fileExists(atPath: parent.appendingPathComponent("tokenizer.json").path)
+                ? parent
+                : thinkerSource
+            return ConvertedThinker(thinkerDirectory: thinkerSource, processorDirectory: processor)
+        }
+        return nil
+    }
+
+    fileprivate static func copyConvertedThinker(_ source: ConvertedThinker, to output: URL) throws {
+        let fm = FileManager.default
+        let destination = output.appendingPathComponent("thinker")
+        if fm.fileExists(atPath: destination.path) {
+            try fm.removeItem(at: destination)
+        }
+        try fm.copyItem(at: source.thinkerDirectory, to: destination)
+        try copyProcessorFiles(from: source.processorDirectory, to: output)
     }
 }
 

@@ -30,14 +30,67 @@ public enum AuKError: Error, LocalizedError, Equatable {
     }
 }
 
+public enum AuKVariant: String, Sendable, Equatable, CaseIterable {
+    case flash
+    case base
+
+    public var modelName: String {
+        switch self {
+        case .flash: AuKFlashConfig.name
+        case .base: "AuK"
+        }
+    }
+
+    public var backendString: String {
+        switch self {
+        case .flash: "auk-flash"
+        case .base: "auk-base"
+        }
+    }
+
+    public var pytorchWeightFileName: String {
+        switch self {
+        case .flash: "auk_flash.safetensors"
+        case .base: "auk_base.safetensors"
+        }
+    }
+
+    public var ditFileName: String { "dit_\(rawValue).safetensors" }
+    public var fusionFileName: String { "fusion_\(rawValue).safetensors" }
+
+    public func quantizedDitFileName(bits: Int) -> String {
+        "dit_\(rawValue).q\(bits).safetensors"
+    }
+}
+
 public enum TTSBackendKind: Equatable, Sendable {
     case aukFlash
+    case aukBase
     case qwen3TTS
+
+    public var isAuK: Bool {
+        self == .aukFlash || self == .aukBase
+    }
+
+    public var aukVariant: AuKVariant? {
+        switch self {
+        case .aukFlash: .flash
+        case .aukBase: .base
+        case .qwen3TTS: nil
+        }
+    }
+
+    public static func auk(_ variant: AuKVariant) -> TTSBackendKind {
+        switch variant {
+        case .flash: .aukFlash
+        case .base: .aukBase
+        }
+    }
 }
 
 public enum AuKModelLayout: Equatable, Sendable {
-    case converted(variant: String)
-    case pytorchSource
+    case converted(variant: AuKVariant)
+    case pytorchSource(variant: AuKVariant)
     case unknown
 }
 
@@ -116,23 +169,53 @@ public struct AuKSampling: Sendable, Equatable {
 
     public var usesCFG: Bool { cfgStrength >= 1e-5 }
 
+    public static let flash = AuKSampling(
+        nfe: 4,
+        cfgStrength: 0,
+        sway: nil,
+        tGrid: AuKFlashConfig.tGrid
+    )
+
+    public static let defaultBaseNFE = 32
+    public static let defaultBaseCFG: Float = 2.0
+    public static let defaultBaseSway: Float = -1.0
+
     public static func resolve(
-        nfe: Int,
-        cfgStrength: Float,
-        sway: Float?,
-        tGrid: [Float]?
+        variant: AuKVariant,
+        nfe: Int? = nil,
+        cfgStrength: Float? = nil,
+        sway: Float? = nil,
+        tGrid: [Float]? = nil
     ) -> AuKSampling {
-        _ = nfe
-        _ = cfgStrength
-        _ = sway
-        _ = tGrid
-        return AuKSampling(
-            nfe: 4,
-            cfgStrength: 0,
-            sway: nil,
-            tGrid: AuKFlashConfig.tGrid
-        )
+        switch variant {
+        case .flash:
+            return .flash
+        case .base:
+            let resolvedNFE = max(1, nfe ?? defaultBaseNFE)
+            let resolvedCFG = cfgStrength ?? defaultBaseCFG
+            let resolvedSway = sway ?? defaultBaseSway
+            let grid: [Float]
+            if let tGrid, tGrid.count >= 2 {
+                grid = tGrid
+            } else {
+                grid = aukLinspace(0, 1, count: resolvedNFE + 1).map { time in
+                    time + resolvedSway * (cos(Float.pi / 2 * time) - 1 + time)
+                }
+            }
+            return AuKSampling(
+                nfe: max(1, grid.count - 1),
+                cfgStrength: resolvedCFG,
+                sway: resolvedSway,
+                tGrid: grid
+            )
+        }
     }
+}
+
+func aukLinspace(_ start: Float, _ end: Float, count: Int) -> [Float] {
+    guard count > 1 else { return [start] }
+    let step = (end - start) / Float(count - 1)
+    return (0 ..< count).map { start + Float($0) * step }
 }
 
 func aukModelName(fromYAML yaml: String) -> String? {
@@ -148,53 +231,74 @@ func aukModelName(fromYAML yaml: String) -> String? {
     return nil
 }
 
-func aukRequireFlashVariant(named name: String) throws -> String {
-    if name == AuKFlashConfig.name || name.lowercased() == AuKFlashConfig.variant {
-        return AuKFlashConfig.variant
+func aukParseVariant(named name: String) throws -> AuKVariant {
+    switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "auk-flash", "flash":
+        return .flash
+    case "auk", "auk-base", "base":
+        return .base
+    default:
+        throw AuKError.unsupportedVariant(
+            "supported variants are AuK-Flash and AuK (base); got \(name)"
+        )
     }
-    throw AuKError.unsupportedVariant(
-        "Yuwp's native port supports AuK-Flash only (fixed 4 steps, CFG off); got \(name)"
-    )
+}
+
+func aukNamedVariant(fromDirectory url: URL) -> AuKVariant? {
+    let yamlURL = url.appendingPathComponent("config.yaml")
+    let jsonURL = url.appendingPathComponent("auk_config.json")
+    if let yaml = try? String(contentsOf: yamlURL, encoding: .utf8),
+       let name = aukModelName(fromYAML: yaml),
+       let variant = try? aukParseVariant(named: name) {
+        return variant
+    }
+    if let data = try? Data(contentsOf: jsonURL),
+       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        if let variant = obj["variant"] as? String, let parsed = try? aukParseVariant(named: variant) {
+            return parsed
+        }
+        if let name = obj["name"] as? String, let parsed = try? aukParseVariant(named: name) {
+            return parsed
+        }
+    }
+    return nil
+}
+
+func aukHasConvertedFiles(in url: URL, variant: AuKVariant) -> Bool {
+    let fm = FileManager.default
+    let dit = url.appendingPathComponent(variant.ditFileName).path
+    let ditQ8 = url.appendingPathComponent(variant.quantizedDitFileName(bits: 8)).path
+    let ditQ4 = url.appendingPathComponent(variant.quantizedDitFileName(bits: 4)).path
+    let fusion = url.appendingPathComponent(variant.fusionFileName).path
+    let vae = url.appendingPathComponent("vae.safetensors").path
+    let hasDit = fm.fileExists(atPath: dit) || fm.fileExists(atPath: ditQ8) || fm.fileExists(atPath: ditQ4)
+    return hasDit && fm.fileExists(atPath: fusion) && fm.fileExists(atPath: vae)
 }
 
 public func inspectAuKModelDirectory(_ url: URL) -> AuKModelLayout {
     let fm = FileManager.default
-    let yamlURL = url.appendingPathComponent("config.yaml")
-    let jsonURL = url.appendingPathComponent("auk_config.json")
-    var namedFlash = false
-    if let yaml = try? String(contentsOf: yamlURL, encoding: .utf8),
-       let name = aukModelName(fromYAML: yaml),
-       name == AuKFlashConfig.name {
-        namedFlash = true
+    if aukHasConvertedFiles(in: url, variant: .flash) {
+        return .converted(variant: .flash)
     }
-    if let data = try? Data(contentsOf: jsonURL),
-       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-       let name = obj["name"] as? String,
-       name == AuKFlashConfig.name {
-        namedFlash = true
+    if aukHasConvertedFiles(in: url, variant: .base) {
+        return .converted(variant: .base)
     }
-
-    let convertedDit = fm.fileExists(atPath: url.appendingPathComponent("dit_flash.safetensors").path)
-        || fm.fileExists(atPath: url.appendingPathComponent("dit_flash.q8.safetensors").path)
-        || fm.fileExists(atPath: url.appendingPathComponent("dit_flash.q4.safetensors").path)
-    let convertedFusion = fm.fileExists(atPath: url.appendingPathComponent("fusion_flash.safetensors").path)
-    let hasVAE = fm.fileExists(atPath: url.appendingPathComponent("vae.safetensors").path)
-
-    if convertedDit && convertedFusion && hasVAE {
-        return .converted(variant: AuKFlashConfig.variant)
+    if fm.fileExists(atPath: url.appendingPathComponent(AuKVariant.flash.pytorchWeightFileName).path) {
+        return .pytorchSource(variant: .flash)
     }
-
-    let pytorchDit = fm.fileExists(atPath: url.appendingPathComponent("auk_flash.safetensors").path)
-    if namedFlash || pytorchDit {
-        return .pytorchSource
+    if fm.fileExists(atPath: url.appendingPathComponent(AuKVariant.base.pytorchWeightFileName).path) {
+        return .pytorchSource(variant: .base)
+    }
+    if let named = aukNamedVariant(fromDirectory: url) {
+        return .pytorchSource(variant: named)
     }
     return .unknown
 }
 
 public func detectTTSBackend(at url: URL) -> TTSBackendKind {
     switch inspectAuKModelDirectory(url) {
-    case .converted, .pytorchSource:
-        return .aukFlash
+    case .converted(let variant), .pytorchSource(let variant):
+        return .auk(variant)
     case .unknown:
         return .qwen3TTS
     }

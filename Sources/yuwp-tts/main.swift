@@ -8,6 +8,7 @@ import YuwpHTTPServerSupport
 struct TTSTestOptions {
     var modelPath: String?
     var text = "Hello from Yuwp TTS."
+    var textSet = false
     var outputPath = "tts-output.wav"
     var voice: String?
     var referenceAudioPath: String?
@@ -30,6 +31,12 @@ struct TTSTestOptions {
     var thinkerPath: String?
     var bits: Int?
     var seed: UInt64?
+    var nfe: Int?
+    var cfg: Float?
+    var sway: Float?
+    var task: String?
+    var autoChunk: Bool?
+    var chunkPauseMs: Double?
 }
 
 func parseOptions(_ args: [String]) -> TTSTestOptions {
@@ -44,7 +51,9 @@ func parseOptions(_ args: [String]) -> TTSTestOptions {
         }
         switch arg {
         case "--model": options.modelPath = takeValue()
-        case "--text": options.text = takeValue() ?? options.text
+        case "--text":
+            options.text = takeValue() ?? options.text
+            options.textSet = true
         case "--out", "--output": options.outputPath = takeValue() ?? options.outputPath
         case "--voice": options.voice = takeValue()
         case "--ref-audio", "--audio": options.referenceAudioPath = takeValue()
@@ -64,25 +73,38 @@ func parseOptions(_ args: [String]) -> TTSTestOptions {
         case "--thinker", "--qwen": options.thinkerPath = takeValue()
         case "--bits": options.bits = takeValue().flatMap(Int.init)
         case "--seed": options.seed = takeValue().flatMap(UInt64.init)
+        case "--nfe": options.nfe = takeValue().flatMap(Int.init)
+        case "--cfg", "--cfg-strength": options.cfg = takeValue().flatMap(Float.init)
+        case "--sway": options.sway = takeValue().flatMap(Float.init)
+        case "--task": options.task = takeValue()
+        case "--auto-chunk": options.autoChunk = true
+        case "--no-auto-chunk": options.autoChunk = false
+        case "--chunk-pause-ms": options.chunkPauseMs = takeValue().flatMap(Double.init)
         case "--help", "-h":
             print("""
             Usage: yuwp-tts --model <model-dir> [options]
                    yuwp-tts serve --transport http --model <model-dir> [--host 127.0.0.1] [--port 7937]
-                   yuwp-tts convert-auk --src <AuK-Flash-dir> --thinker-src <Qwen2.5-Omni-3B> --out <mlx-dir>
+                   yuwp-tts convert-auk --src <AuK-Flash-or-AuK-dir> --thinker-src <Qwen2.5-Omni-3B or auk-flash-mlx> --out <mlx-dir>
 
             Options:
-              --text <text>                Text to synthesize (Qwen3-TTS) or instruction (AuK-Flash)
-              --instruction <text>         AuK-Flash instruction-driven TTS/edit prompt
+              --text <text>                Text to synthesize (Qwen3-TTS) or instruction (AuK)
+              --instruction <text>         AuK instruction-driven TTS/edit prompt
               --out <path>                 Output WAV path (default: tts-output.wav)
               --voice <description>        VoiceDesign description or CustomVoice speaker/style
               --ref-audio <path>           Reference WAV/M4A for cloning or AuK source/reference audio
-              --audio <path>               Alias for --ref-audio (AuK-Flash)
+              --audio <path>               Alias for --ref-audio (AuK)
               --ref-text <text>            Transcript of reference audio
               --language <language>        Language, default English
-              --gen-seconds <float>        AuK-Flash target duration; required for instruct TTS without --ref-audio
-              --thinker <dir>              Qwen2.5-Omni tokenizer/config directory for AuK-Flash
+              --gen-seconds <float>        AuK target duration; required for instruct TTS without --ref-audio
+              --nfe <n>                    AuK Base diffusion steps (default 32; ignored on Flash)
+              --cfg <float>                AuK Base CFG strength (default 2.0; ignored on Flash)
+              --sway <float>               AuK Base sway coef (default -1.0; ignored on Flash)
+              --task tts|edit              AuK task. tts enables sentence-preserving auto-chunk
+              --auto-chunk / --no-auto-chunk  Force or forbid TTS auto-chunk (edits reject --auto-chunk)
+              --chunk-pause-ms <n>         Silence between TTS chunks, default 200
+              --thinker <dir>              Qwen2.5-Omni tokenizer/config or converted auk-flash-mlx dir
               --bits 8|4                   Load/quantize AuK DiT+Thinker to 8 or 4 bits (default: fp32)
-              --seed <n>                   AuK-Flash latent noise seed
+              --seed <n>                   AuK latent noise seed
               --max-tokens <n>             Maximum codec tokens to generate
               --temperature <float>        Sampling temperature; 0 uses greedy decoding
               --top-p <float>              Top-p sampling threshold
@@ -190,11 +212,29 @@ struct TTSServeRequest: Decodable {
     var emitChunks: Bool?
     var refAudio: String?
     var genSeconds: Double?
+    var task: String?
+    var mode: String?
+    var autoChunk: Bool?
+    var nfe: Int?
+    var cfg: Float?
+    var cfgStrength: Float?
+    var sway: Float?
+    var chunkPauseMs: Double?
+    var interChunkPauseSeconds: Double?
+    var chunkTargetCharacters: Int?
+    var chunkHardCharacterLimit: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, text, instruction, out, temperature, topP, topK, minP, repetitionPenalty, maxTokens, streamingInterval, emitChunks
         case refAudio = "ref_audio"
         case genSeconds = "gen_seconds"
+        case task, mode, nfe, cfg, sway
+        case autoChunk = "auto_chunk"
+        case cfgStrength = "cfg_strength"
+        case chunkPauseMs = "chunk_pause_ms"
+        case interChunkPauseSeconds = "inter_chunk_pause_seconds"
+        case chunkTargetCharacters = "chunk_target_characters"
+        case chunkHardCharacterLimit = "chunk_hard_character_limit"
     }
 }
 
@@ -221,6 +261,15 @@ struct OpenAISpeechRequest: Decodable, Sendable {
     var instruction: String?
     var genSeconds: Double?
     var refAudio: String?
+    var task: String?
+    var mode: String?
+    var autoChunk: Bool?
+    var nfe: Int?
+    var cfg: Float?
+    var cfgStrength: Float?
+    var sway: Float?
+    var chunkPauseMs: Double?
+    var interChunkPauseSeconds: Double?
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -245,6 +294,19 @@ struct OpenAISpeechRequest: Decodable, Sendable {
         case instruction
         case genSeconds = "gen_seconds"
         case refAudio = "ref_audio"
+        case task, mode, nfe, cfg, sway
+        case autoChunk = "auto_chunk"
+        case cfgStrength = "cfg_strength"
+        case chunkPauseMs = "chunk_pause_ms"
+        case interChunkPauseSeconds = "inter_chunk_pause_seconds"
+    }
+
+    var resolvedCFG: Float? { cfgStrength ?? cfg }
+
+    var resolvedPauseSeconds: Double? {
+        if let interChunkPauseSeconds { return interChunkPauseSeconds }
+        if let chunkPauseMs { return chunkPauseMs / 1000 }
+        return nil
     }
 }
 
@@ -1003,6 +1065,13 @@ func parseServeOptions(_ args: [String]) -> TTSTestOptions {
         case "--thinker", "--qwen": options.thinkerPath = takeValue()
         case "--bits": options.bits = takeValue().flatMap(Int.init)
         case "--seed": options.seed = takeValue().flatMap(UInt64.init)
+        case "--nfe": options.nfe = takeValue().flatMap(Int.init)
+        case "--cfg", "--cfg-strength": options.cfg = takeValue().flatMap(Float.init)
+        case "--sway": options.sway = takeValue().flatMap(Float.init)
+        case "--task": options.task = takeValue()
+        case "--auto-chunk": options.autoChunk = true
+        case "--no-auto-chunk": options.autoChunk = false
+        case "--chunk-pause-ms": options.chunkPauseMs = takeValue().flatMap(Double.init)
         default: break
         }
         i += 1
@@ -1016,7 +1085,7 @@ func runServe(_ args: [String]) async throws {
         throw AudioGenerationError.invalidInput("serve requires --model <model-dir>")
     }
 
-    if detectTTSBackend(at: URL(fileURLWithPath: modelPath).standardizedFileURL) == .aukFlash {
+    if detectTTSBackend(at: URL(fileURLWithPath: modelPath).standardizedFileURL).isAuK {
         try await runAuKServe(options: options)
         return
     }
@@ -1289,7 +1358,7 @@ guard let modelPath = options.modelPath else {
 do {
     let start = Date()
     let modelURL = URL(fileURLWithPath: modelPath).standardizedFileURL
-    if detectTTSBackend(at: modelURL) == .aukFlash {
+    if detectTTSBackend(at: modelURL).isAuK {
         try await runAuKGenerate(options: options)
         exit(0)
     }

@@ -91,14 +91,29 @@ curl -sf http://127.0.0.1:7937/v1/info | jq .
 
 `POST /v1/audio/speech` 返回 WAV。`POST /v1/audio/speech/stream` 返回 NDJSON 事件（`metadata`、`audio`、`done`、`error`），其中音频块采用 base64 编码的 `pcm_s16le` 格式。
 
-AuK-Flash（指令式 TTS / 音频编辑）使用原生 Swift/MLX，运行时不依赖 Python。先把官方 PyTorch 权重转换一次：
+Qwen3-TTS 仍是日常低延迟默认。`yuwp-tts` 也可以加载原生 Swift/MLX 的 [AuK](https://github.com/Tencent-Hunyuan/AuK)：**AuK-Flash**（固定 4 步，关闭 CFG/sway）或 **AuK Base**（默认 `nfe=32`、`cfg=2.0`、`sway=-1.0`）。一个进程只加载一个模型目录；`GET /v1/info` 用 `backend`（`auk-flash` / `auk-base`）、`variant` 以及当前采样默认值报告。运行时不依赖 Python。
+
+先把官方 PyTorch 权重转换一次。`--thinker-src` 可以是 Qwen2.5-Omni-3B，也可以是已转换的 mlx 目录（Base 可复用 Flash 的 thinker）：
 
 ```bash
 .build/out/Products/Release/yuwp-tts convert-auk \
   --src "$HOME/Library/Application Support/Yuwp/models/AuK-Flash" \
   --thinker-src "$HOME/Library/Application Support/Yuwp/models/Qwen2.5-Omni-3B" \
   --out "$HOME/Library/Application Support/Yuwp/models/auk-flash-mlx"
+
+.build/out/Products/Release/yuwp-tts convert-auk \
+  --src "$HOME/Library/Application Support/Yuwp/models/AuK" \
+  --thinker-src "$HOME/Library/Application Support/Yuwp/models/auk-flash-mlx" \
+  --out "$HOME/Library/Application Support/Yuwp/models/auk-base-mlx"
 ```
+
+Instruct TTS 需要 `--gen-seconds`。克隆或编辑已有音频时传 `--ref-audio`。Base 接受 `--nfe --cfg --sway`（Flash 忽略）。
+
+`POST /v1/audio/speech/stream` 是诚实流式：多 chunk 的 TTS 会在后续 chunk 开始生成之前写出第一段可播放 PCM。短句仍可能是一次完整 latent/VAE 解码，不能当成逐步流式。NDJSON：先 `metadata`（`pcm_s16le`、`encoding=base64`、`backend`、`variant`），再按完成的 TTS chunk 发 `audio`（`chunk` / `samples` / `seconds` / `elapsed_seconds` / `audio`），最后 `done`（`first_audio_seconds`、`audio_duration_seconds`、`wall_seconds`、`chunks`）。错误为 `event=error`。
+
+长文本自动切分**只用于 TTS**：保留句子边界，每段套同一套音色/风格前缀，并在 chunk 之间插入 200 ms 静音（`--chunk-pause-ms`）。触发条件：`task`/`mode` 为 `tts`；或 `input` 是待说文本、`instruction` 是音色/风格；或 instruction 匹配官方 zero-shot/instruct 模板因而只切目标文本。已有音频的编辑 / 增强 / 分离保持「一条 instruction + 源音频」，对这些任务请求 auto-chunk 会结构化 400（`code=auto_chunk_unsupported`）。
+
+Cookbook 式编辑（内容替换、音高/音量/情感、增强、分离）都走同一条路径。**已验证**与**仅可表达**：有权重时，内容替换与至少一种非内容变换会用 ASR / 音分 / dB 检查；歌词编辑可表达但不声称已验证。
 
 ## 开发
 

@@ -91,19 +91,25 @@ curl -sf http://127.0.0.1:7937/v1/info | jq .
 
 `POST /v1/audio/speech` returns a WAV. `POST /v1/audio/speech/stream` returns NDJSON events (`metadata`, `audio`, `done`, `error`) with base64-encoded `pcm_s16le` chunks.
 
-### AuK-Flash (instruction-driven TTS / audio editing)
+### AuK-Flash and AuK Base (expressive create / clone / edit)
 
-`yuwp-tts` can also load a native Swift/MLX port of [AuK-Flash](https://github.com/Tencent-Hunyuan/AuK) (fixed 4 steps, CFG off). Runtime inference does not use Python. Convert official PyTorch weights once:
+Qwen3-TTS stays the ordinary low-latency default. `yuwp-tts` can also load a native Swift/MLX port of [AuK](https://github.com/Tencent-Hunyuan/AuK): **AuK-Flash** (fixed 4 steps, CFG off, sway off) or **AuK Base** (default `nfe=32`, `cfg=2.0`, `sway=-1.0`). One process loads one model directory; the backend is detected from that directory (`GET /v1/info` reports `backend` `auk-flash` or `auk-base` plus `variant` and the active sampling defaults). Runtime inference does not use Python.
+
+Convert official PyTorch weights once. `--thinker-src` may be Qwen2.5-Omni-3B or an already-converted mlx directory (Base can reuse Flash's thinker):
 
 ```bash
 .build/out/Products/Release/yuwp-tts convert-auk \
   --src "$HOME/Library/Application Support/Yuwp/models/AuK-Flash" \
   --thinker-src "$HOME/Library/Application Support/Yuwp/models/Qwen2.5-Omni-3B" \
-  --out "$HOME/Library/Application Support/Yuwp/models/auk-flash-mlx" \
-  --bits 8
+  --out "$HOME/Library/Application Support/Yuwp/models/auk-flash-mlx"
+
+.build/out/Products/Release/yuwp-tts convert-auk \
+  --src "$HOME/Library/Application Support/Yuwp/models/AuK" \
+  --thinker-src "$HOME/Library/Application Support/Yuwp/models/auk-flash-mlx" \
+  --out "$HOME/Library/Application Support/Yuwp/models/auk-base-mlx"
 ```
 
-Then synthesize. Instruct TTS needs `--gen-seconds`. Pass `--ref-audio` for voice cloning / source-audio editing:
+Instruct TTS needs `--gen-seconds`. Pass `--ref-audio` for voice cloning or source-audio editing. Base accepts `--nfe --cfg --sway` (ignored on Flash):
 
 ```bash
 .build/out/Products/Release/yuwp-tts \
@@ -113,6 +119,12 @@ Then synthesize. Instruct TTS needs `--gen-seconds`. Pass `--ref-audio` for voic
   --gen-seconds 4 \
   --out /tmp/auk.wav
 ```
+
+`POST /v1/audio/speech/stream` is honest about latency: for multi-chunk TTS it emits the first playable PCM `audio` event before later chunks generate. A short single utterance may still be one full latent/VAE decode — that is not incremental streaming. NDJSON events are `metadata` (format `pcm_s16le`, `encoding` `base64`, `backend`, `variant`), then `audio` (`chunk`, `samples`, `seconds`, `elapsed_seconds`, `audio`), then `done` (`first_audio_seconds`, `audio_duration_seconds`, `wall_seconds`, `chunks`). Errors are `event=error`.
+
+Long-form **auto-chunk is TTS only**. It preserves sentence boundaries, keeps the same voice/style wrapper on each chunk, and inserts 200 ms of silence between chunks (`--chunk-pause-ms`, `chunk_pause_ms`, or `inter_chunk_pause_seconds`). It runs when `task`/`mode` is `tts`, when `input` is speak-text and `instruction` is voice/style, or when the instruction matches official zero-shot/instruct templates so only the target text is split. Existing-audio edit / enhancement / separation stays a single instruction plus source audio. Requesting auto-chunk on those tasks returns a structured HTTP 400 (`code=auto_chunk_unsupported`) with explicit options rather than splitting the source.
+
+Cookbook-style edits (content replace, pitch/volume/emotion, enhancement, separation) are representable on the same path. **Verified** vs **representable**: content replace and a non-content transform are checked with ASR / pitch-cents / dB in `results/` when weights are present; lyric editing is representable but not claimed verified (upstream Base/Flash/torch also fail the cookbook "rear view" → "like you" case).
 
 ## Development
 
@@ -155,7 +167,7 @@ Audio is processed on the Mac. Recording is off unless you enable **Save Recordi
 ## Acknowledgments
 
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
-- [AuK](https://github.com/Tencent-Hunyuan/AuK) (AuK-Flash MLX architecture reference)
+- [AuK](https://github.com/Tencent-Hunyuan/AuK) (AuK-Flash and AuK Base MLX architecture reference)
 - [MLX](https://github.com/ml-explore/mlx) and [mlx-swift](https://github.com/ml-explore/mlx-swift)
 - [qwen-asr](https://github.com/antirez/qwen-asr) (streaming reference ideas)
 - [Silero VAD](https://github.com/snakers4/silero-vad)

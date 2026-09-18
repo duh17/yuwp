@@ -6,7 +6,10 @@ import Tokenizers
 
 public final class AuKEngine: @unchecked Sendable {
     public let sampleRate = AuKFlashConfig.sampleRate
-    public let modelName = AuKFlashConfig.name
+    public let variant: AuKVariant
+    public var modelName: String { variant.modelName }
+    public var backend: String { variant.backendString }
+    public var defaultSampling: AuKSampling { AuKSampling.resolve(variant: variant) }
 
     private let vae: AuKBigVGANFlowVAE
     private let dit: AuKFlux2Edit
@@ -17,6 +20,7 @@ public final class AuKEngine: @unchecked Sendable {
     private let lock = NSLock()
 
     init(
+        variant: AuKVariant,
         vae: AuKBigVGANFlowVAE,
         dit: AuKFlux2Edit,
         thinker: AuKThinkerEncoder,
@@ -24,6 +28,7 @@ public final class AuKEngine: @unchecked Sendable {
         layerWeights: MLXArray,
         layerScale: MLXArray
     ) {
+        self.variant = variant
         self.vae = vae
         self.dit = dit
         self.thinker = thinker
@@ -37,24 +42,25 @@ public final class AuKEngine: @unchecked Sendable {
         thinkerDirectory: URL? = nil,
         bits: Int? = nil
     ) async throws -> AuKEngine {
+        let variant: AuKVariant
         switch inspectAuKModelDirectory(modelDirectory) {
-        case .pytorchSource:
+        case .pytorchSource(let detected):
             throw AuKError.unconvertedCheckpoint(
-                "\(modelDirectory.path) looks like official PyTorch AuK-Flash weights. Convert once with `yuwp-tts convert-auk --src <AuK-Flash> --thinker-src <Qwen2.5-Omni-3B> --out <mlx-dir>`."
+                "\(modelDirectory.path) looks like official PyTorch \(detected.modelName) weights. Convert once with `yuwp-tts convert-auk --src <AuK-dir> --thinker-src <Qwen2.5-Omni-3B or auk-flash-mlx> --out <mlx-dir>`."
             )
         case .unknown:
-            throw AuKError.missingWeights("No AuK-Flash MLX weights found in \(modelDirectory.path)")
-        case .converted:
-            break
+            throw AuKError.missingWeights("No AuK-Flash or AuK Base MLX weights found in \(modelDirectory.path)")
+        case .converted(let detected):
+            variant = detected
         }
 
-        let fusionURL = modelDirectory.appendingPathComponent("fusion_flash.safetensors")
+        let fusionURL = modelDirectory.appendingPathComponent(variant.fusionFileName)
         guard FileManager.default.fileExists(atPath: fusionURL.path) else {
-            throw AuKError.missingWeights("fusion_flash.safetensors is required")
+            throw AuKError.missingWeights("\(variant.fusionFileName) is required")
         }
         let fusion = try MLX.loadArrays(url: fusionURL)
         guard let inv = fusion["inv_freq"], let layerWeights = fusion["layer_weights"], let layerScale = fusion["layer_scale"] else {
-            throw AuKError.missingWeights("fusion_flash.safetensors must contain inv_freq, layer_weights, layer_scale")
+            throw AuKError.missingWeights("\(variant.fusionFileName) must contain inv_freq, layer_weights, layer_scale")
         }
         eval(inv)
         let invFreq = inv.asArray(Float.self)
@@ -69,7 +75,7 @@ public final class AuKEngine: @unchecked Sendable {
         try loadQuantizable(
             dit,
             directory: modelDirectory,
-            baseName: "dit_flash",
+            baseName: "dit_\(variant.rawValue)",
             bits: bits
         )
 
@@ -91,6 +97,7 @@ public final class AuKEngine: @unchecked Sendable {
         }
 
         return AuKEngine(
+            variant: variant,
             vae: vae,
             dit: dit,
             thinker: thinker,
@@ -104,7 +111,10 @@ public final class AuKEngine: @unchecked Sendable {
         instruction: String,
         referenceAudioURL: URL?,
         genSeconds: Double?,
-        seed: UInt64?
+        seed: UInt64?,
+        nfe: Int? = nil,
+        cfgStrength: Float? = nil,
+        sway: Float? = nil
     ) throws -> (samples: [Float], sampleRate: Int) {
         lock.lock()
         defer { lock.unlock() }
@@ -148,7 +158,13 @@ public final class AuKEngine: @unchecked Sendable {
         if let seed {
             MLXRandom.seed(seed)
         }
-        let genLatent = sample(textEmbed: textEmbed, refLatent: refLatent, genLen: genLen)
+        let sampling = AuKSampling.resolve(
+            variant: variant,
+            nfe: nfe,
+            cfgStrength: cfgStrength,
+            sway: sway
+        )
+        let genLatent = sample(textEmbed: textEmbed, refLatent: refLatent, genLen: genLen, sampling: sampling)
         eval(genLatent)
         if !isFinite(genLatent).all().item(Bool.self) {
             throw AuKError.generationFailed("generated latent contains NaN/Inf")
@@ -170,16 +186,36 @@ public final class AuKEngine: @unchecked Sendable {
         return (stacked * weights.reshaped([-1, 1, 1, 1])).sum(axis: 0) * layerScale
     }
 
-    private func sample(textEmbed: MLXArray, refLatent: MLXArray, genLen: Int) -> MLXArray {
-        let resolved = AuKSampling.resolve(nfe: 4, cfgStrength: 0, sway: nil, tGrid: nil)
-        let t = MLXArray(resolved.tGrid)
+    private func sample(
+        textEmbed: MLXArray,
+        refLatent: MLXArray,
+        genLen: Int,
+        sampling: AuKSampling
+    ) -> MLXArray {
+        let t = MLXArray(sampling.tGrid)
         var y = MLXRandom.normal([1, genLen, AuKFlashConfig.latentDim])
         dit.clearCache()
-        let steps = resolved.tGrid.count - 1
+        let steps = sampling.tGrid.count - 1
+        let useCFG = sampling.usesCFG
         for i in 0 ..< steps {
             let ti = t[i ..< (i + 1)]
             let dt = t[i + 1] - t[i]
-            let v = dit(x: y, text: textEmbed, t: ti, ref: refLatent, cfgInfer: false, cache: true)
+            let pred = dit(
+                x: y,
+                text: textEmbed,
+                t: ti,
+                ref: refLatent,
+                cfgInfer: useCFG,
+                cache: true
+            )
+            let v: MLXArray
+            if useCFG {
+                let vCond = pred[0 ..< 1, 0..., 0...]
+                let vUncond = pred[1 ..< 2, 0..., 0...]
+                v = vCond + (vCond - vUncond) * sampling.cfgStrength
+            } else {
+                v = pred
+            }
             y = y + v * dt
             eval(y)
         }

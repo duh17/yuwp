@@ -21,6 +21,7 @@ struct AuKFlashTests {
 
     @Test func flashSamplingIgnoresCallerNFEAndCFG() {
         let resolved = AuKSampling.resolve(
+            variant: .flash,
             nfe: 32,
             cfgStrength: 2.0,
             sway: -1.0,
@@ -45,16 +46,18 @@ struct AuKFlashTests {
         #expect(AuKFlashConfig.latentFrames(seconds: 1.5) == 75)
     }
 
-    @Test func yamlNameParserReadsAuKFlashAndRejectsBase() throws {
+    @Test func yamlNameParserReadsAuKFlashAndAuKBase() throws {
         let flash = """
         model:
           name: AuK-Flash
           vae_name: BigVGANFlowVAE
         """
         #expect(aukModelName(fromYAML: flash) == "AuK-Flash")
-        #expect(try aukRequireFlashVariant(named: "AuK-Flash") == "flash")
+        #expect(try aukParseVariant(named: "AuK-Flash") == .flash)
+        #expect(try aukParseVariant(named: "AuK") == .base)
+        #expect(try aukParseVariant(named: "base") == .base)
         #expect(throws: AuKError.self) {
-            _ = try aukRequireFlashVariant(named: "AuK")
+            _ = try aukParseVariant(named: "Qwen3-TTS")
         }
     }
 
@@ -64,15 +67,15 @@ struct AuKFlashTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         try "model:\n  name: AuK-Flash\n".write(to: root.appendingPathComponent("config.yaml"), atomically: true, encoding: .utf8)
-        #expect(inspectAuKModelDirectory(root) == .pytorchSource)
+        #expect(inspectAuKModelDirectory(root) == .pytorchSource(variant: .flash))
 
         try Data().write(to: root.appendingPathComponent("auk_flash.safetensors"))
-        #expect(inspectAuKModelDirectory(root) == .pytorchSource)
+        #expect(inspectAuKModelDirectory(root) == .pytorchSource(variant: .flash))
 
         try Data().write(to: root.appendingPathComponent("dit_flash.safetensors"))
         try Data().write(to: root.appendingPathComponent("fusion_flash.safetensors"))
         try Data().write(to: root.appendingPathComponent("vae.safetensors"))
-        #expect(inspectAuKModelDirectory(root) == .converted(variant: "flash"))
+        #expect(inspectAuKModelDirectory(root) == .converted(variant: .flash))
         #expect(detectTTSBackend(at: root) == .aukFlash)
     }
 
