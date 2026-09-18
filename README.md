@@ -91,6 +91,29 @@ curl -sf http://127.0.0.1:7937/v1/info | jq .
 
 `POST /v1/audio/speech` returns a WAV. `POST /v1/audio/speech/stream` returns NDJSON events (`metadata`, `audio`, `done`, `error`) with base64-encoded `pcm_s16le` chunks.
 
+### AuK-Flash (instruction-driven TTS / audio editing)
+
+`yuwp-tts` can also load a native Swift/MLX port of [AuK-Flash](https://github.com/Tencent-Hunyuan/AuK) (fixed 4 steps, CFG off). Runtime inference does not use Python. Convert official PyTorch weights once:
+
+```bash
+.build/out/Products/Release/yuwp-tts convert-auk \
+  --src "$HOME/Library/Application Support/Yuwp/models/AuK-Flash" \
+  --thinker-src "$HOME/Library/Application Support/Yuwp/models/Qwen2.5-Omni-3B" \
+  --out "$HOME/Library/Application Support/Yuwp/models/auk-flash-mlx" \
+  --bits 8
+```
+
+Then synthesize. Instruct TTS needs `--gen-seconds`. Pass `--ref-audio` for voice cloning / source-audio editing:
+
+```bash
+.build/out/Products/Release/yuwp-tts \
+  --model "$HOME/Library/Application Support/Yuwp/models/auk-flash-mlx" \
+  --instruction "Say the following with the same voice: 'Hello from Yuwp.'" \
+  --ref-audio ref_24k.wav \
+  --gen-seconds 4 \
+  --out /tmp/auk.wav
+```
+
 ## Development
 
 ```bash
@@ -132,6 +155,7 @@ Audio is processed on the Mac. Recording is off unless you enable **Save Recordi
 ## Acknowledgments
 
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
+- [AuK](https://github.com/Tencent-Hunyuan/AuK) (AuK-Flash MLX architecture reference)
 - [MLX](https://github.com/ml-explore/mlx) and [mlx-swift](https://github.com/ml-explore/mlx-swift)
 - [qwen-asr](https://github.com/antirez/qwen-asr) (streaming reference ideas)
 - [Silero VAD](https://github.com/snakers4/silero-vad)

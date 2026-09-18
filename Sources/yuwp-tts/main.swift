@@ -25,6 +25,11 @@ struct TTSTestOptions {
     var transport = "stdio"
     var host = "127.0.0.1"
     var port: UInt16 = 7937
+    var instruction: String?
+    var genSeconds: Double?
+    var thinkerPath: String?
+    var bits: Int?
+    var seed: UInt64?
 }
 
 func parseOptions(_ args: [String]) -> TTSTestOptions {
@@ -42,7 +47,7 @@ func parseOptions(_ args: [String]) -> TTSTestOptions {
         case "--text": options.text = takeValue() ?? options.text
         case "--out", "--output": options.outputPath = takeValue() ?? options.outputPath
         case "--voice": options.voice = takeValue()
-        case "--ref-audio": options.referenceAudioPath = takeValue()
+        case "--ref-audio", "--audio": options.referenceAudioPath = takeValue()
         case "--ref-text": options.referenceText = takeValue()
         case "--language": options.language = takeValue()
         case "--max-tokens": options.maxTokens = takeValue().flatMap(Int.init)
@@ -54,18 +59,30 @@ func parseOptions(_ args: [String]) -> TTSTestOptions {
         case "--stream": options.stream = true
         case "--streaming-interval": options.streamingInterval = takeValue().flatMap(Double.init) ?? options.streamingInterval
         case "--play": options.play = true
+        case "--instruction": options.instruction = takeValue()
+        case "--gen-seconds": options.genSeconds = takeValue().flatMap(Double.init)
+        case "--thinker", "--qwen": options.thinkerPath = takeValue()
+        case "--bits": options.bits = takeValue().flatMap(Int.init)
+        case "--seed": options.seed = takeValue().flatMap(UInt64.init)
         case "--help", "-h":
             print("""
             Usage: yuwp-tts --model <model-dir> [options]
                    yuwp-tts serve --transport http --model <model-dir> [--host 127.0.0.1] [--port 7937]
+                   yuwp-tts convert-auk --src <AuK-Flash-dir> --thinker-src <Qwen2.5-Omni-3B> --out <mlx-dir>
 
             Options:
-              --text <text>                Text to synthesize
+              --text <text>                Text to synthesize (Qwen3-TTS) or instruction (AuK-Flash)
+              --instruction <text>         AuK-Flash instruction-driven TTS/edit prompt
               --out <path>                 Output WAV path (default: tts-output.wav)
               --voice <description>        VoiceDesign description or CustomVoice speaker/style
-              --ref-audio <path>           Reference WAV/M4A for cloning
+              --ref-audio <path>           Reference WAV/M4A for cloning or AuK source/reference audio
+              --audio <path>               Alias for --ref-audio (AuK-Flash)
               --ref-text <text>            Transcript of reference audio
               --language <language>        Language, default English
+              --gen-seconds <float>        AuK-Flash target duration; required for instruct TTS without --ref-audio
+              --thinker <dir>              Qwen2.5-Omni tokenizer/config directory for AuK-Flash
+              --bits 8|4                   Load/quantize AuK DiT+Thinker to 8 or 4 bits (default: fp32)
+              --seed <n>                   AuK-Flash latent noise seed
               --max-tokens <n>             Maximum codec tokens to generate
               --temperature <float>        Sampling temperature; 0 uses greedy decoding
               --top-p <float>              Top-p sampling threshold
@@ -160,7 +177,8 @@ final class StreamingAudioPlayer: @unchecked Sendable {
 
 struct TTSServeRequest: Decodable {
     var id: String?
-    var text: String
+    var text: String?
+    var instruction: String?
     var out: String?
     var temperature: Float?
     var topP: Float?
@@ -170,11 +188,19 @@ struct TTSServeRequest: Decodable {
     var maxTokens: Int?
     var streamingInterval: Double?
     var emitChunks: Bool?
+    var refAudio: String?
+    var genSeconds: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case id, text, instruction, out, temperature, topP, topK, minP, repetitionPenalty, maxTokens, streamingInterval, emitChunks
+        case refAudio = "ref_audio"
+        case genSeconds = "gen_seconds"
+    }
 }
 
 struct OpenAISpeechRequest: Decodable, Sendable {
     var model: String?
-    var input: String
+    var input: String?
     var voice: String?
     var voiceId: String?
     var responseFormat: String?
@@ -192,6 +218,9 @@ struct OpenAISpeechRequest: Decodable, Sendable {
     var lowLatency: Bool?
     var chunkTargetCharacters: Int?
     var chunkHardCharacterLimit: Int?
+    var instruction: String?
+    var genSeconds: Double?
+    var refAudio: String?
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -213,6 +242,9 @@ struct OpenAISpeechRequest: Decodable, Sendable {
         case lowLatency = "low_latency"
         case chunkTargetCharacters = "chunk_target_characters"
         case chunkHardCharacterLimit = "chunk_hard_character_limit"
+        case instruction
+        case genSeconds = "gen_seconds"
+        case refAudio = "ref_audio"
     }
 }
 
@@ -442,7 +474,7 @@ final class TTSHTTPState: @unchecked Sendable {
         do {
             let voiceContext = try resolveVoiceContext(for: speechRequest)
             let generationParameters = generationParameters(for: speechRequest, voice: voiceContext.record)
-            let textChunks = synthesisTextChunks(for: speechRequest.input, request: speechRequest)
+            let textChunks = synthesisTextChunks(for: speechRequest.input ?? "", request: speechRequest)
             var samples: [Float] = []
 
             for textChunk in textChunks {
@@ -626,7 +658,7 @@ final class TTSHTTPState: @unchecked Sendable {
             var generationInfo: AudioGenerationInfo?
             let voiceContext = try resolveVoiceContext(for: speechRequest)
             let generationParameters = generationParameters(for: speechRequest, voice: voiceContext.record)
-            let textChunks = synthesisTextChunks(for: speechRequest.input, request: speechRequest)
+            let textChunks = synthesisTextChunks(for: speechRequest.input ?? "", request: speechRequest)
 
             for textChunk in textChunks {
                 let stream = if let conditioning = voiceContext.conditioning {
@@ -831,7 +863,10 @@ final class TTSHTTPState: @unchecked Sendable {
                     optimizeInstructions: nil,
                     lowLatency: nil,
                     chunkTargetCharacters: nil,
-                    chunkHardCharacterLimit: nil
+                    chunkHardCharacterLimit: nil,
+                    instruction: nil,
+                    genSeconds: nil,
+                    refAudio: nil
                 )
                 let response = await speechResponse(speechRequest)
                 guard response.status == 200 else {
@@ -900,7 +935,10 @@ final class TTSHTTPState: @unchecked Sendable {
                 optimizeInstructions: nil,
                 lowLatency: nil,
                 chunkTargetCharacters: nil,
-                chunkHardCharacterLimit: nil
+                chunkHardCharacterLimit: nil,
+                instruction: nil,
+                genSeconds: nil,
+                refAudio: nil
             )
             let response = await speechResponse(speechRequest)
             guard response.status == 200 else { return response }
@@ -909,7 +947,7 @@ final class TTSHTTPState: @unchecked Sendable {
             _ = try voiceLibrary.markPreview(id: voiceID)
             _ = try voiceLibrary.promotePreviewToReference(
                 id: voiceID,
-                referenceText: speechRequest.input,
+                referenceText: speechRequest.input ?? "",
                 overwriteExisting: false
             )
             voiceConditioningCache.removeValue(forKey: voiceID)
@@ -947,7 +985,7 @@ func parseServeOptions(_ args: [String]) -> TTSTestOptions {
         switch arg {
         case "--model": options.modelPath = takeValue()
         case "--voice": options.voice = takeValue()
-        case "--ref-audio": options.referenceAudioPath = takeValue()
+        case "--ref-audio", "--audio": options.referenceAudioPath = takeValue()
         case "--ref-text": options.referenceText = takeValue()
         case "--language": options.language = takeValue()
         case "--temperature": options.temperature = takeValue().flatMap(Float.init)
@@ -960,6 +998,11 @@ func parseServeOptions(_ args: [String]) -> TTSTestOptions {
         case "--transport": options.transport = takeValue() ?? options.transport
         case "--host": options.host = takeValue() ?? options.host
         case "--port": options.port = takeValue().flatMap(UInt16.init) ?? options.port
+        case "--instruction": options.instruction = takeValue()
+        case "--gen-seconds": options.genSeconds = takeValue().flatMap(Double.init)
+        case "--thinker", "--qwen": options.thinkerPath = takeValue()
+        case "--bits": options.bits = takeValue().flatMap(Int.init)
+        case "--seed": options.seed = takeValue().flatMap(UInt64.init)
         default: break
         }
         i += 1
@@ -971,6 +1014,11 @@ func runServe(_ args: [String]) async throws {
     let options = parseServeOptions(args)
     guard let modelPath = options.modelPath else {
         throw AudioGenerationError.invalidInput("serve requires --model <model-dir>")
+    }
+
+    if detectTTSBackend(at: URL(fileURLWithPath: modelPath).standardizedFileURL) == .aukFlash {
+        try await runAuKServe(options: options)
+        return
     }
 
     let loadStart = Date()
@@ -1140,7 +1188,7 @@ func runServe(_ args: [String]) async throws {
             var tokenCount = 0
             var generationInfo: AudioGenerationInfo?
 
-            for textChunk in synthesisTextChunks(for: request.text) {
+            for textChunk in synthesisTextChunks(for: request.text ?? "") {
                 let stream = if let conditioning {
                     model.generateStream(
                         text: textChunk,
@@ -1212,6 +1260,15 @@ func runServe(_ args: [String]) async throws {
 }
 
 let rawArgs = Array(CommandLine.arguments.dropFirst())
+if rawArgs.first == "convert-auk" {
+    do {
+        try runAuKConvert(Array(rawArgs.dropFirst()))
+        exit(0)
+    } catch {
+        fputs("Error: \(error.localizedDescription)\n", stderr)
+        exit(1)
+    }
+}
 if rawArgs.first == "serve" {
     do {
         try await runServe(Array(rawArgs.dropFirst()))
@@ -1232,6 +1289,10 @@ guard let modelPath = options.modelPath else {
 do {
     let start = Date()
     let modelURL = URL(fileURLWithPath: modelPath).standardizedFileURL
+    if detectTTSBackend(at: modelURL) == .aukFlash {
+        try await runAuKGenerate(options: options)
+        exit(0)
+    }
     let model = try await Qwen3TTSModel.fromModelDirectory(modelURL)
     let loadTime = Date().timeIntervalSince(start)
 

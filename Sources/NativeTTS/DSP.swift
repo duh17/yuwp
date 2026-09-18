@@ -183,7 +183,8 @@ public func stft(
     window: MLXArray,
     nFft: Int,
     hopLength: Int,
-    padMode: PadMode = .reflect
+    padMode: PadMode = .reflect,
+    removeDC: Bool = false
 ) -> MLXArray {
     // Pad audio for centering
     let padding = nFft / 2
@@ -216,9 +217,10 @@ public func stft(
 
     // Create frames using strided view — zero-copy, no per-frame loop
     let framesStacked = asStrided(padded, [numFrames, nFft], strides: [hopLength, 1], offset: 0)
-
-    // Apply window
-    let windowed = framesStacked * window
+    let centered = removeDC
+        ? framesStacked - framesStacked.mean(axis: 1, keepDims: true)
+        : framesStacked
+    let windowed = centered * window
 
     // Compute FFT (real FFT)
     let fft = MLXFFT.rfft(windowed, axis: 1)  // [numFrames, nFft/2 + 1]

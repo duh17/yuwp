@@ -91,6 +91,15 @@ curl -sf http://127.0.0.1:7937/v1/info | jq .
 
 `POST /v1/audio/speech` 返回 WAV。`POST /v1/audio/speech/stream` 返回 NDJSON 事件（`metadata`、`audio`、`done`、`error`），其中音频块采用 base64 编码的 `pcm_s16le` 格式。
 
+AuK-Flash（指令式 TTS / 音频编辑）使用原生 Swift/MLX，运行时不依赖 Python。先把官方 PyTorch 权重转换一次：
+
+```bash
+.build/out/Products/Release/yuwp-tts convert-auk \
+  --src "$HOME/Library/Application Support/Yuwp/models/AuK-Flash" \
+  --thinker-src "$HOME/Library/Application Support/Yuwp/models/Qwen2.5-Omni-3B" \
+  --out "$HOME/Library/Application Support/Yuwp/models/auk-flash-mlx"
+```
+
 ## 开发
 
 ```bash
