@@ -261,6 +261,10 @@ final class DictationSession {
 
     private func handleUpdate(_ update: TranscriptUpdate) {
         guard !didFinalize else { return }
+        if update.kind == .partial {
+            let incoming = update.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !incoming.isEmpty, incoming.lowercased() != "none" else { return }
+        }
         let hadVisiblePreview = !typewriter.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let update = Self.preservingLastLiveText(update, lastLiveText: transcriptState.fullText)
         transcriptState = transcriptState.applying(update)
@@ -324,10 +328,7 @@ final class DictationSession {
     }
 
     private func commitLastLiveText() {
-        let fullText = transcriptState.fullText
-        let candidate = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let text = candidate.isEmpty || candidate.lowercased() == "none"
-            ? typewriter.displayText : fullText
+        let text = transcriptState.fullText
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.lowercased() != "none" else { return }
         typewriter.commitCurrentAnimation()

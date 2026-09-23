@@ -382,6 +382,74 @@ struct DictationSessionTests {
         #expect(injector.releaseCallCount == 1)
     }
 
+    @Test(arguments: [DictationSurfaceMode.nativeField, .terminal, .bubbleClipboard], ["", "none"])
+    func timeoutCommitsFullUsablePartialAfterInvalidPartial(
+        surface: DictationSurfaceMode, invalid: String
+    ) async {
+        let (session, stt, _, injector, events) = makeSession()
+        injector.surfaceMode = surface
+        let fullText = "A complete live transcript that is long enough to still be animating"
+        var reported: String?
+        session.onFinalTranscript = { reported = $0 }
+        session.start()
+        stt.simulatePartial(fullText)
+        if surface == .bubbleClipboard {
+            await waitForCondition {
+                events.presentations.last?.displayText.isEmpty == false
+            }
+            #expect(events.presentations.last?.displayText.isEmpty == false)
+            #expect(events.presentations.last?.displayText != fullText)
+        } else {
+            await waitForCondition { injector.lastInjected == fullText }
+            #expect(injector.lastInjected == fullText)
+        }
+
+        stt.simulatePartial(invalid)
+        await Task.yield()
+        _ = session.stop()
+        session.finalResultTimedOut()
+
+        #expect(injector.commitCallCount == 1)
+        #expect(injector.lastCommitted == fullText)
+        #expect(reported == fullText)
+        #expect(injector.releaseCallCount == 1)
+        #expect(events.events.filter { $0 == .finished }.count == 1)
+    }
+
+    @Test(arguments: [DictationSurfaceMode.nativeField, .terminal, .bubbleClipboard], ["", "none"])
+    func errorCommitsFullUsablePartialAfterInvalidPartial(
+        surface: DictationSurfaceMode, invalid: String
+    ) async {
+        let (session, stt, audio, injector, events) = makeSession()
+        injector.surfaceMode = surface
+        let fullText = "A complete live transcript that is long enough to still be animating"
+        var reported: String?
+        session.onFinalTranscript = { reported = $0 }
+        session.start()
+        stt.simulatePartial(fullText)
+        if surface == .bubbleClipboard {
+            await waitForCondition {
+                events.presentations.last?.displayText.isEmpty == false
+            }
+            #expect(events.presentations.last?.displayText.isEmpty == false)
+            #expect(events.presentations.last?.displayText != fullText)
+        } else {
+            await waitForCondition { injector.lastInjected == fullText }
+            #expect(injector.lastInjected == fullText)
+        }
+
+        stt.simulatePartial(invalid)
+        await Task.yield()
+        stt.simulateError("decoder crashed")
+        await waitForCondition { events.events.contains(.finished) }
+
+        #expect(audio.stopCallCount == 1)
+        #expect(injector.commitCallCount == 1)
+        #expect(injector.lastCommitted == fullText)
+        #expect(reported == fullText)
+        #expect(injector.releaseCallCount == 1)
+    }
+
     @Test func missingFinalUsesVisibleBubbleTextWhenLatestPartialIsNone() async {
         let (session, stt, _, injector, events) = makeSession()
         injector.surfaceMode = .bubbleClipboard
