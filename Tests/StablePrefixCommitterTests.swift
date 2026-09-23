@@ -95,6 +95,36 @@ struct StablePrefixCommitterTests {
         #expect(!visible.contains("<asr_text>"))
     }
 
+    @Test func markerlessLanguageSwitchDoesNotLeakIntoLiveOrCommittedText() {
+        let english = "In addition, "
+        let switching = "In addition, language Chinese我来说中文"
+        #expect(StablePrefixCommitter.stripMeta(switching) == "In addition, 我来说中文")
+        #expect(
+            StablePrefixCommitter.visibleTranscript(prefixText: english, decoded: switching)
+                == "In addition, 我来说中文"
+        )
+        let result = commit(english, generated: switching + "|", unfixed: 0)
+        #expect(result.committedText == "In addition, 我来说中文")
+        #expect(result.committedDelta == "我来说中文")
+
+        // A sampled header in progress must not flash as an unfixed live tail.
+        for partial in [
+            "In addition, language", "In addition, language ",
+            "In addition, language Chin", "In addition, language Chinese",
+        ] {
+            #expect(StablePrefixCommitter.visibleTranscript(prefixText: english, decoded: partial) == english)
+            #expect(commit(english, generated: partial, unfixed: 0).committedText == english)
+        }
+        #expect(StablePrefixCommitter.stripMeta("language NoneSo what") == "So what")
+        #expect(StablePrefixCommitter.stripMeta("In addition, language NoneSo what") == "In addition, So what")
+        #expect(StablePrefixCommitter.stripMeta("language is a tool") == "language is a tool")
+        #expect(
+            StreamingSession.preferStopBatch(
+                streamed: "In addition, 我", batch: "In addition, language Chinese我来说中文"
+            ) == "In addition, 我来说中文"
+        )
+    }
+
     @Test func cjkContinuesAfterEnglishPunctuation() {
         let visible = StablePrefixCommitter.visibleTranscript(
             prefixText: "In addition,",

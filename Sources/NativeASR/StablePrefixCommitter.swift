@@ -81,7 +81,7 @@ public struct StablePrefixCommitter: Sendable {
         }
     }
 
-    /// Auto-language mode may emit `language English` before `<asr_text>`.
+    /// Auto-language mode may emit `language English` with or without `<asr_text>`.
     /// That header must not become the committed transcript.
     public static func isLanguageHeaderOnly(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -117,18 +117,39 @@ public struct StablePrefixCommitter: Sendable {
         return stripLanguageHeader(cleaned)
     }
 
-    /// `language NoneSo what` has no `<asr_text>` marker and no space after
-    /// `None`. Strip a leading `language <name>` even when glued to content.
-    /// Leave ordinary sentences that start with the word "language" alone.
+    /// R2T2's vocab lacks `<asr_text>`, so a language switch may be glued to
+    /// content mid-transcript. Also hide partial names while a live header is
+    /// being sampled; leave ordinary uses of "language" alone.
     static func stripLanguageHeader(_ text: String) -> String {
         if text == "language" { return "" }
-        guard text.hasPrefix("language ") else { return text }
-        let rest = text.dropFirst("language ".count)
-        guard let name = headerLanguageNames.first(where: { rest.hasPrefix($0) }) else {
-            return text
+        var cleaned = text
+        // The decoder can stop between `language` and the following space.
+        if cleaned.lowercased().hasSuffix(" language") {
+            cleaned.removeLast("language".count)
         }
-        return String(rest.dropFirst(name.count))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var searchStart = cleaned.startIndex
+        while let range = cleaned.range(
+            of: "language ", options: [.caseInsensitive], range: searchStart..<cleaned.endIndex
+        ) {
+            let atStart = range.lowerBound == cleaned.startIndex
+            let atBoundary = atStart
+                || cleaned[cleaned.index(before: range.lowerBound)].isWhitespace
+            let rest = cleaned[range.upperBound...]
+            let name = headerLanguageNames.first(where: { rest.hasPrefix($0) })
+            let partial = rest.isEmpty || headerLanguageNames.contains(where: { $0.hasPrefix(rest) })
+            guard atBoundary, name != nil || partial else {
+                searchStart = range.upperBound
+                continue
+            }
+            let end = name.map { cleaned.index(range.upperBound, offsetBy: $0.count) }
+                ?? cleaned.endIndex
+            cleaned.removeSubrange(range.lowerBound..<end)
+            if atStart {
+                cleaned = String(cleaned.drop(while: \.isWhitespace))
+            }
+            searchStart = cleaned.startIndex
+        }
+        return cleaned
     }
 
     private static let headerLanguageNames: [String] = [

@@ -1138,7 +1138,8 @@ public final class StreamingSession: @unchecked Sendable {
     /// how the on-screen text looks reset or cut off.
     static func preferStopBatch(streamed: String, batch: String) -> String {
         let streamed = streamed.trimmingCharacters(in: .whitespacesAndNewlines)
-        let batch = batch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let batch = StablePrefixCommitter.stripMeta(batch)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         if streamed.isEmpty { return batch }
         if batch.isEmpty { return streamed }
         if batch.count < streamed.count { return streamed }
