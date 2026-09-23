@@ -129,6 +129,16 @@ party dependencies of the product.
   - `third_party/licenses/auk-LICENSE.txt`
   - `third_party/licenses/Apache-2.0.txt`
 
+### Confucius4-R2T2
+
+- Upstream repository: <https://github.com/netease-youdao/Confucius4-R2T2>
+- MLX-community conversions Yuwp can download:
+  - <https://huggingface.co/mlx-community/Confucius4-R2T2-8bit>
+  - <https://huggingface.co/mlx-community/Confucius4-R2T2-bf16>
+- Role in Yuwp: optional runtime-downloaded streaming ASR weights. Same Qwen3-ASR graph; Yuwp selects the 160 ms longest-stable-prefix loop when the model path contains `r2t2`.
+- License: NetEase Youdao Model Use License (personal / small commercial use as published with the weights). Not Apache 2.0.
+- Weights are not bundled in the DMG; users download them from Hugging Face.
+
 ### Qwen3 Forced Aligner
 
 - Official upstream model: <https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B>

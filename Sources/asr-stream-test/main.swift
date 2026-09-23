@@ -16,6 +16,7 @@ private struct ToolConfig: Codable {
     let wavFile: String
     let modelDir: String
     let chunkSec: Double
+    let decodeMode: String
     let warmup: Bool
     let batchBaselineEnabled: Bool
     let batchRetranscribeEnabled: Bool
@@ -137,6 +138,9 @@ private struct ParsedArgs {
     let wavPath: String
     let modelSpec: String?
     let chunkSec: Double
+    let chunkSecExplicit: Bool
+    let streamMode: StreamDecodeMode?
+    let language: String?
     let warmup: Bool
     let doBatch: Bool
     let doBatchRetranscribe: Bool
@@ -172,7 +176,9 @@ private func printUsage() {
 
         Options:
           --model <spec>          Model directory or repo id (overrides positional model-dir)
-          --chunk-sec <sec>       Chunk duration in seconds (default: 2.25)
+          --chunk-sec <sec>       Chunk duration in seconds (default: 2.25; 0.16 with --stream-mode stable-prefix)
+          --stream-mode <mode>    rollback-batch or stable-prefix (default: auto from model path)
+          --language <lang>       Language hint (e.g. English, Chinese)
           --warmup                Warm up Metal shaders before streaming
           --speech-trace          Include independent 36ms VAD/RMS frame annotations
           --no-batch              Skip batch baseline comparison
@@ -206,6 +212,9 @@ private func parseArgs() -> ParsedArgs {
     var positional: [String] = []
     var explicitModel: String?
     var chunkSec = 2.25
+    var chunkSecExplicit = false
+    var streamMode: StreamDecodeMode?
+    var language: String?
     var warmup = false
     var doBatch = true
     var doBatchRetranscribe = true
@@ -230,6 +239,27 @@ private func parseArgs() -> ParsedArgs {
                 exit(1)
             }
             chunkSec = value
+            chunkSecExplicit = true
+        case "--stream-mode":
+            guard !args.isEmpty else {
+                fputs("--stream-mode requires rollback-batch or stable-prefix\n", stderr)
+                exit(1)
+            }
+            switch args.removeFirst() {
+            case "rollback-batch":
+                streamMode = .rollbackBatch
+            case "stable-prefix":
+                streamMode = .stablePrefix
+            default:
+                fputs("--stream-mode must be rollback-batch or stable-prefix\n", stderr)
+                exit(1)
+            }
+        case "--language":
+            guard !args.isEmpty else {
+                fputs("--language requires a value\n", stderr)
+                exit(1)
+            }
+            language = args.removeFirst()
         case "--warmup":
             warmup = true
         case "--speech-trace":
@@ -274,10 +304,16 @@ private func parseArgs() -> ParsedArgs {
 
     let wavPath = positional[0]
     let modelSpec = explicitModel ?? (positional.count >= 2 ? positional[1] : nil)
+    if streamMode == .stablePrefix && !chunkSecExplicit {
+        chunkSec = 0.16
+    }
     return ParsedArgs(
         wavPath: wavPath,
         modelSpec: modelSpec,
         chunkSec: chunkSec,
+        chunkSecExplicit: chunkSecExplicit,
+        streamMode: streamMode,
+        language: language,
         warmup: warmup,
         doBatch: doBatch,
         doBatchRetranscribe: doBatchRetranscribe,
@@ -587,15 +623,39 @@ private func runMain() throws {
     let audioDurationText = fmt(audioDuration, "%.2f")
     fputs("[stream-test] Audio: \(audioDurationText)s, \(audio.count) samples\n", stderr)
 
-    let config = StreamConfig(
-        chunkSec: parsed.chunkSec,
-        batchRetranscribe: parsed.doBatchRetranscribe,
-        finalizationPass: parsed.finalizationPass
+    let config: StreamConfig
+    switch parsed.streamMode {
+    case .stablePrefix:
+        config = .stablePrefix(
+            chunkSec: parsed.chunkSec,
+            finalizationPass: parsed.finalizationPass
+        )
+    case .rollbackBatch:
+        config = StreamConfig(
+            chunkSec: parsed.chunkSec,
+            batchRetranscribe: parsed.doBatchRetranscribe,
+            finalizationPass: parsed.finalizationPass
+        )
+    case nil:
+        if StreamConfig.isR2T2Model(at: modelURL) {
+            config = .stablePrefix(
+                chunkSec: parsed.chunkSecExplicit ? parsed.chunkSec : 0.16,
+                finalizationPass: parsed.finalizationPass
+            )
+        } else {
+            config = StreamConfig(
+                chunkSec: parsed.chunkSec,
+                batchRetranscribe: parsed.doBatchRetranscribe,
+                finalizationPass: parsed.finalizationPass
+            )
+        }
+    }
+    let session = StreamingSession(
+        transcriber: transcriber, config: config, language: parsed.language
     )
-    let session = StreamingSession(transcriber: transcriber, config: config)
     let memBefore = MLX.Memory.activeMemory
-    let steadyChunkSize = Int(parsed.chunkSec * Double(ASRAudio.sampleRate))
-    let bootstrapChunkSec = min(parsed.chunkSec, 1.5)
+    let steadyChunkSize = Int(config.chunkSec * Double(ASRAudio.sampleRate))
+    let bootstrapChunkSec = min(config.chunkSec, 1.5)
     let bootstrapChunkSize = Int(bootstrapChunkSec * Double(ASRAudio.sampleRate))
     let chunkSecText = fmt(parsed.chunkSec, "%.2f")
     let bootstrapChunkSecText = fmt(bootstrapChunkSec, "%.2f")
@@ -884,7 +944,8 @@ private func runMain() throws {
         config: ToolConfig(
             wavFile: wavURL.path,
             modelDir: modelURL.path,
-            chunkSec: parsed.chunkSec,
+            chunkSec: config.chunkSec,
+            decodeMode: config.decodeMode.rawValue,
             warmup: parsed.warmup,
             batchBaselineEnabled: parsed.doBatch,
             batchRetranscribeEnabled: parsed.doBatchRetranscribe,

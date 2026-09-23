@@ -28,6 +28,8 @@ public struct ASRRouteContext: Sendable {
     public let activeModelID: String?
     public let batchModelName: String?
     public let batchRetranscribeEnabled: Bool
+    public let chunkSec: Double
+    public let decodeMode: String
     public let loadAudio: @Sendable (URL) throws -> [Float]
     public let log: @Sendable (String) -> Void
 
@@ -41,6 +43,8 @@ public struct ASRRouteContext: Sendable {
         activeModelID: String? = nil,
         batchModelName: String?,
         batchRetranscribeEnabled: Bool,
+        chunkSec: Double = 1.75,
+        decodeMode: String = StreamDecodeMode.rollbackBatch.rawValue,
         loadAudio: @escaping @Sendable (URL) throws -> [Float],
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
@@ -53,6 +57,8 @@ public struct ASRRouteContext: Sendable {
         self.activeModelID = activeModelID
         self.batchModelName = batchModelName
         self.batchRetranscribeEnabled = batchRetranscribeEnabled
+        self.chunkSec = chunkSec
+        self.decodeMode = decodeMode
         self.loadAudio = loadAudio
         self.log = log
     }
@@ -110,7 +116,8 @@ private func handleInfoRoute(_ req: HTTPRequest, context: ASRRouteContext) -> HT
     var info: [String: Any] = [
         "model": context.streamingModelName,
         "sample_rate": ASRAudio.sampleRate,
-        "chunk_sec": 1.75,
+        "chunk_sec": context.chunkSec,
+        "decode_mode": context.decodeMode,
         "final_accuracy_pass_enabled": context.batchRetranscribeEnabled,
         "internal_diagnostics": internalDiagnosticsEnabled,
         "status": "ready",

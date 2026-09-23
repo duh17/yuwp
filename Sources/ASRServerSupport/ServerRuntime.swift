@@ -175,6 +175,7 @@ final class StreamingSessionManager: @unchecked Sendable {
     private var sessions: [String: ManagedStreamingSession] = [:]
     private let stateLock = NSLock()
     private let inferenceLock = NSLock()
+    private let streamConfig: StreamConfig
     private let chunkSamples: Int
     private let bootstrapChunkSamples: Int
     private let vad: SileroVAD?
@@ -192,7 +193,7 @@ final class StreamingSessionManager: @unchecked Sendable {
         vad: SileroVAD? = nil,
         batchVAD: SileroVAD? = nil,
         batchChunking: BatchChunkingMode = .automatic,
-        chunkSec: Double = 1.75,
+        chunkSec: Double? = nil,
         recordingConfiguration: ASRStreamRecordingConfiguration? = nil
     ) {
         self.transcriber = transcriber
@@ -204,8 +205,16 @@ final class StreamingSessionManager: @unchecked Sendable {
         // not load or implicitly reuse it.
         self.batchVAD = batchVAD
         self.batchChunking = batchChunking
-        self.chunkSamples = Int(chunkSec * Double(ASRAudio.sampleRate))
-        self.bootstrapChunkSamples = Int(min(chunkSec, 1.5) * Double(ASRAudio.sampleRate))
+        var streamConfig = StreamConfig.forModel(
+            at: transcriber.modelDirectory,
+            batchRetranscribe: batchRetranscribeEnabled
+        )
+        if let chunkSec {
+            streamConfig.chunkSec = chunkSec
+        }
+        self.streamConfig = streamConfig
+        self.chunkSamples = Int(streamConfig.chunkSec * Double(ASRAudio.sampleRate))
+        self.bootstrapChunkSamples = Int(min(streamConfig.chunkSec, 1.5) * Double(ASRAudio.sampleRate))
         self.recordingConfiguration = recordingConfiguration
             ?? .disabled(transcriptionModel: transcriber.modelDirectory.lastPathComponent)
         DispatchQueue.global().async { [weak self] in
@@ -221,7 +230,7 @@ final class StreamingSessionManager: @unchecked Sendable {
         let session = StreamingSession(
             transcriber: transcriber,
             batchTranscriber: batchTranscriber,
-            config: StreamConfig(batchRetranscribe: batchRetranscribeEnabled),
+            config: streamConfig,
             language: language,
             vocabularyHints: contextualStrings
         )
@@ -303,8 +312,12 @@ final class StreamingSessionManager: @unchecked Sendable {
 
     /// Called only while the session gate and inferenceLock are held. The
     /// temporary decoder shares weights, never audio position or canonical KV.
+    var chunkSec: Double { streamConfig.chunkSec }
+    var decodeMode: StreamDecodeMode { streamConfig.decodeMode }
+
     private func attemptPreview(_ managedSession: ManagedStreamingSession, sid: String) {
-        guard let vad,
+        guard !streamConfig.isStablePrefix,
+              let vad,
               managedSession.preview.reserveInspection(
                   pendingSamples: managedSession.pendingAudio.count,
                   canonicalChunkSamples: bootstrapChunkSamples
@@ -799,7 +812,7 @@ func startStdioServer(
                     status: "ready",
                     model: activeModelID ?? streamingModelName,
                     sampleRate: ASRAudio.sampleRate,
-                    chunkSec: 1.75,
+                    chunkSec: mgr.chunkSec,
                     finalAccuracyPassEnabled: batchRetranscribeEnabled
                 )
             case .create:
@@ -883,6 +896,8 @@ func startServer(
         activeModelID: activeModelID,
         batchModelName: batchModelName,
         batchRetranscribeEnabled: batchRetranscribeEnabled,
+        chunkSec: mgr.chunkSec,
+        decodeMode: mgr.decodeMode.rawValue,
         loadAudio: loadAudioFile,
         log: log
     )

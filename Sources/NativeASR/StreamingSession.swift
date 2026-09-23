@@ -9,22 +9,72 @@ public enum FinalizationPass: String, Sendable {
     case fullSessionRetranscribe
 }
 
+public enum StreamDecodeMode: String, Sendable {
+    case rollbackBatch
+    case stablePrefix
+}
+
 public struct StreamConfig: Sendable {
     public var chunkSec: Double, rollback: Int, unfixedChunks: Int
     public var maxNewTokens: Int, maxEncWindows: Int, maxPrefixTokens: Int
     public var batchRetranscribe: Bool
     public var finalizationPass: FinalizationPass
+    public var decodeMode: StreamDecodeMode
+    public var repetitionPenalty: Float
 
     public init(
         chunkSec: Double = 1.75, rollback: Int = 5, unfixedChunks: Int = 2,
         maxNewTokens: Int = 32, maxEncWindows: Int = 4, maxPrefixTokens: Int = 20,
         batchRetranscribe: Bool = true,
-        finalizationPass: FinalizationPass = .activeSegmentOnly
+        finalizationPass: FinalizationPass = .activeSegmentOnly,
+        decodeMode: StreamDecodeMode = .rollbackBatch,
+        repetitionPenalty: Float = 1.3
     ) {
         self.chunkSec = chunkSec; self.rollback = rollback; self.unfixedChunks = unfixedChunks
         self.maxNewTokens = maxNewTokens; self.maxEncWindows = maxEncWindows
         self.maxPrefixTokens = maxPrefixTokens; self.batchRetranscribe = batchRetranscribe
         self.finalizationPass = finalizationPass
+        self.decodeMode = decodeMode
+        self.repetitionPenalty = repetitionPenalty
+    }
+
+    /// R2T2 Longest-Stable-Prefix loop. `maxPrefixTokens == 0` means uncapped.
+    public static func stablePrefix(
+        chunkSec: Double = 0.16,
+        unfixedTokenCount: Int = 1,
+        maxNewTokens: Int = 4,
+        finalizationPass: FinalizationPass = .activeSegmentOnly
+    ) -> StreamConfig {
+        StreamConfig(
+            chunkSec: chunkSec,
+            rollback: unfixedTokenCount,
+            unfixedChunks: 0,
+            maxNewTokens: maxNewTokens,
+            maxPrefixTokens: 0,
+            batchRetranscribe: false,
+            finalizationPass: finalizationPass,
+            decodeMode: .stablePrefix,
+            repetitionPenalty: 1.0
+        )
+    }
+
+    public var isStablePrefix: Bool { decodeMode == .stablePrefix }
+
+    public static func isR2T2Model(at directory: URL) -> Bool {
+        let path = directory.path
+        let name = directory.lastPathComponent
+        return path.range(of: "r2t2", options: .caseInsensitive) != nil
+            || name.range(of: "r2t2", options: .caseInsensitive) != nil
+    }
+
+    public static func forModel(
+        at directory: URL,
+        batchRetranscribe: Bool = true
+    ) -> StreamConfig {
+        if isR2T2Model(at: directory) {
+            return .stablePrefix()
+        }
+        return StreamConfig(batchRetranscribe: batchRetranscribe)
     }
 }
 
@@ -197,6 +247,9 @@ public final class StreamingSession: @unchecked Sendable {
     /// Concatenated text from all previously committed segments. Frozen — never
     /// rewritten by streaming or batch passes after a commit fires.
     private var committedText: String = ""
+    /// Token ids for `committedText` in stable-prefix mode. Re-encoding the
+    /// string each chunk drifts from the sampled ids and stalls English.
+    private var committedPrefixTokens: [Int] = []
 #if YUWP_INTERNAL_DIAGNOSTICS
     enum StopTailTestSessionContext: Equatable, Sendable {
         case real
@@ -328,6 +381,12 @@ public final class StreamingSession: @unchecked Sendable {
 
         if !chunkHasSpeech && rms < Self.silenceRMS {
             chunkIdx += 1
+            if config.isStablePrefix {
+                lastText = committedText
+                return .finished(ChunkResult(
+                    text: committedText, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000
+                ))
+            }
             let activeText = rawTokens.isEmpty ? "" : extractText(rawTokens)
             let combined = Self.appendSegment(committedText, activeText)
             lastText = combined
@@ -377,13 +436,15 @@ public final class StreamingSession: @unchecked Sendable {
             return ChunkResult(text: committedText, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000)
         }
 
-        // 2. Prefix tokens (rollback)
+        // 2. Prefix tokens (rollback, or committed text in stable-prefix mode)
         var prefixTokens: [Int] = []
-        if chunkIdx >= config.unfixedChunks && !rawTokens.isEmpty {
+        if config.isStablePrefix {
+            prefixTokens = committedPrefixTokens
+        } else if chunkIdx >= config.unfixedChunks && !rawTokens.isEmpty {
             let nPrefix = max(0, rawTokens.count - config.rollback)
             prefixTokens = Array(rawTokens.prefix(nPrefix))
             prefixTokens = transcriber.tokenizer.stripAutoLanguagePrefix(prefixTokens)
-            if prefixTokens.count > config.maxPrefixTokens {
+            if config.maxPrefixTokens > 0, prefixTokens.count > config.maxPrefixTokens {
                 prefixTokens = Array(prefixTokens.suffix(config.maxPrefixTokens))
             }
         }
@@ -447,6 +508,16 @@ public final class StreamingSession: @unchecked Sendable {
         let decodeMs = Date().timeIntervalSince(decodeT0) * 1000
 
         // 6. Update tokens
+        if config.isStablePrefix {
+            applyStablePrefixUpdate(newTokens: newTokens)
+            chunkIdx += 1
+            return ChunkResult(
+                text: committedText, isPartial: true,
+                encodeMs: encodeMs, prefillMs: prefillMs, decodeMs: decodeMs,
+                totalMs: Date().timeIntervalSince(t0) * 1000, reusePct: reusePct
+            )
+        }
+
         if !newTokens.isEmpty {
             var uncappedPrefix: [Int] = []
             if chunkIdx >= config.unfixedChunks && !rawTokens.isEmpty {
@@ -537,6 +608,10 @@ public final class StreamingSession: @unchecked Sendable {
     public func committedSegmentText() -> String { committedText }
 
     public func activeSegmentText() -> String {
+        // Stable-prefix commits are append-only. Publishing the full hypothesis
+        // as active_text makes the client join it onto committedText and inject
+        // a duplicated, rewriting string.
+        if config.isStablePrefix { return "" }
         guard !rawTokens.isEmpty else { return "" }
         return extractText(rawTokens).trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -663,6 +738,7 @@ public final class StreamingSession: @unchecked Sendable {
         activeSpeechEvidence = evidence
         self.hasSpeech = hasSpeech
         committedText = ""
+        committedPrefixTokens = []
         lastText = ""
         rawTokens = []
         consecutiveSilence = 0
@@ -719,6 +795,9 @@ public final class StreamingSession: @unchecked Sendable {
     /// Full-session retranscribe is available only as an explicit opt-in for
     /// A/B comparisons.
     public func finalize() -> String {
+        if config.isStablePrefix {
+            return finalizeStablePrefix()
+        }
         switch Self.stopBatchStrategy(
             config: config,
             sessionAudioSampleCount: sessionAudioBuffer.count,
@@ -942,7 +1021,8 @@ public final class StreamingSession: @unchecked Sendable {
     /// Sample current token while next forward pass runs on GPU.
     private func decodeTokens(logits: MLXArray, maxTokens: Int) -> [Int] {
         let eos = Qwen3ASRTokenizer.eosTokens
-        let repPenalty = Float(1.3)
+        let repPenalty = config.repetitionPenalty
+        let stopOnPipe = config.isStablePrefix
         let repWindow = 8
         var tokens: [Int] = []
 
@@ -963,6 +1043,7 @@ public final class StreamingSession: @unchecked Sendable {
             let token = y.item(Int.self)
             if eos.contains(token) { break }
             tokens.append(token)
+            if stopOnPipe, transcriber.tokenizer.decode(tokens).contains("|") { break }
             if tokens.count >= maxTokens
                 || (tokens.count >= 4 && Set(tokens.suffix(4)).count == 1) { break }
 
@@ -971,6 +1052,49 @@ public final class StreamingSession: @unchecked Sendable {
             y = nextY
         }
         return tokens
+    }
+
+    private func applyStablePrefixUpdate(newTokens: [Int]) {
+        if newTokens.isEmpty { return }
+
+        var kept = committedPrefixTokens
+        for token in newTokens {
+            let trial = kept + [token]
+            let decoded = transcriber.tokenizer.decode(trial)
+            if decoded.contains("|") { break }
+            if decoded.contains("\u{FFFD}") { break }
+            kept = trial
+        }
+
+        let floor = committedPrefixTokens.count
+        let unfixed = max(0, config.rollback)
+        let proposedFixed = max(0, kept.count - unfixed)
+        let fixedCount = max(floor, proposedFixed)
+        committedPrefixTokens = Array(kept.prefix(fixedCount))
+        let decodedCommitted = committedPrefixTokens.isEmpty
+            ? ""
+            : transcriber.tokenizer.decode(committedPrefixTokens)
+        committedText = StablePrefixCommitter.visibleTranscript(
+            prefixText: committedText,
+            decoded: decodedCommitted
+        )
+        rawTokens = kept
+        lastText = committedText
+    }
+
+    private func finalizeStablePrefix() -> String {
+        let result = StablePrefixCommitter.commit(
+            prefixText: committedText,
+            generatedText: rawTokens.isEmpty ? committedText : transcriber.tokenizer.decode(rawTokens),
+            unfixedTokenCount: 0,
+            encode: { transcriber.tokenizer.encode($0) },
+            decode: { transcriber.tokenizer.decode($0) }
+        )
+        committedText = result.committedText
+        committedPrefixTokens = committedText.isEmpty ? [] : transcriber.tokenizer.encode(committedText)
+        rawTokens = []
+        lastText = committedText
+        return committedText
     }
 
     private func sampleWithPenalty(logits: MLXArray, recent: [Int], penalty: Float) -> MLXArray {

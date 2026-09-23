@@ -77,7 +77,11 @@ final class SettingsStore: ObservableObject {
         self.snapshot = snapshot
         self.serverPortDraft = "\(snapshot.serverPort)"
         self.transcriptionModelDraft = snapshot.transcriptionModel
-        self.selectedDownloadModelRepoId = DownloadableASRModel.supported.first?.repoId ?? ""
+        if DownloadableASRModel.supported.contains(where: { $0.repoId == snapshot.transcriptionModel }) {
+            self.selectedDownloadModelRepoId = snapshot.transcriptionModel
+        } else {
+            self.selectedDownloadModelRepoId = DownloadableASRModel.supported.first?.repoId ?? ""
+        }
     }
 
     func sync(_ snapshot: SettingsSnapshot) {

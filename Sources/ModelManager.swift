@@ -9,6 +9,8 @@ struct DownloadableASRModel: Sendable {
         .init(label: "0.6B bf16", repoId: "mlx-community/Qwen3-ASR-0.6B-bf16"),
         .init(label: "1.7B 4-bit", repoId: "mlx-community/Qwen3-ASR-1.7B-4bit"),
         .init(label: "1.7B bf16 (accurate)", repoId: "mlx-community/Qwen3-ASR-1.7B-bf16"),
+        .init(label: "R2T2 8-bit (low latency)", repoId: "mlx-community/Confucius4-R2T2-8bit"),
+        .init(label: "R2T2 bf16", repoId: "mlx-community/Confucius4-R2T2-bf16"),
     ]
 }
 

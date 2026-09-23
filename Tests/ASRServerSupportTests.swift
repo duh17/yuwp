@@ -335,6 +335,8 @@ struct ASRServerSupportTests {
         #expect(json["final_accuracy_pass_model"] as? String == "batch-model")
         #expect(json["final_accuracy_pass_enabled"] as? Bool == true)
         #expect(json["status"] as? String == "ready")
+        #expect(json["chunk_sec"] as? Double == 1.75)
+        #expect(json["decode_mode"] as? String == "rollbackBatch")
         #expect(json["aligner"] as? Bool == false)
         #expect(json["vad"] as? Bool == false)
         #expect(json["batch_chunking"] as? String == "automatic")

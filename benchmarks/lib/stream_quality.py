@@ -129,6 +129,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Opt into full-session batch finalization on stop",
     )
+    parser.add_argument("--model", help="Model directory or repo id for asr-stream-test")
+    parser.add_argument("--language", help="Language hint forwarded to asr-stream-test")
+    parser.add_argument(
+        "--stream-mode",
+        choices=["rollback-batch", "stable-prefix"],
+        help="Override stream mode. Default is auto-detect from the model path.",
+    )
     return parser.parse_args()
 
 
@@ -247,6 +254,12 @@ def main() -> int:
         audio_path = materialize_audio(input_path, cache_dir)
         json_path = out_dir / f"{source}-{input_path.stem}.json"
         cmd = [str(bin_path), str(audio_path), "--compact", "--json-output", str(json_path)]
+        if args.model:
+            cmd += ["--model", args.model]
+        if args.language:
+            cmd += ["--language", args.language]
+        if args.stream_mode:
+            cmd += ["--stream-mode", args.stream_mode]
         if args.full_session_retranscribe:
             cmd.append("--full-session-retranscribe")
         print(f"[bench] ({idx}/{len(files)}) {source}:{rel_path}", file=sys.stderr)

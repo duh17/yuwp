@@ -112,6 +112,22 @@ struct SettingsStoreTests {
         #expect(previewConfig?.selection == .mechanical)
     }
 
+    @Test @MainActor func downloadPickerSelectsCurrentSupportedModel() {
+        let store = SettingsStore(
+            snapshot: makeSnapshot(transcriptionModel: "mlx-community/Confucius4-R2T2-8bit")
+        )
+        #expect(store.selectedDownloadModelRepoId == "mlx-community/Confucius4-R2T2-8bit")
+    }
+
+    @Test @MainActor func downloadableModelsIncludeR2T2AndQwen() {
+        let repoIds = DownloadableASRModel.supported.map(\.repoId)
+        #expect(repoIds.contains("mlx-community/Qwen3-ASR-0.6B-4bit"))
+        #expect(repoIds.contains("mlx-community/Qwen3-ASR-1.7B-bf16"))
+        #expect(repoIds.contains("mlx-community/Confucius4-R2T2-8bit"))
+        #expect(repoIds.contains("mlx-community/Confucius4-R2T2-bf16"))
+        #expect(DownloadableASRModel.supported.contains { $0.label == "R2T2 8-bit (low latency)" })
+    }
+
     @Test @MainActor func selectedDownloadModelRoutesToHandler() {
         let store = SettingsStore(snapshot: makeSnapshot())
         var downloadedRepoId: String?

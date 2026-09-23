@@ -260,6 +260,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-batch", action="store_true")
     parser.add_argument("--skip-transcribe", action="store_true")
     parser.add_argument("--skip-tts", action="store_true")
+    parser.add_argument(
+        "--asr-model",
+        action="append",
+        metavar="LABEL=PATH",
+        help="Replace the default ASR model list. Repeatable.",
+    )
     return parser.parse_args()
 
 
@@ -274,7 +280,15 @@ def main() -> int:
         "tts": [],
     }
 
-    for label, model in DEFAULT_ASR:
+    asr_models = DEFAULT_ASR
+    if args.asr_model:
+        asr_models = []
+        for item in args.asr_model:
+            if "=" not in item:
+                raise HeadlineError(f"--asr-model must be LABEL=PATH, got {item!r}")
+            label, path = item.split("=", 1)
+            asr_models.append((label, Path(path).expanduser()))
+    for label, model in asr_models:
         if not (model / "model.safetensors").exists():
             print(f"skip {label}", file=sys.stderr)
             continue
