@@ -57,6 +57,44 @@ struct NativeASRProviderTests {
 
         #expect(update == nil)
     }
+
+    @Test func failedStopKeepsLastLiveText() {
+        let update = NativeASRSession.finalUpdatePreservingLiveText(
+            stopUpdate: nil,
+            lastLiveText: "hello world"
+        )
+
+        #expect(update == TranscriptUpdate(kind: .final, text: "hello world"))
+    }
+
+    @Test(arguments: ["", "   "])
+    func emptyStopKeepsLastLiveText(empty: String) {
+        let update = NativeASRSession.finalUpdatePreservingLiveText(
+            stopUpdate: TranscriptUpdate(kind: .final, text: empty),
+            lastLiveText: "hello world"
+        )
+
+        #expect(update.kind == .final)
+        #expect(update.text == "hello world")
+    }
+
+    @Test func nonemptyStopKeepsServerFinal() {
+        let update = NativeASRSession.finalUpdatePreservingLiveText(
+            stopUpdate: TranscriptUpdate(kind: .final, text: "hello world today"),
+            lastLiveText: "hello world"
+        )
+
+        #expect(update == TranscriptUpdate(kind: .final, text: "hello world today"))
+    }
+
+    @Test func emptyStopWithoutLiveTextStaysEmpty() {
+        let update = NativeASRSession.finalUpdatePreservingLiveText(
+            stopUpdate: nil,
+            lastLiveText: ""
+        )
+
+        #expect(update == TranscriptUpdate(kind: .final, text: ""))
+    }
 }
 
 @Suite("Yuwp build layout")

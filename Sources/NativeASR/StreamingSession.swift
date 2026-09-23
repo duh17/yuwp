@@ -1101,9 +1101,14 @@ public final class StreamingSession: @unchecked Sendable {
         // string drifts off those ids and drops the last word.
         flushStablePrefixHeldTokens()
         rawTokens = []
-        // Stop-only accuracy pass. Live chunks stay append-only; pause batch
-        // stays off because `batchRetranscribe` is false.
-        if let batchText = batchRetranscribeFullSession(),
+        // Default stop result is flushed live text. Full-session batch is a
+        // stop-only overlay for short sessions with speech evidence; live
+        // pause-batch stays off because `batchRetranscribe` is false.
+        if Self.stablePrefixStopBatchStrategy(
+            sessionAudioSampleCount: sessionAudioBuffer.count,
+            activeSpeechEvidence: activeSpeechEvidence
+        ) == .fullSession,
+           let batchText = batchRetranscribeFullSession(),
            StopTailExecutor.isUsableBatchText(batchText) {
             let chosen = Self.preferStopBatch(streamed: committedText, batch: batchText)
             if chosen != committedText {
@@ -1113,6 +1118,20 @@ public final class StreamingSession: @unchecked Sendable {
         }
         lastText = committedText
         return committedText
+    }
+
+    /// R2T2 stop-only accuracy pass. Live decode stays append-only because
+    /// `batchRetranscribe` is false; this gate is independent of Qwen pause-batch.
+    static func stablePrefixStopBatchStrategy(
+        sessionAudioSampleCount: Int,
+        activeSpeechEvidence: SpeechEvidence
+    ) -> StopBatchStrategy {
+        guard sessionAudioSampleCount > 0,
+              sessionAudioSampleCount <= maxLiveBatchSegmentSamples,
+              activeSpeechEvidence.hasEnoughSpeech else {
+            return .none
+        }
+        return .fullSession
     }
 
     /// Stop-batch must never wipe a longer live transcript. A shorter batch is

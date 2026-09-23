@@ -873,6 +873,7 @@ fileprivate final class NativeASRStdioSession: SttSession, @unchecked Sendable {
     private let bridge: NativeASRStdioBridge
     private var sessionId: String?
     private var pendingChunks: [Data] = []
+    private var lastLiveText = ""
     private let maxPendingChunks = 8
     private let sessionIDBox = LockedBox<String?>(nil)
     private let queue = DispatchQueue(label: "yuwp.asr-stdio-session", qos: .userInitiated)
@@ -924,16 +925,12 @@ fileprivate final class NativeASRStdioSession: SttSession, @unchecked Sendable {
         queue.async { [weak self] in
             guard let self else { return }
             guard let sid = self.sessionId else {
-                self.onUpdate?(TranscriptUpdate(kind: .final, text: ""))
+                self.emitFinal(nil)
                 return
             }
             self.sessionId = nil
             self.pendingChunks.removeAll(keepingCapacity: false)
-            if let update = self.bridge.stop(sessionID: sid) {
-                self.onUpdate?(update)
-            } else {
-                self.onUpdate?(TranscriptUpdate(kind: .final, text: ""))
-            }
+            self.emitFinal(self.bridge.stop(sessionID: sid))
         }
     }
 
@@ -941,8 +938,22 @@ fileprivate final class NativeASRStdioSession: SttSession, @unchecked Sendable {
         guard let update = bridge.feed(sessionID: sid, pcmData: pcmData), !update.text.isEmpty else {
             return false
         }
+        self.noteLiveUpdate(update)
         self.onUpdate?(update)
         return true
+    }
+
+    private func noteLiveUpdate(_ update: TranscriptUpdate) {
+        if !update.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lastLiveText = update.text
+        }
+    }
+
+    private func emitFinal(_ stopUpdate: TranscriptUpdate?) {
+        onUpdate?(NativeASRSession.finalUpdatePreservingLiveText(
+            stopUpdate: stopUpdate,
+            lastLiveText: lastLiveText
+        ))
     }
 }
 
@@ -958,6 +969,7 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
     private let baseURL: String
     private var sessionId: String?
     private var pendingChunks: [Data] = []
+    private var lastLiveText = ""
     private let maxPendingChunks = 8
     private let sessionIDBox = LockedBox<String?>(nil)
     private let queue = DispatchQueue(label: "yuwp.asr-session", qos: .userInitiated)
@@ -1017,7 +1029,7 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
         queue.async { [weak self] in
             guard let self else { return }
             guard let sid = self.sessionId else {
-                self.onUpdate?(TranscriptUpdate(kind: .final, text: ""))
+                self.emitFinal(nil)
                 return
             }
             self.sessionId = nil
@@ -1025,11 +1037,26 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
             guard let data = self.syncHTTP("DELETE", path: "\(self.baseURL)/\(sid)"),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let update = Self.parseTranscriptUpdate(json, fallbackKind: .final) else {
-                self.onUpdate?(TranscriptUpdate(kind: .final, text: ""))
+                self.emitFinal(nil)
                 return
             }
-            self.onUpdate?(update)
+            self.emitFinal(update)
         }
+    }
+
+    static func finalUpdatePreservingLiveText(
+        stopUpdate: TranscriptUpdate?,
+        lastLiveText: String
+    ) -> TranscriptUpdate {
+        if let stopUpdate,
+           !stopUpdate.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return stopUpdate
+        }
+        let live = lastLiveText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !live.isEmpty {
+            return TranscriptUpdate(kind: .final, text: lastLiveText)
+        }
+        return stopUpdate ?? TranscriptUpdate(kind: .final, text: "")
     }
 
     static func parseTranscriptUpdate(
@@ -1060,8 +1087,22 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let update = Self.parseTranscriptUpdate(json, fallbackKind: .partial),
               !update.text.isEmpty else { return false }
+        self.noteLiveUpdate(update)
         self.onUpdate?(update)
         return true
+    }
+
+    private func noteLiveUpdate(_ update: TranscriptUpdate) {
+        if !update.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lastLiveText = update.text
+        }
+    }
+
+    private func emitFinal(_ stopUpdate: TranscriptUpdate?) {
+        onUpdate?(Self.finalUpdatePreservingLiveText(
+            stopUpdate: stopUpdate,
+            lastLiveText: lastLiveText
+        ))
     }
 
     private func createSessionPath(language: String?) -> String {

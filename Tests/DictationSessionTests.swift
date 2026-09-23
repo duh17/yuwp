@@ -309,6 +309,27 @@ struct DictationSessionTests {
         #expect(injector.releaseCallCount == 1)
     }
 
+    @Test(arguments: ["", "   "])
+    func emptyFinalKeepsLastLiveText(emptyFinal: String) async {
+        let (session, stt, _, injector, events) = makeSession()
+        var finalTranscript: String?
+        session.onFinalTranscript = { finalTranscript = $0 }
+
+        session.start()
+        stt.simulatePartial("hello world")
+        await Task.yield()
+        #expect(injector.lastInjected == "hello world")
+
+        _ = session.stop()
+        stt.simulateFinal(emptyFinal)
+        await Task.yield()
+
+        #expect(injector.commitCallCount == 1)
+        #expect(injector.lastCommitted == "hello world")
+        #expect(finalTranscript == "hello world")
+        #expect(events.events.contains(.finished))
+    }
+
     // MARK: - Audio Start Failure
 
     @Test func startAbortsWhenAudioCaptureFails() {

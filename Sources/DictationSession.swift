@@ -256,6 +256,7 @@ final class DictationSession {
     private func handleUpdate(_ update: TranscriptUpdate) {
         guard !didFinalize else { return }
         let hadVisiblePreview = !typewriter.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let update = Self.preservingLastLiveText(update, lastLiveText: transcriptState.fullText)
         transcriptState = transcriptState.applying(update)
         let text = transcriptState.fullText
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -328,6 +329,19 @@ final class DictationSession {
         typewriter.reset()
         textInjector.release()
         onEvent?(.finished)
+    }
+
+    /// Failed or empty `.final` must not wipe the last live transcript.
+    private static func preservingLastLiveText(
+        _ update: TranscriptUpdate,
+        lastLiveText: String
+    ) -> TranscriptUpdate {
+        guard update.kind == .final else { return update }
+        let incoming = update.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !incoming.isEmpty { return update }
+        let live = lastLiveText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if live.isEmpty { return update }
+        return TranscriptUpdate(kind: .final, text: lastLiveText)
     }
 
     private func emitPresentation(displayText: String, committedText: String, activeText: String) {

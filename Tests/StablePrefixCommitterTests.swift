@@ -156,6 +156,86 @@ struct StablePrefixCommitterTests {
         #expect(StreamingSession.preferStopBatch(streamed: "hello", batch: "") == "hello")
     }
 
+    @Test func r2t2StopDoesNotFullSessionBatchALongSession() {
+        let speech = SpeechEvidence(vadSpeechDurationSec: SpeechEvidence.minimumVADSpeechDurationSec)
+        let overCap = StreamingSession.maxLiveBatchSegmentSamples + 1
+        let fortyFiveSeconds = StreamingSession.maxSessionContextSamples
+
+        #expect(overCap > StreamingSession.maxLiveBatchSegmentSamples)
+        #expect(fortyFiveSeconds > StreamingSession.maxLiveBatchSegmentSamples)
+        #expect(
+            StreamingSession.stablePrefixStopBatchStrategy(
+                sessionAudioSampleCount: overCap,
+                activeSpeechEvidence: speech
+            ) == .none
+        )
+        #expect(
+            StreamingSession.stablePrefixStopBatchStrategy(
+                sessionAudioSampleCount: fortyFiveSeconds,
+                activeSpeechEvidence: speech
+            ) == .none
+        )
+    }
+
+    @Test func r2t2ShortEligibleSessionMayFullSessionBatch() {
+        let speech = SpeechEvidence(vadSpeechDurationSec: SpeechEvidence.minimumVADSpeechDurationSec)
+        let silent = SpeechEvidence()
+        let short = ASRAudio.sampleRate * 4
+        let atCap = StreamingSession.maxLiveBatchSegmentSamples
+        let r2t2 = StreamConfig.stablePrefix()
+
+        #expect(r2t2.decodeMode == .stablePrefix)
+        #expect(r2t2.batchRetranscribe == false)
+        #expect(
+            StreamingSession.stopBatchStrategy(
+                config: r2t2,
+                sessionAudioSampleCount: short,
+                activeAudioSampleCount: short,
+                activeSpeechEvidence: speech
+            ) == .none
+        )
+        #expect(
+            StreamingSession.stablePrefixStopBatchStrategy(
+                sessionAudioSampleCount: short,
+                activeSpeechEvidence: speech
+            ) == .fullSession
+        )
+        #expect(
+            StreamingSession.stablePrefixStopBatchStrategy(
+                sessionAudioSampleCount: atCap,
+                activeSpeechEvidence: speech
+            ) == .fullSession
+        )
+        #expect(
+            StreamingSession.stablePrefixStopBatchStrategy(
+                sessionAudioSampleCount: short,
+                activeSpeechEvidence: silent
+            ) == .none
+        )
+    }
+
+    @Test func qwenStopBatchStrategyStaysRollbackBatch() {
+        let speech = SpeechEvidence(vadSpeechDurationSec: SpeechEvidence.minimumVADSpeechDurationSec)
+        let qwen = StreamConfig(batchRetranscribe: true)
+        #expect(qwen.decodeMode == .rollbackBatch)
+        #expect(
+            StreamingSession.stopBatchStrategy(
+                config: qwen,
+                sessionAudioSampleCount: ASRAudio.sampleRate * 6,
+                activeAudioSampleCount: ASRAudio.sampleRate * 2,
+                activeSpeechEvidence: speech
+            ) == .activeSegmentOnly
+        )
+        #expect(
+            StreamingSession.stopBatchStrategy(
+                config: qwen,
+                sessionAudioSampleCount: StreamingSession.maxSessionContextSamples,
+                activeAudioSampleCount: ASRAudio.sampleRate * 2,
+                activeSpeechEvidence: speech
+            ) == .activeSegmentOnly
+        )
+    }
+
     @Test func visibleTranscriptCommitsHeldLastWordWithoutReencode() {
         let live = "but he did very well when he started writing for other"
         let withLast = "but he did very well when he started writing for other people"
