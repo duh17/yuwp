@@ -243,12 +243,18 @@ final class DictationSession {
         finalTimeoutTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 10_000_000_000)
             guard !Task.isCancelled else { return }
-            guard let self, !self.isActive else { return }
-            yuwpLog("Final result timeout — releasing injector")
-            self.finalize()
+            self?.finalResultTimedOut()
         }
 
         return pcmData
+    }
+
+    /// Handle a missing final result after stop; separate from the timer for deterministic testing.
+    func finalResultTimedOut() {
+        guard !isActive, !didFinalize else { return }
+        yuwpLog("Final result timeout — committing last live text before release")
+        commitLastLiveText()
+        finalize()
     }
 
     // MARK: - STT Callbacks
@@ -313,7 +319,20 @@ final class DictationSession {
             sttSession.end()
         }
 
+        commitLastLiveText()
         finalize()
+    }
+
+    private func commitLastLiveText() {
+        let fullText = transcriptState.fullText
+        let candidate = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = candidate.isEmpty || candidate.lowercased() == "none"
+            ? typewriter.displayText : fullText
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.lowercased() != "none" else { return }
+        typewriter.commitCurrentAnimation()
+        onFinalTranscript?(text)
+        textInjector.commit(text)
     }
 
     private func finalize() {

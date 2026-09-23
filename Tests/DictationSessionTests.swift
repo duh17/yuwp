@@ -330,6 +330,106 @@ struct DictationSessionTests {
         #expect(events.events.contains(.finished))
     }
 
+    @Test func missingFinalCommitsLastLiveBubbleTextBeforeRelease() async {
+        let (session, stt, _, injector, events) = makeSession()
+        injector.surfaceMode = .bubbleClipboard
+        var finalTranscript: String?
+        var callbackBeforeCommit = false
+        var commitBeforeRelease = false
+        session.onFinalTranscript = { finalTranscript = $0 }
+        injector.onCommit = {
+            callbackBeforeCommit = finalTranscript == "Hello from Oppi"
+            commitBeforeRelease = injector.releaseCallCount == 0
+        }
+
+        session.start()
+        stt.simulatePartial("Hello from Oppi")
+        await waitForCondition {
+            events.presentations.contains(where: { $0.bubbleStyle == .transcript })
+        }
+        _ = session.stop()
+        #expect(injector.injectCallCount == 0)
+
+        session.finalResultTimedOut()
+
+        #expect(injector.commitCallCount == 1)
+        #expect(injector.lastCommitted == "Hello from Oppi")
+        #expect(finalTranscript == "Hello from Oppi")
+        #expect(callbackBeforeCommit)
+        #expect(commitBeforeRelease)
+        #expect(injector.releaseCallCount == 1)
+        #expect(events.events.filter { $0 == .finished }.count == 1)
+
+        stt.simulateFinal("late final")
+        await Task.yield()
+        #expect(injector.commitCallCount == 1)
+    }
+
+    @Test(arguments: ["", "   ", "none", "NONE"])
+    func missingFinalDoesNotCommitEmptyOrNone(text: String) async {
+        let (session, stt, _, injector, _) = makeSession()
+        injector.surfaceMode = .bubbleClipboard
+        var reported = false
+        session.onFinalTranscript = { _ in reported = true }
+        session.start()
+        stt.simulatePartial(text)
+        await Task.yield()
+        _ = session.stop()
+        session.finalResultTimedOut()
+
+        #expect(injector.commitCallCount == 0)
+        #expect(!reported)
+        #expect(injector.releaseCallCount == 1)
+    }
+
+    @Test func missingFinalUsesVisibleBubbleTextWhenLatestPartialIsNone() async {
+        let (session, stt, _, injector, events) = makeSession()
+        injector.surfaceMode = .bubbleClipboard
+        session.start()
+        stt.simulateSegmentCommit("Hello from Oppi")
+        await waitForCondition {
+            events.presentations.last?.displayText == "Hello from Oppi"
+        }
+        #expect(events.presentations.last?.displayText == "Hello from Oppi")
+        stt.simulatePartial("none")
+        await Task.yield()
+        _ = session.stop()
+        session.finalResultTimedOut()
+
+        #expect(injector.lastCommitted == "Hello from Oppi")
+    }
+
+    @Test func sttErrorCommitsLastLiveBubbleTextBeforeRelease() async {
+        let (session, stt, audio, injector, events) = makeSession()
+        injector.surfaceMode = .bubbleClipboard
+        var finalTranscript: String?
+        var callbackBeforeCommit = false
+        var commitBeforeRelease = false
+        session.onFinalTranscript = { finalTranscript = $0 }
+        injector.onCommit = {
+            callbackBeforeCommit = finalTranscript == "Hello from Oppi"
+            commitBeforeRelease = injector.releaseCallCount == 0
+        }
+
+        session.start()
+        stt.simulatePartial("Hello from Oppi")
+        await waitForCondition {
+            events.presentations.contains(where: { $0.bubbleStyle == .transcript })
+        }
+        #expect(injector.injectCallCount == 0)
+
+        stt.simulateError("decoder crashed")
+        await waitForCondition { events.events.contains(.finished) }
+
+        #expect(audio.stopCallCount == 1)
+        #expect(injector.commitCallCount == 1)
+        #expect(injector.lastCommitted == "Hello from Oppi")
+        #expect(finalTranscript == "Hello from Oppi")
+        #expect(callbackBeforeCommit)
+        #expect(commitBeforeRelease)
+        #expect(injector.releaseCallCount == 1)
+    }
+
     // MARK: - Audio Start Failure
 
     @Test func startAbortsWhenAudioCaptureFails() {
