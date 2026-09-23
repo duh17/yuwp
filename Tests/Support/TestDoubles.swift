@@ -11,13 +11,15 @@ final class MockSttSession: SttSession, @unchecked Sendable {
 
     var beginCallCount = 0
     var beginLanguage: String?
+    var beginContextualStrings: [String] = []
     var feedCallCount = 0
     var feedBytes = 0
     var endCallCount = 0
 
-    func begin(language: String?) {
+    func begin(language: String?, contextualStrings: [String]) {
         beginCallCount += 1
         beginLanguage = language
+        beginContextualStrings = contextualStrings
     }
 
     func feedAudio(_ pcmData: Data) {

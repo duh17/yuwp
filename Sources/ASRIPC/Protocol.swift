@@ -31,12 +31,20 @@ public struct ASRIPCRequest: Sendable, Codable, Equatable {
     public let command: ASRIPCCommand
     public let sessionID: String?
     public let language: String?
+    public let contextualStrings: [String]
 
-    public init(id: UInt64, command: ASRIPCCommand, sessionID: String? = nil, language: String? = nil) {
+    public init(
+        id: UInt64,
+        command: ASRIPCCommand,
+        sessionID: String? = nil,
+        language: String? = nil,
+        contextualStrings: [String] = []
+    ) {
         self.id = id
         self.command = command
         self.sessionID = sessionID
         self.language = language
+        self.contextualStrings = contextualStrings
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -44,6 +52,16 @@ public struct ASRIPCRequest: Sendable, Codable, Equatable {
         case command
         case sessionID = "session_id"
         case language
+        case contextualStrings = "contextual_strings"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UInt64.self, forKey: .id)
+        command = try container.decode(ASRIPCCommand.self, forKey: .command)
+        sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID)
+        language = try container.decodeIfPresent(String.self, forKey: .language)
+        contextualStrings = try container.decodeIfPresent([String].self, forKey: .contextualStrings) ?? []
     }
 }
 

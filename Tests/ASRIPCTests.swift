@@ -16,6 +16,33 @@ struct ASRIPCTests {
         #expect(lengths?.binaryLength == binary.count)
     }
 
+    @Test func createRequestDecodesMissingContextualStringsAsEmpty() throws {
+        let json = Data("""
+        {"id":1,"command":"create","language":"English"}
+        """.utf8)
+        let request = try ASRIPCCodec.decodeRequest(metadata: json)
+        #expect(request.contextualStrings.isEmpty)
+        #expect(request.language == "English")
+    }
+
+    @Test func createRequestRoundTripsContextualStrings() throws {
+        let request = ASRIPCRequest(
+            id: 7,
+            command: .create,
+            language: "English",
+            contextualStrings: ["Yuwp", "Oppi"]
+        )
+        let encoded = try ASRIPCCodec.encode(request, binary: Data())
+        let header = try #require(
+            ASRIPCFrameCodec.decodeHeader(Data(encoded.prefix(ASRIPCFrameCodec.headerSize)))
+        )
+        let metadata = encoded.subdata(
+            in: ASRIPCFrameCodec.headerSize ..< (ASRIPCFrameCodec.headerSize + header.metadataLength)
+        )
+        let decoded = try ASRIPCCodec.decodeRequest(metadata: metadata)
+        #expect(decoded.contextualStrings == ["Yuwp", "Oppi"])
+    }
+
     @Test func requestAndResponseCodecRoundTrip() throws {
         let request = ASRIPCRequest(id: 42, command: .feed, sessionID: "abc123", language: "Chinese")
         let binary = Data([0x10, 0x20])
@@ -29,6 +56,7 @@ struct ASRIPCTests {
         let decodedRequest = try ASRIPCCodec.decodeRequest(metadata: requestMetadata)
 
         #expect(decodedRequest == request)
+        #expect(decodedRequest.contextualStrings.isEmpty)
         #expect(requestHeader.binaryLength == binary.count)
 
         let response = ASRIPCResponse(

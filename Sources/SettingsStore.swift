@@ -32,6 +32,7 @@ struct SettingsSnapshot: Sendable, Equatable {
     var micPanelAnimation: MicPanelAnimationConfig
     var startChime: DictationChimeConfig
     var stopChime: DictationChimeConfig
+    var vocabularyHints: [String] = []
 }
 
 @MainActor
@@ -190,6 +191,22 @@ final class SettingsStore: ObservableObject {
         snapshot.alignerInstalled
             ? "Installed: \(alignerModelDisplayName)"
             : "Missing: \(alignerModelDisplayName)"
+    }
+
+    var vocabularyHintsSummaryText: String {
+        let phrases = snapshot.vocabularyHints
+        if phrases.isEmpty {
+            return "None loaded. Yuwp still has built-in hints when the app starts a take."
+        }
+        return phrases.joined(separator: ", ")
+    }
+
+    var vocabularyHintsStatusText: String {
+        let count = snapshot.vocabularyHints.count
+        if count == 0 {
+            return "Phrases sent with each dictation as ASR hints, not replacements."
+        }
+        return "\(count) phrases sent with each dictation. Built-in Yuwp/Oppi plus Oppi's dictionary. Editing in-app is next."
     }
 
     var downloadableModels: [DownloadableASRModel] {

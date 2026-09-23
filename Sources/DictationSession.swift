@@ -27,7 +27,7 @@ protocol SttSession: AnyObject, Sendable {
     var onUpdate: ((TranscriptUpdate) -> Void)? { get set }
     var onError: ((String) -> Void)? { get set }
     var debugSessionID: String? { get }
-    @MainActor func begin(language: String?)
+    @MainActor func begin(language: String?, contextualStrings: [String])
     func feedAudio(_ pcmData: Data)
     func end()
 }
@@ -120,6 +120,7 @@ final class DictationSession {
     private var maxDurationTask: Task<Void, Never>?
     private var didFinalize = false
     private let languageHint: String?
+    private let contextualStrings: [String]
     private static let maxDurationSeconds: UInt64 = 5 * 60 // 5 minutes
 
     /// Callback for events — set by AppDelegate to update UI.
@@ -142,13 +143,15 @@ final class DictationSession {
         sttSession: any SttSession,
         textInjector: any TextInjecting,
         audioCapture: any AudioCapturing,
-        languageHint: String? = nil
+        languageHint: String? = nil,
+        contextualStrings: [String] = []
     ) {
         self.sttSession = sttSession
         self.textInjector = textInjector
         self.audioCapture = audioCapture
         let trimmed = languageHint?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.languageHint = (trimmed?.isEmpty == false) ? trimmed : nil
+        self.contextualStrings = contextualStrings
     }
 
     /// Start a dictation session. Captures the focused element, begins audio + STT.
@@ -168,7 +171,7 @@ final class DictationSession {
         sttSession.onError = { [weak self] msg in
             Task { @MainActor in self?.handleFailure(msg) }
         }
-        sttSession.begin(language: languageHint)
+        sttSession.begin(language: languageHint, contextualStrings: contextualStrings)
 
         audioCapture.onAudioLevel = { [weak self] level in
             Task { @MainActor in

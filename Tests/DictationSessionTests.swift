@@ -81,6 +81,23 @@ struct DictationSessionTests {
         session.start()
 
         #expect(stt.beginLanguage == "Chinese")
+        #expect(stt.beginContextualStrings.isEmpty)
+    }
+
+    @Test func startPassesVocabularyHintsToSttSession() {
+        let stt = MockSttSession()
+        let audio = MockAudioCapture()
+        let injector = MockTextInjector()
+        let session = DictationSession(
+            sttSession: stt,
+            textInjector: injector,
+            audioCapture: audio,
+            contextualStrings: ["Yuwp", "Oppi"]
+        )
+
+        session.start()
+
+        #expect(stt.beginContextualStrings == ["Yuwp", "Oppi"])
     }
 
     @Test func debugSessionIDPassesThroughFromSttSession() {

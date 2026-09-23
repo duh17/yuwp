@@ -65,8 +65,19 @@ private final class NativeASRStdioBridge: @unchecked Sendable {
         }
     }
 
-    func createSession(language: String? = nil, timeout: TimeInterval = 10) -> String? {
-        perform(command: .create, sessionID: nil, language: language, binary: Data(), timeout: timeout)?.sessionID
+    func createSession(
+        language: String? = nil,
+        contextualStrings: [String] = [],
+        timeout: TimeInterval = 10
+    ) -> String? {
+        perform(
+            command: .create,
+            sessionID: nil,
+            language: language,
+            contextualStrings: contextualStrings,
+            binary: Data(),
+            timeout: timeout
+        )?.sessionID
     }
 
     func feed(sessionID: String, pcmData: Data, timeout: TimeInterval = 30) -> TranscriptUpdate? {
@@ -87,11 +98,19 @@ private final class NativeASRStdioBridge: @unchecked Sendable {
         command: ASRIPCCommand,
         sessionID: String?,
         language: String?,
+        contextualStrings: [String] = [],
         binary: Data,
         timeout: TimeInterval
     ) -> ASRIPCResponse? {
         do {
-            return try request(command: command, sessionID: sessionID, language: language, binary: binary, timeout: timeout)
+            return try request(
+                command: command,
+                sessionID: sessionID,
+                language: language,
+                contextualStrings: contextualStrings,
+                binary: binary,
+                timeout: timeout
+            )
         } catch BridgeError.server(let message) {
             yuwpLog("ASR stdio request failed (\(command.rawValue)): \(message)")
             return nil
@@ -106,6 +125,7 @@ private final class NativeASRStdioBridge: @unchecked Sendable {
         command: ASRIPCCommand,
         sessionID: String?,
         language: String?,
+        contextualStrings: [String] = [],
         binary: Data,
         timeout: TimeInterval
     ) throws -> ASRIPCResponse {
@@ -115,7 +135,13 @@ private final class NativeASRStdioBridge: @unchecked Sendable {
             let requestID = nextRequestID
             nextRequestID &+= 1
 
-            let request = ASRIPCRequest(id: requestID, command: command, sessionID: sessionID, language: language)
+            let request = ASRIPCRequest(
+                id: requestID,
+                command: command,
+                sessionID: sessionID,
+                language: language,
+                contextualStrings: contextualStrings
+            )
             let frame = try ASRIPCCodec.encode(request, binary: binary)
             try writeAll(fd: inputHandle.fileDescriptor, data: frame)
 
@@ -822,7 +848,7 @@ fileprivate final class NativeASRUnavailableSession: SttSession, @unchecked Send
     }
 
     @MainActor
-    func begin(language: String?) {
+    func begin(language: String?, contextualStrings: [String]) {
         onError?(reason)
     }
 
@@ -855,12 +881,15 @@ fileprivate final class NativeASRStdioSession: SttSession, @unchecked Sendable {
         self.bridge = bridge
     }
 
-    func begin(language: String?) {
+    func begin(language: String?, contextualStrings: [String]) {
         queue.async { [weak self] in
             guard let self else { return }
             let trimmedLanguage = language?.trimmingCharacters(in: .whitespacesAndNewlines)
             let normalizedLanguage = (trimmedLanguage?.isEmpty == false) ? trimmedLanguage : nil
-            guard let sid = self.bridge.createSession(language: normalizedLanguage) else {
+            guard let sid = self.bridge.createSession(
+                language: normalizedLanguage,
+                contextualStrings: contextualStrings
+            ) else {
                 self.onError?("Failed to create ASR session")
                 return
             }
@@ -937,15 +966,24 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
         self.baseURL = "http://\(host):\(port)/v1/audio/transcriptions/stream"
     }
 
-    func begin(language: String?) {
+    func begin(language: String?, contextualStrings: [String]) {
         queue.async { [weak self] in
             guard let self else { return }
             let createPath = self.createSessionPath(language: language)
-            guard let data = self.syncHTTP("POST", path: createPath),
+            let body = Self.streamCreateBody(contextualStrings: contextualStrings)
+            guard let data = self.syncHTTP(
+                "POST",
+                path: createPath,
+                body: body,
+                contentType: body == nil ? nil : "application/json"
+            ),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let sid = json["session_id"] as? String else {
                 self.onError?("Failed to create ASR session")
                 return
+            }
+            if let applied = json["context_applied"] as? Bool {
+                yuwpLog("ASR context_applied=\(applied)")
             }
             self.sessionId = sid
             self.sessionIDBox.set(sid)
@@ -1039,12 +1077,28 @@ final class NativeASRSession: SttSession, @unchecked Sendable {
     }
 
     /// Synchronous HTTP request (always called on the serial background queue).
-    private func syncHTTP(_ method: String, path: String, body: Data? = nil) -> Data? {
+    private static func streamCreateBody(contextualStrings: [String]) -> Data? {
+        guard !contextualStrings.isEmpty else { return nil }
+        let payload: [String: Any] = [
+            "stream_config": ["contextual_strings": contextualStrings]
+        ]
+        return try? JSONSerialization.data(withJSONObject: payload)
+    }
+
+    private func syncHTTP(
+        _ method: String,
+        path: String,
+        body: Data? = nil,
+        contentType: String? = nil
+    ) -> Data? {
         guard let url = URL(string: path) else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.timeoutInterval = 30
         req.httpBody = body
+        if let contentType {
+            req.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        }
         let result = LockedBox<Data?>(nil)
         let sema = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: req) { data, response, _ in

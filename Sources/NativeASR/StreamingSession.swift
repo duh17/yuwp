@@ -382,6 +382,10 @@ public final class StreamingSession: @unchecked Sendable {
         if !chunkHasSpeech && rms < Self.silenceRMS {
             chunkIdx += 1
             if config.isStablePrefix {
+                // Do not keep running inference on pause — that hitch is what
+                // feels like the app halting after a word. Flush the held token
+                // so the last word appears without a GPU pass.
+                if hasSpeech { flushStablePrefixHeldTokens() }
                 lastText = committedText
                 return .finished(ChunkResult(
                     text: committedText, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000
@@ -1082,19 +1086,44 @@ public final class StreamingSession: @unchecked Sendable {
         lastText = committedText
     }
 
-    private func finalizeStablePrefix() -> String {
-        let result = StablePrefixCommitter.commit(
+    private func flushStablePrefixHeldTokens() {
+        guard !rawTokens.isEmpty else { return }
+        committedText = StablePrefixCommitter.visibleTranscript(
             prefixText: committedText,
-            generatedText: rawTokens.isEmpty ? committedText : transcriber.tokenizer.decode(rawTokens),
-            unfixedTokenCount: 0,
-            encode: { transcriber.tokenizer.encode($0) },
-            decode: { transcriber.tokenizer.decode($0) }
+            decoded: transcriber.tokenizer.decode(rawTokens)
         )
-        committedText = result.committedText
-        committedPrefixTokens = committedText.isEmpty ? [] : transcriber.tokenizer.encode(committedText)
+        committedPrefixTokens = rawTokens
+        lastText = committedText
+    }
+
+    private func finalizeStablePrefix() -> String {
+        // Commit the held-back token from sampled ids. Re-encoding the decoded
+        // string drifts off those ids and drops the last word.
+        flushStablePrefixHeldTokens()
         rawTokens = []
+        // Stop-only accuracy pass. Live chunks stay append-only; pause batch
+        // stays off because `batchRetranscribe` is false.
+        if let batchText = batchRetranscribeFullSession(),
+           StopTailExecutor.isUsableBatchText(batchText) {
+            let chosen = Self.preferStopBatch(streamed: committedText, batch: batchText)
+            if chosen != committedText {
+                committedText = chosen
+                committedPrefixTokens = []
+            }
+        }
         lastText = committedText
         return committedText
+    }
+
+    /// Stop-batch must never wipe a longer live transcript. A shorter batch is
+    /// how the on-screen text looks reset or cut off.
+    static func preferStopBatch(streamed: String, batch: String) -> String {
+        let streamed = streamed.trimmingCharacters(in: .whitespacesAndNewlines)
+        let batch = batch.trimmingCharacters(in: .whitespacesAndNewlines)
+        if streamed.isEmpty { return batch }
+        if batch.isEmpty { return streamed }
+        if batch.count < streamed.count { return streamed }
+        return batch
     }
 
     private func sampleWithPenalty(logits: MLXArray, recent: [Int], penalty: Float) -> MLXArray {

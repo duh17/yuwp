@@ -79,6 +79,30 @@ struct StablePrefixCommitterTests {
         #expect(!StablePrefixCommitter.isLanguageHeaderOnly("language is a tool"))
     }
 
+    @Test func midTranscriptLanguageSwitchKeepsEnglishAndAppendsChinese() {
+        let decoded = "In addition, language Chinese<asr_text>我来说中文现在怎么样"
+        #expect(
+            StablePrefixCommitter.stripMeta(decoded)
+                == "In addition, 我来说中文现在怎么样"
+        )
+        let visible = StablePrefixCommitter.visibleTranscript(
+            prefixText: "In addition,",
+            decoded: decoded
+        )
+        #expect(visible.contains("In addition,"))
+        #expect(visible.contains("我来说中文"))
+        #expect(!visible.contains("language"))
+        #expect(!visible.contains("<asr_text>"))
+    }
+
+    @Test func cjkContinuesAfterEnglishPunctuation() {
+        let visible = StablePrefixCommitter.visibleTranscript(
+            prefixText: "In addition,",
+            decoded: "我来说中文"
+        )
+        #expect(visible == "In addition,我来说中文")
+    }
+
     @Test func stripsGluedAutoLanguageHeaderWithoutAsrMarker() {
         #expect(
             StablePrefixCommitter.stripMeta("language NoneSo what about the ownership")
@@ -123,6 +147,19 @@ struct StablePrefixCommitterTests {
             decoded: "hello world|"
         )
         #expect(divergent == next)
+    }
+
+    @Test func stopBatchKeepsLongerStreamedText() {
+        #expect(StreamingSession.preferStopBatch(streamed: "hello world today", batch: "hello") == "hello world today")
+        #expect(StreamingSession.preferStopBatch(streamed: "hello", batch: "hello world today") == "hello world today")
+        #expect(StreamingSession.preferStopBatch(streamed: "", batch: "hello") == "hello")
+        #expect(StreamingSession.preferStopBatch(streamed: "hello", batch: "") == "hello")
+    }
+
+    @Test func visibleTranscriptCommitsHeldLastWordWithoutReencode() {
+        let live = "but he did very well when he started writing for other"
+        let withLast = "but he did very well when he started writing for other people"
+        #expect(StablePrefixCommitter.visibleTranscript(prefixText: live, decoded: withLast) == withLast)
     }
 
     @Test func emptyGeneratedKeepsPrefix() {

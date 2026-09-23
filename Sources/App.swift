@@ -325,11 +325,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         activeTranscriptionModel = Config.shared.transcriptionModel
         pendingRecordingArtifact = nil
         pendingRecordingTranscript = nil
+        let vocabularyHints = OppiDictationDictionary.globalPhrases()
+        if !vocabularyHints.isEmpty {
+            yuwpLog("Dictation vocabulary hints: \(vocabularyHints.count) phrases")
+        }
         let s = DictationSession(
             sttSession: asrProvider.makeSession(),
             textInjector: injector,
             audioCapture: audioCapture,
-            languageHint: languageHint
+            languageHint: languageHint,
+            contextualStrings: vocabularyHints
         )
         s.onEvent = { [weak self] event in self?.handleSessionEvent(event) }
         s.onFinalTranscript = { [weak self] transcript in
@@ -1049,7 +1054,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             usingDefaultRecordingsDir: Config.shared.usesDefaultRecordingsDir,
             micPanelAnimation: Config.shared.micPanelAnimation,
             startChime: Config.shared.startChime,
-            stopChime: Config.shared.stopChime
+            stopChime: Config.shared.stopChime,
+            vocabularyHints: OppiDictationDictionary.globalPhrases()
         )
     }
 

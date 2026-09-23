@@ -68,6 +68,8 @@ public struct StablePrefixCommitter: Sendable {
         guard let first = cut.first, let last = prefix.last else { return false }
         if first.isWhitespace || first.isPunctuation { return true }
         if isCJK(last) && isCJK(first) { return true }
+        // Mixed dictation: English then 中文 without repeating the English prefix.
+        if isCJK(first) { return true }
         return false
     }
 
@@ -101,7 +103,13 @@ public struct StablePrefixCommitter: Sendable {
     static func stripMeta(_ text: String) -> String {
         var cleaned = text
         if let range = cleaned.range(of: "<asr_text>") {
-            cleaned = String(cleaned[range.upperBound...])
+            let before = String(cleaned[..<range.lowerBound])
+            let after = String(cleaned[range.upperBound...])
+            if let header = before.range(of: "language ", options: [.backwards, .caseInsensitive]) {
+                cleaned = String(before[..<header.lowerBound]) + after
+            } else {
+                cleaned = after
+            }
         }
         if let replacement = cleaned.firstIndex(of: "\u{FFFD}") {
             cleaned = String(cleaned[..<replacement])

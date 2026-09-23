@@ -331,6 +331,20 @@ struct SettingsView: View {
             SettingsDivider()
 
             SettingsBlockRow(
+                title: "Vocabulary Hints",
+                subtitle: store.vocabularyHintsStatusText
+            ) {
+                Text(store.vocabularyHintsSummaryText)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: 420, alignment: .trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            SettingsDivider()
+
+            SettingsBlockRow(
                 title: "Download",
                 subtitle: store.downloadRowStatusText
             ) {

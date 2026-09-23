@@ -816,7 +816,14 @@ func startStdioServer(
                     finalAccuracyPassEnabled: batchRetranscribeEnabled
                 )
             case .create:
-                response = ASRIPCResponse(id: request.id, ok: true, sessionID: mgr.create(language: request.language))
+                response = ASRIPCResponse(
+                    id: request.id,
+                    ok: true,
+                    sessionID: mgr.create(
+                        language: request.language,
+                        contextualStrings: request.contextualStrings
+                    )
+                )
             case .feed:
                 guard let sid = request.sessionID else {
                     response = ASRIPCResponse(id: request.id, ok: false, error: "missing session_id")
