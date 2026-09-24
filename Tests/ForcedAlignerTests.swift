@@ -41,6 +41,64 @@ struct AlignmentProcessorTests {
         #expect(words == ["test", "你", "好", "end"])
     }
 
+    @Test func englishPathSplitsEmbeddedKana() {
+        let words = AlignmentProcessor.tokenizeWords("testこんにちはend", language: "English")
+        #expect(words == ["test", "こ", "ん", "に", "ち", "は", "end"])
+    }
+
+    @Test func japaneseHiraganaAndKanjiAreCharacterLevel() {
+        let words = AlignmentProcessor.tokenizeWords("こんにちは世界", language: "Japanese")
+        #expect(words == ["こ", "ん", "に", "ち", "は", "世", "界"])
+    }
+
+    @Test func japaneseKatakanaIsCharacterLevel() {
+        let words = AlignmentProcessor.tokenizeWords("ポッドキャスト", language: "Japanese")
+        #expect(words == ["ポ", "ッ", "ド", "キ", "ャ", "ス", "ト"])
+    }
+
+    @Test func japaneseKeepsLatinGrouped() {
+        let words = AlignmentProcessor.tokenizeWords("NHKですhello世界", language: "Japanese")
+        #expect(words == ["NHK", "で", "す", "hello", "世", "界"])
+    }
+
+    @Test func japaneseLanguageCodeJaMatchesJapanese() {
+        let text = "はい皆さんこんにちは"
+        #expect(
+            AlignmentProcessor.tokenizeWords(text, language: "ja")
+                == AlignmentProcessor.tokenizeWords(text, language: "Japanese")
+        )
+    }
+
+    @Test func japanesePreparationPreservesPunctuationOnDisplayText() {
+        let words = AlignmentProcessor.prepareWords("なんだろう？こんにちは。", language: "Japanese")
+        #expect(words.map(\.alignText) == ["な", "ん", "だ", "ろ", "う", "こ", "ん", "に", "ち", "は"])
+        #expect(AlignedTextRenderer.render(tokens: words.map(\.text)) == "なんだろう？こんにちは。")
+    }
+
+    @Test func japaneseDisplayJoinRemovesInsertedSpaces() {
+        let text = AlignedTextRenderer.render(tokens: ["こ", "ん", "に", "ち", "は", "世", "界"])
+        #expect(text == "こんにちは世界")
+    }
+
+    @Test func chineseDoesNotGlueHanCharacters() {
+        let words = AlignmentProcessor.tokenizeWords("我们都是好朋友的", language: "Chinese")
+        #expect(words == ["我", "们", "都", "是", "好", "朋", "友", "的"])
+        #expect(words.allSatisfy { $0.count == 1 })
+    }
+
+    @Test func chineseLanguageCodeZhMatchesChinese() {
+        let text = "你好世界"
+        #expect(
+            AlignmentProcessor.tokenizeWords(text, language: "zh")
+                == AlignmentProcessor.tokenizeWords(text, language: "Chinese")
+        )
+    }
+
+    @Test func chineseWithEmbeddedKanaSplitsBoth() {
+        let words = AlignmentProcessor.tokenizeWords("你好こんにちは", language: "Chinese")
+        #expect(words == ["你", "好", "こ", "ん", "に", "ち", "は"])
+    }
+
     @Test func chineseDisplayJoinRemovesInsertedSpaces() {
         let text = AlignedTextRenderer.render(tokens: ["照", "片", "上", "这", "三", "位", "年", "轻"])
         #expect(text == "照片上这三位年轻")

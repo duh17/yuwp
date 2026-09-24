@@ -217,10 +217,10 @@ enum AlignmentProcessor {
 
     static func prepareWords(_ text: String, language: String) -> [AlignmentWord] {
         switch language.lowercased() {
-        case "chinese", "cantonese":
+        case "chinese", "cantonese", "zh", "yue":
             return tokenizeChineseMixedWords(text)
-        case "japanese":
-            // Character-level for CJK, grouped for Latin (no nagisa dependency)
+        case "japanese", "ja":
+            // Character-level for kanji/kana (no nagisa). Latin stays grouped.
             return tokenizeChineseMixedWords(text)
         default:
             return tokenizeSpaceLangWords(text)
@@ -256,7 +256,8 @@ enum AlignmentProcessor {
         return words
     }
 
-    /// Chinese mixed: each CJK character is its own token, Latin characters are grouped.
+    /// Compact-script mixed: each kanji/kana character is its own token, Latin stays grouped.
+    /// The function name is historical; Chinese, Japanese, and Cantonese all use this splitter.
     static func tokenizeChineseMixedWords(_ text: String) -> [AlignmentWord] {
         var tokens: [AlignmentWord] = []
         var latinBuf: [Character] = []
@@ -276,7 +277,7 @@ enum AlignmentProcessor {
         }
 
         for ch in text {
-            if ch.unicodeScalars.contains(where: isCJK) {
+            if ScriptClassifier.isCompactScript(ch) {
                 flushLatin()
                 tokens.append(AlignmentWord(text: String(ch), alignText: String(ch)))
             } else if isKeptChar(ch) {
@@ -303,12 +304,14 @@ enum AlignmentProcessor {
         ScriptClassifier.isCJK(scalar)
     }
 
-    /// Split a segment at CJK character boundaries, preserving original punctuation inside each piece.
+    /// Split a segment at compact-script character boundaries, preserving original punctuation inside each piece.
+    /// The `CJK` name is historical; hiragana and katakana are included so unspaced Japanese
+    /// on the default/English path does not glue kana into one token.
     static func splitCJKDisplay(_ text: String) -> [String] {
         var tokens: [String] = []
         var buf = ""
         for ch in text {
-            if ch.unicodeScalars.contains(where: isCJK) {
+            if ScriptClassifier.isCompactScript(ch) {
                 if !buf.isEmpty { tokens.append(buf); buf = "" }
                 tokens.append(String(ch))
             } else {
