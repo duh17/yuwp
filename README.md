@@ -54,11 +54,12 @@ DMGs and app bundles include both tools:
 /Applications/Yuwp.app/Contents/MacOS/yuwp-tts
 ```
 
-Transcribe a file:
+Transcribe a file or make subtitles (subtitles require a local forced aligner):
 
 ```bash
 .build/out/Products/Release/yuwp-asr transcribe Tests/fixtures/jfk.wav
 /Applications/Yuwp.app/Contents/MacOS/yuwp-asr transcribe Tests/fixtures/jfk.wav
+.build/out/Products/Release/yuwp-asr transcribe recording.wav --format srt --output recording.srt
 ```
 
 ASR HTTP server (stdio is the default transport; pass `--transport http`):
@@ -75,7 +76,9 @@ curl -sf http://127.0.0.1:7936/v1/info | jq .
 - Empty strings, whitespace-only strings, and strings containing control characters are rejected.
 - Clients cannot set `system_prompt`; Yuwp writes a short vocabulary header itself.
 
-Batch transcription splits audio automatically, using VAD for short files and energy boundaries for files longer than 120 seconds. `--batch-chunking automatic|vad|energy` affects batch transcription only, not live streaming. Explicit `vad` falls back to energy if batch VAD cannot load. The legacy `--disable-vad` flag also turns off streaming VAD. `GET /v1/info` reports the requested batch mode, the resolved mode, and whether batch VAD is available.
+Plain batch transcription uses VAD for short files and energy boundaries for files longer than 120 seconds. Subtitles use VAD boundaries at any length when available, then cut audio to at most 30 seconds **before** ASR. Each clip is transcribed and aligned with its own text. If VAD cannot load, subtitles use capped energy cuts. Supplying `text` with an HTTP subtitle request instead distributes that supplied text across clips approximately; it does not run ASR or guarantee word-level placement. Pass `language` for mixed-script text or all-Kanji Japanese, where the script alone does not identify the language.
+
+`--batch-chunking automatic|vad|energy` affects batch jobs, not live streaming. Explicit `vad` falls back to energy if batch VAD cannot load. The legacy `--disable-vad` flag also turns off streaming VAD. `GET /v1/info` reports the requested batch mode, the plain-transcription resolution, and whether batch VAD is available. Subtitle JSON with `debug=true` shows the actual subtitle chunk boundaries.
 
 TTS HTTP server:
 

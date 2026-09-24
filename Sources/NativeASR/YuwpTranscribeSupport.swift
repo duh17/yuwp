@@ -226,6 +226,8 @@ private final class LocalBatchTranscriptionService: BatchTranscriptionServing, @
         self.transcriber = transcriber
     }
 
+    var hasR2T2BatchDelimiter: Bool { StreamConfig.isR2T2Model(at: transcriber.modelDirectory) }
+
     func transcribeChunk(audio: [Float], language: String?, temperature: Float) throws -> TranscriptionResult {
         inferenceLock.lock()
         defer { inferenceLock.unlock() }

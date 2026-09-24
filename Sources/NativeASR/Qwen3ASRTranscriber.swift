@@ -187,12 +187,14 @@ public final class Qwen3ASRTranscriber: @unchecked Sendable {
             )
         }
 
+        let decoded = tokenizer.decode(generatedTokens)
+        let detectedLanguage = language ?? StablePrefixCommitter.leadingLanguage(in: decoded)
         let cleanedText = language == nil
             ? tokenizer.cleanTokenOutput(generatedTokens)
-            : tokenizer.cleanOutput(tokenizer.decode(generatedTokens))
+            : tokenizer.cleanOutput(decoded)
         return TranscriptionResult(
             text: Self.trimPathologicalRepetition(in: cleanedText),
-            language: language,
+            language: detectedLanguage,
             audioDuration: audioDuration,
             processingTime: Date().timeIntervalSince(t0)
         )

@@ -176,7 +176,8 @@ public func groupSubtitles(
     _ items: [ForcedAlignItem],
     strategy: any SubtitleStitchingStrategy
 ) -> [Subtitle] {
-    guard !items.isEmpty else { return [] }
+    let timedItems = attachUntimedItems(items)
+    guard !timedItems.isEmpty else { return [] }
 
     var subtitles: [Subtitle] = []
     var currentWords: [ForcedAlignItem] = []
@@ -184,20 +185,16 @@ public func groupSubtitles(
     var subtitleIndex = 1
 
     func flush() {
-        guard !currentWords.isEmpty else { return }
+        guard let first = currentWords.first, let last = currentWords.last else { return }
         let text = AlignedTextRenderer.render(tokens: currentWords.map(\.text))
-        subtitles.append(Subtitle(
-            index: subtitleIndex,
-            start: currentWords.first!.startTime,
-            end: currentWords.last!.endTime,
-            text: text
-        ))
+        subtitles.append(Subtitle(index: subtitleIndex, start: first.startTime,
+                                  end: last.endTime, text: text))
         subtitleIndex += 1
         currentWords.removeAll()
         currentUnits = 0
     }
 
-    for (index, item) in items.enumerated() {
+    for (index, item) in timedItems.enumerated() {
         currentWords.append(item)
         currentUnits += max(1, strategy.unitCount(for: item))
 
@@ -205,7 +202,7 @@ public func groupSubtitles(
         let atUnitLimit = currentUnits >= strategy.maxUnitsPerSubtitle
         let atDurationLimit = duration >= strategy.maxDuration
         let atSentenceEnd = item.text.last.map { strategy.sentenceEndChars.contains($0) } ?? false
-        let hasPause = index + 1 < items.count && (items[index + 1].startTime - item.endTime) >= strategy.pauseThreshold
+        let hasPause = index + 1 < timedItems.count && (timedItems[index + 1].startTime - item.endTime) >= strategy.pauseThreshold
 
         if atUnitLimit || atDurationLimit || atSentenceEnd || hasPause {
             flush()
@@ -213,6 +210,47 @@ public func groupSubtitles(
     }
     flush()
     return subtitles
+}
+
+/// Zero-duration model tokens have no acoustic span. Attach their text to the
+/// nearer timed token before grouping so they cannot extend a cue's bounds.
+/// Without any timed token, keep the words in the transcript/debug only.
+private func attachUntimedItems(_ items: [ForcedAlignItem]) -> [ForcedAlignItem] {
+    let anchors = items.indices.filter { index in
+        let item = items[index]
+        return item.startTime.isFinite && item.endTime.isFinite
+            && item.endTime - item.startTime >= 0.001
+    }
+    guard !anchors.isEmpty else { return [] }
+
+    var words = [[String]](repeating: [], count: anchors.count)
+    var next = 0
+    for (index, item) in items.enumerated() {
+        while next < anchors.count && anchors[next] < index { next += 1 }
+        if next < anchors.count && anchors[next] == index {
+            words[next].append(item.text)
+            continue
+        }
+        let before = next > 0 ? next - 1 : nil
+        let after = next < anchors.count ? next : nil
+        let target: Int
+        if let before, let after {
+            let left = items[anchors[before]]
+            let right = items[anchors[after]]
+            let leftGap = item.startTime.isFinite ? max(0, item.startTime - left.endTime) : Double(index - anchors[before])
+            let rightGap = item.endTime.isFinite ? max(0, right.startTime - item.endTime) : Double(anchors[after] - index)
+            target = leftGap <= rightGap ? before : after
+        } else {
+            target = before ?? after ?? 0
+        }
+        words[target].append(item.text)
+    }
+    return anchors.enumerated().map { anchor, originalIndex in
+        let item = items[originalIndex]
+        return ForcedAlignItem(text: AlignedTextRenderer.render(tokens: words[anchor]),
+                               startTime: item.startTime, endTime: item.endTime,
+                               alignText: words[anchor].count == 1 ? item.alignText : nil)
+    }
 }
 
 public func subtitleItems(from debug: BatchSubtitleDebug) -> [ForcedAlignItem] {

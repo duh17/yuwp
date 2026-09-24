@@ -44,9 +44,19 @@ public enum BatchTranscriptionDefaults {
         energyWindowDuration: 0.1,
         minProgressDuration: 1.0
     )
+
+    /// Subtitle ASR and alignment share these audio windows. Ordinary batch stays at 120s.
+    public static let subtitleAlignmentConfig = EnergyChunkingConfig(
+        maxChunkDuration: 30.0,
+        minChunkDuration: 1.0,
+        searchExpandDuration: 2.0,
+        energyWindowDuration: 0.1,
+        minProgressDuration: 1.0
+    )
 }
 
 public protocol BatchTranscriptionServing: AnyObject, Sendable {
+    var hasR2T2BatchDelimiter: Bool { get }
     func transcribeChunk(audio: [Float], language: String?, temperature: Float) throws -> TranscriptionResult
     func subtitleItems(
         audio: [Float],
@@ -55,6 +65,10 @@ public protocol BatchTranscriptionServing: AnyObject, Sendable {
         temperature: Float,
         aligner: ForcedAligner
     ) throws -> (transcript: String, language: String, items: [ForcedAlignItem])
+}
+
+public extension BatchTranscriptionServing {
+    var hasR2T2BatchDelimiter: Bool { false }
 }
 
 public struct BatchAlignmentItemDebug: Sendable, Codable {
@@ -174,62 +188,119 @@ public enum BatchTranscriptionPipeline {
         chunking: BatchChunkingMode = .automatic,
         log: @Sendable (String) -> Void = { _ in }
     ) throws -> BatchSubtitleResult {
+        try subtitle(
+            using: service, audio: audio, transcript: transcript, language: language,
+            temperature: temperature, vad: vad, chunking: chunking, log: log,
+            alignItems: { window, text, language, temperature in
+                try service.subtitleItems(audio: window, transcript: text, language: language,
+                                          temperature: temperature, aligner: aligner)
+            }
+        )
+    }
+
+    // Inject only the alignment boundary so windowing and ASR granularity can be
+    // tested without loading an MLX model. Production always uses subtitleItems.
+    static func subtitle(
+        using service: any BatchTranscriptionServing,
+        audio: [Float],
+        transcript: String?,
+        language: String?,
+        temperature: Float,
+        vad: SileroVAD?,
+        chunking: BatchChunkingMode = .automatic,
+        log: @Sendable (String) -> Void = { _ in },
+        alignItems: ([Float], String, String?, Float) throws -> (transcript: String, language: String, items: [ForcedAlignItem])
+    ) throws -> BatchSubtitleResult {
         let startedAt = Date()
         let audioDuration = Double(audio.count) / Double(ASRAudio.sampleRate)
-        let resolvedChunking = chunking.resolved(audioDuration: audioDuration, hasVAD: vad != nil)
-        let chunks = try chunkAudio(audio, vad: vad, chunking: resolvedChunking)
+        let resolvedChunking = subtitleChunkingMode(chunking, audioDuration: audioDuration, hasVAD: vad != nil)
+        let asrChunks = try subtitleAudioChunks(audio, vad: vad, chunking: resolvedChunking)
         let chunkMode = chunkingLabel(resolvedChunking)
-        log("\(chunkMode) chunking subtitles: \(chunks.count) chunks from \(String(format: "%.1f", audioDuration))s")
-        log("\(chunkMode) chunk ranges subtitles: \(formatChunkRanges(chunks))")
+        log("\(chunkMode) pre-ASR subtitle chunks: \(asrChunks.count) from \(String(format: "%.1f", audioDuration))s")
+        log("\(chunkMode) pre-ASR subtitle ranges: \(formatChunkRanges(asrChunks))")
 
         var allItems: [ForcedAlignItem] = []
         var transcriptParts: [String] = []
-        var resolvedLanguage = language ?? "English"
+        var resolvedLanguage: String? = language
         var debugChunks: [BatchSubtitleChunkDebug] = []
+        let suppliedText = transcript?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasSuppliedText = !(suppliedText ?? "").isEmpty
+        if hasSuppliedText, resolvedLanguage == nil {
+            resolvedLanguage = inferredSubtitleLanguage(suppliedText ?? "")
+        }
+        // User-supplied text has no clip-level transcript. This legacy path must
+        // approximate its placement; ASR-generated text is never split by length.
+        let suppliedParts = hasSuppliedText
+            ? splitTextProportionally(suppliedText ?? "", chunkDurations: asrChunks.map(\.duration))
+            : []
 
-        if let transcript, !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let textParts = splitTextProportionally(transcript, chunkDurations: chunks.map(\.duration))
-            for (index, pair) in zip(chunks.indices, zip(chunks, textParts)) {
-                let (chunk, textPart) = pair
-                let part = try service.subtitleItems(
-                    audio: chunk.audio,
-                    transcript: textPart,
-                    language: language,
-                    temperature: temperature,
-                    aligner: aligner
-                )
-                transcriptParts.append(part.transcript)
-                resolvedLanguage = language ?? part.language
-                let offsetItems = offsetAlignmentItems(part.items, by: chunk.startTime)
-                allItems.append(contentsOf: offsetItems)
-                debugChunks.append(makeDebugChunk(index: index + 1, chunk: chunk, transcript: part.transcript, items: offsetItems))
+        for (index, chunk) in asrChunks.enumerated() {
+            let text: String
+            let alignmentLanguage: String?
+            if hasSuppliedText {
+                text = suppliedParts[index]
+                alignmentLanguage = resolvedLanguage
+            } else {
+                let recognized = try service.transcribeChunk(audio: chunk.audio, language: language, temperature: temperature)
+                let raw = recognized.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                text = service.hasR2T2BatchDelimiter
+                    ? StablePrefixCommitter.pipeCut(StablePrefixCommitter.stripMeta(raw)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    : raw
+                alignmentLanguage = language ?? recognized.language ?? inferredSubtitleLanguage(text) ?? resolvedLanguage
+                if resolvedLanguage == nil { resolvedLanguage = alignmentLanguage }
+                if !text.isEmpty { transcriptParts.append(text) }
             }
-        } else {
-            for (index, chunk) in chunks.enumerated() {
-                let part = try service.subtitleItems(
-                    audio: chunk.audio,
-                    transcript: nil,
-                    language: language,
-                    temperature: temperature,
-                    aligner: aligner
-                )
-                let trimmed = part.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { transcriptParts.append(trimmed) }
-                resolvedLanguage = language ?? part.language
-                let offsetItems = offsetAlignmentItems(part.items, by: chunk.startTime)
-                allItems.append(contentsOf: offsetItems)
-                debugChunks.append(makeDebugChunk(index: index + 1, chunk: chunk, transcript: part.transcript, items: offsetItems))
+
+            // The production subtitleItems implementation treats empty text as
+            // a request to run ASR; do not transcribe silent or empty splits twice.
+            var items: [ForcedAlignItem] = []
+            if !text.isEmpty {
+                let part = try alignItems(chunk.audio, text, alignmentLanguage, temperature)
+                items = boundedAlignmentItems(collapsePinnedItems(part.items, duration: chunk.duration),
+                                              duration: chunk.duration)
             }
+            let offsetItems = offsetAlignmentItems(items, by: chunk.startTime)
+            allItems.append(contentsOf: offsetItems)
+            debugChunks.append(makeDebugChunk(index: index + 1, chunk: chunk,
+                                               transcript: text, items: offsetItems))
         }
 
         return BatchSubtitleResult(
-            transcript: AlignedTextRenderer.render(segments: transcriptParts),
-            language: resolvedLanguage,
+            transcript: hasSuppliedText ? (suppliedText ?? "") : AlignedTextRenderer.render(segments: transcriptParts),
+            language: resolvedLanguage ?? "English",
             items: allItems,
             audioDuration: audioDuration,
             processingTime: Date().timeIntervalSince(startedAt),
-            debug: BatchSubtitleDebug(chunkingMode: chunkMode, chunkCount: chunks.count, chunks: debugChunks)
+            debug: BatchSubtitleDebug(chunkingMode: "\(chunkMode)-pre-asr-cap", chunkCount: debugChunks.count, chunks: debugChunks)
         )
+    }
+
+    static func subtitleChunkingMode(_ mode: BatchChunkingMode, audioDuration: Double, hasVAD: Bool) -> BatchChunkingMode {
+        mode == .automatic ? (hasVAD ? .vad : .energy)
+            : mode.resolved(audioDuration: audioDuration, hasVAD: hasVAD)
+    }
+
+    /// Only infer from scripts that are unambiguous enough for the aligner.
+    /// A caller can pass a language hint for mixed or all-Kanji Japanese text.
+    static func inferredSubtitleLanguage(_ text: String) -> String? {
+        if text.unicodeScalars.contains(where: { (0x3040 ... 0x30FF).contains($0.value) }) { return "Japanese" }
+        if text.unicodeScalars.contains(where: { (0xAC00 ... 0xD7AF).contains($0.value) }) { return "Korean" }
+        if text.unicodeScalars.contains(where: { ScriptClassifier.isCJK($0) }) { return "Chinese" }
+        return nil
+    }
+
+    /// Preserve VAD pauses (or explicit energy mode), then enforce a hard 30s
+    /// bound on every clip before either ASR or forced alignment sees it.
+    static func subtitleAudioChunks(_ audio: [Float], vad: SileroVAD?, chunking: BatchChunkingMode) throws -> [AudioChunk] {
+        let parents = try chunkAudio(audio, vad: vad, chunking: chunking)
+        return parents.flatMap { parent in
+            chunkAudioByEnergy(parent.audio, sampleRate: ASRAudio.sampleRate,
+                               config: BatchTranscriptionDefaults.subtitleAlignmentConfig,
+                               strictMaxDuration: true).map { local in
+                AudioChunk(audio: local.audio, startTime: parent.startTime + local.startTime,
+                           endTime: parent.startTime + local.endTime)
+            }
+        }
     }
 
     public static func chunkAudio(
@@ -261,23 +332,27 @@ public enum BatchTranscriptionPipeline {
         var parts: [String] = []
         var textPosition = 0
 
+        var elapsedDuration = 0.0
         for (index, duration) in chunkDurations.enumerated() {
             if index == chunkDurations.count - 1 {
                 parts.append(String(characters[textPosition...]).trimmingCharacters(in: .whitespacesAndNewlines))
                 break
             }
 
-            let proportion = duration / totalDuration
-            let charsForChunk = Int(Double(totalCount) * proportion)
-            let endPosition = min(totalCount, textPosition + charsForChunk)
-            let searchRange = max(20, Int(Double(charsForChunk) * 0.1))
+            elapsedDuration += duration
+            // Round cumulative share upward: a short transcript must not be
+            // postponed to the final alignment window by repeated floor(0).
+            let endPosition = min(totalCount, max(textPosition,
+                Int((Double(totalCount) * elapsedDuration / totalDuration).rounded(.up))))
+            let charsForChunk = endPosition - textPosition
+            let searchRange = max(2, min(20, Int(Double(charsForChunk) * 0.1)))
             var bestPosition = endPosition
             let separators = Set(" 。．！？、，.!?,\n")
 
-            outer: for offset in 0 ..< searchRange {
+            outer: for offset in 0 ... searchRange {
                 for checkPosition in [endPosition + offset, endPosition - offset] {
                     guard checkPosition >= 0, checkPosition < totalCount else { continue }
-                    if separators.contains(characters[checkPosition]) {
+                    if checkPosition > textPosition, separators.contains(characters[checkPosition]) {
                         bestPosition = min(totalCount, checkPosition + 1)
                         break outer
                     }
@@ -299,24 +374,51 @@ public func splitTextProportionally(_ text: String, chunkDurations: [Double]) ->
     BatchTranscriptionPipeline.splitTextProportionally(text, chunkDurations: chunkDurations)
 }
 
-private extension BatchTranscriptionPipeline {
-    static func chunkingLabel(_ mode: BatchChunkingMode) -> String {
+extension BatchTranscriptionPipeline {
+    private static func chunkingLabel(_ mode: BatchChunkingMode) -> String {
         mode == .vad ? "VAD" : "energy"
     }
 
-    static func formatChunkRanges(_ chunks: [AudioChunk]) -> String {
+    private static func formatChunkRanges(_ chunks: [AudioChunk]) -> String {
         chunks.enumerated().map { index, chunk in
             String(format: "%d:%.3f-%.3f", index + 1, chunk.startTime, chunk.endTime)
         }.joined(separator: ",")
     }
 
-    static func offsetAlignmentItems(_ items: [ForcedAlignItem], by offset: Double) -> [ForcedAlignItem] {
+    /// Clamp model predictions to the local audio and keep output ordered.
+    static func boundedAlignmentItems(_ items: [ForcedAlignItem], duration: Double) -> [ForcedAlignItem] {
+        var previousEnd = 0.0
+        return items.map { item in
+            let start = item.startTime.isFinite ? item.startTime : previousEnd
+            let end = item.endTime.isFinite ? item.endTime : start
+            let boundedStart = min(max(start, previousEnd), duration)
+            let boundedEnd = min(max(end, boundedStart), duration)
+            previousEnd = boundedEnd
+            return ForcedAlignItem(text: item.text, startTime: boundedStart, endTime: boundedEnd,
+                                   alignText: item.alignText)
+        }
+    }
+
+    /// A shared positive interval is evidence for the whole phrase, not for
+    /// artificial word boundaries inside it. Leave zero or invalid pins untimed.
+    static func collapsePinnedItems(_ items: [ForcedAlignItem], duration: Double) -> [ForcedAlignItem] {
+        guard items.count > 1, let first = items.first,
+              first.startTime.isFinite, first.endTime.isFinite,
+              first.startTime >= 0, first.endTime > first.startTime, first.endTime <= duration,
+              items.allSatisfy({ $0.startTime == first.startTime && $0.endTime == first.endTime }) else {
+            return items
+        }
+        return [ForcedAlignItem(text: AlignedTextRenderer.render(tokens: items.map(\.text)),
+                                startTime: first.startTime, endTime: first.endTime)]
+    }
+
+    private static func offsetAlignmentItems(_ items: [ForcedAlignItem], by offset: Double) -> [ForcedAlignItem] {
         items.map { item in
             ForcedAlignItem(text: item.text, startTime: item.startTime + offset, endTime: item.endTime + offset, alignText: item.alignText)
         }
     }
 
-    static func makeDebugChunk(index: Int, chunk: AudioChunk, transcript: String, items: [ForcedAlignItem]) -> BatchSubtitleChunkDebug {
+    private static func makeDebugChunk(index: Int, chunk: AudioChunk, transcript: String, items: [ForcedAlignItem]) -> BatchSubtitleChunkDebug {
         BatchSubtitleChunkDebug(
             index: index,
             start: chunk.startTime,

@@ -100,6 +100,16 @@ public struct StablePrefixCommitter: Sendable {
         return previous
     }
 
+    /// Extract the model's leading auto-language header before cleaning it out
+    /// of the transcript. Never infer language from ordinary spoken words.
+    static func leadingLanguage(in text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let header = trimmed.range(of: "language ", options: [.anchored, .caseInsensitive]) else { return nil }
+        let remainder = trimmed[header.upperBound...]
+        guard let name = headerLanguageNames.first(where: { remainder.hasPrefix($0) }), name != "None" else { return nil }
+        return name
+    }
+
     static func stripMeta(_ text: String) -> String {
         var cleaned = text
         if let range = cleaned.range(of: "<asr_text>") {

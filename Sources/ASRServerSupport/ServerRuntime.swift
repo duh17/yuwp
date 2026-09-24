@@ -461,6 +461,10 @@ final class StreamingSessionManager: @unchecked Sendable {
         )
     }
 
+    public var hasR2T2BatchDelimiter: Bool {
+        StreamConfig.isR2T2Model(at: (batchTranscriber ?? transcriber).modelDirectory)
+    }
+
     func transcribeChunk(
         audio: [Float],
         language: String? = nil,

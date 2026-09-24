@@ -79,6 +79,13 @@ struct StablePrefixCommitterTests {
         #expect(!StablePrefixCommitter.isLanguageHeaderOnly("language is a tool"))
     }
 
+    @Test func leadingLanguageIsCapturedBeforeCleaningBothHeaderFormats() {
+        #expect(StablePrefixCommitter.leadingLanguage(in: "language Japanese<asr_text>こんにちは") == "Japanese")
+        #expect(StablePrefixCommitter.leadingLanguage(in: "language Chinese你好|") == "Chinese")
+        #expect(StablePrefixCommitter.leadingLanguage(in: "language NoneSo what") == nil)
+        #expect(StablePrefixCommitter.leadingLanguage(in: "We discuss language Japanese") == nil)
+    }
+
     @Test func midTranscriptLanguageSwitchKeepsEnglishAndAppendsChinese() {
         let decoded = "In addition, language Chinese<asr_text>我来说中文现在怎么样"
         #expect(

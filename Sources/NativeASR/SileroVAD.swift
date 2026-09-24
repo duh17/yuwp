@@ -165,7 +165,8 @@ public struct EnergyChunkingConfig: Sendable {
 public func chunkAudioByEnergy(
     _ audio: [Float],
     sampleRate: Int = SileroVAD.sampleRate,
-    config: EnergyChunkingConfig = EnergyChunkingConfig()
+    config: EnergyChunkingConfig = EnergyChunkingConfig(),
+    strictMaxDuration: Bool = false
 ) -> [AudioChunk] {
     let audioDuration = Double(audio.count) / Double(sampleRate)
     if audio.isEmpty || audioDuration <= config.maxChunkDuration {
@@ -177,6 +178,7 @@ public func chunkAudioByEnergy(
     let searchSamples = Int(config.searchExpandDuration * Double(sampleRate))
     let energyWindowSamples = max(1, Int(config.energyWindowDuration * Double(sampleRate)))
     let minProgressSamples = max(1, Int(config.minProgressDuration * Double(sampleRate)))
+    let minChunkSamples = max(1, Int(config.minChunkDuration * Double(sampleRate)))
 
     var chunks: [AudioChunk] = []
     var startSample = 0
@@ -192,8 +194,13 @@ public func chunkAudioByEnergy(
             break
         }
 
-        let searchStart = max(startSample, endSample - searchSamples)
-        let searchEnd = min(totalSamples, endSample + searchSamples)
+        // Subtitle ASR must never search past the hard cap. Move the last cut
+        // backward when necessary so it does not leave a sub-second tail.
+        let remainingTail = totalSamples - endSample
+        let latestCut = strictMaxDuration && remainingTail > 0 && remainingTail < minChunkSamples
+            ? totalSamples - minChunkSamples : endSample
+        let searchStart = max(startSample, latestCut - searchSamples)
+        let searchEnd = strictMaxDuration ? latestCut : min(totalSamples, endSample + searchSamples)
         let searchRegion = Array(audio[searchStart ..< searchEnd])
 
         var cutSample = endSample
@@ -221,7 +228,7 @@ public func chunkAudioByEnergy(
         }
 
         cutSample = max(cutSample, startSample + minProgressSamples)
-        cutSample = min(cutSample, totalSamples)
+        cutSample = min(cutSample, strictMaxDuration ? latestCut : totalSamples)
 
         chunks.append(AudioChunk(
             audio: Array(audio[startSample ..< cutSample]),
