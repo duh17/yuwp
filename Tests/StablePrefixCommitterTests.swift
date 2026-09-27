@@ -120,7 +120,12 @@ struct StablePrefixCommitterTests {
             "In addition, language Chin", "In addition, language Chinese",
         ] {
             #expect(StablePrefixCommitter.visibleTranscript(prefixText: english, decoded: partial) == english)
-            #expect(commit(english, generated: partial, unfixed: 0).committedText == english)
+        }
+        // Endpoint/stop (no holdback) keeps a finished spoken "language",
+        // but still strips `language ` plus a name or partial name.
+        #expect(commit(english, generated: "In addition, language", unfixed: 0).committedText == "In addition, language")
+        for header in ["In addition, language ", "In addition, language Chin", "In addition, language Chinese"] {
+            #expect(commit(english, generated: header, unfixed: 0).committedText == english)
         }
         #expect(StablePrefixCommitter.stripMeta("language NoneSo what") == "So what")
         #expect(StablePrefixCommitter.stripMeta("In addition, language NoneSo what") == "In addition, So what")
@@ -271,6 +276,311 @@ struct StablePrefixCommitterTests {
                 activeSpeechEvidence: speech
             ) == .activeSegmentOnly
         )
+    }
+
+    @Test func trailingLanguageWordSurvivesEndpointCommitAndHidesWhileLive() {
+        let spoken = "until I switched language"
+        #expect(StablePrefixCommitter.stripMeta(spoken) == spoken)
+        #expect(
+            StablePrefixCommitter.stripMeta(spoken, hidePartialLanguageHeader: true)
+                == "until I switched "
+        )
+
+        #expect(
+            StablePrefixCommitter.visibleTranscript(
+                prefixText: "until I switched ",
+                decoded: spoken
+            ) == "until I switched "
+        )
+        #expect(
+            StablePrefixCommitter.visibleTranscript(
+                prefixText: "until I switched ",
+                decoded: spoken,
+                hidePartialLanguageHeader: false
+            ) == spoken
+        )
+        #expect(
+            StablePrefixCommitter.visibleTranscript(
+                prefixText: spoken,
+                decoded: spoken
+            ) == spoken
+        )
+
+        #expect(StablePrefixCommitter.stripLanguageHeader("language", hidePartialLanguageHeader: true) == "")
+        #expect(StablePrefixCommitter.stripLanguageHeader("language", hidePartialLanguageHeader: false) == "language")
+        #expect(
+            StablePrefixCommitter.visibleTranscript(
+                prefixText: "",
+                decoded: "language",
+                hidePartialLanguageHeader: true
+            ).isEmpty
+        )
+        #expect(
+            StablePrefixCommitter.visibleTranscript(
+                prefixText: "",
+                decoded: "language",
+                hidePartialLanguageHeader: false
+            ) == "language"
+        )
+
+        let endpoint = commit("", generated: spoken + "|", unfixed: 0)
+        #expect(endpoint.committedText == spoken)
+        #expect(endpoint.unstableTail.isEmpty)
+
+        #expect(
+            StreamingSession.preferStablePrefixStopText(
+                displayText: spoken,
+                flushedText: "until I switched "
+            ) == spoken
+        )
+    }
+
+    @Test func stablePrefixDisplayTextUpdateRule() {
+        #expect(
+            StreamingSession.stablePrefixUpdatedDisplayText(
+                displayText: "hello",
+                committedText: "hello",
+                candidate: "hello world"
+            ) == "hello world"
+        )
+        #expect(
+            StreamingSession.stablePrefixUpdatedDisplayText(
+                displayText: "hello world",
+                committedText: "hello",
+                candidate: "hello"
+            ) == "hello world"
+        )
+        #expect(
+            StreamingSession.stablePrefixUpdatedDisplayText(
+                displayText: "hello world",
+                committedText: "hello",
+                candidate: "hello there"
+            ) == "hello there"
+        )
+        #expect(
+            StreamingSession.stablePrefixUpdatedDisplayText(
+                displayText: "hello world",
+                committedText: "hello world",
+                candidate: "goodbye"
+            ) == "hello world"
+        )
+        #expect(
+            StreamingSession.stablePrefixUpdatedDisplayText(
+                displayText: "hello",
+                committedText: "hello world",
+                candidate: "hello"
+            ) == "hello world"
+        )
+        #expect(
+            StreamingSession.stablePrefixUpdatedDisplayText(
+                displayText: "hello world",
+                committedText: "hello",
+                candidate: "hello world?"
+            ) == "hello world?"
+        )
+    }
+
+    @Test func stablePrefixLookaheadIgnoresUpdatesWithoutNewLetterOrNumber() {
+        let question = StreamingSession.stablePrefixLookaheadDisplayUpdate(
+            displayText: "hello world",
+            committedText: "hello",
+            candidate: "hello world?"
+        )
+        #expect(question.text == "hello world")
+        #expect(!question.displayChanged)
+
+        let period = StreamingSession.stablePrefixLookaheadDisplayUpdate(
+            displayText: "hello world",
+            committedText: "hello",
+            candidate: "hello world."
+        )
+        #expect(period.text == "hello world")
+        #expect(!period.displayChanged)
+
+        let spaceAndMark = StreamingSession.stablePrefixLookaheadDisplayUpdate(
+            displayText: "hello world",
+            committedText: "hello",
+            candidate: "hello world ?"
+        )
+        #expect(spaceAndMark.text == "hello world")
+        #expect(!spaceAndMark.displayChanged)
+
+        let tailQuestion = StreamingSession.stablePrefixLookaheadDisplayUpdate(
+            displayText: "hello world",
+            committedText: "hello",
+            candidate: "hello?"
+        )
+        #expect(tailQuestion.text == "hello world")
+        #expect(!tailQuestion.displayChanged)
+
+        let cjkTailQuestion = StreamingSession.stablePrefixLookaheadDisplayUpdate(
+            displayText: "你好世界",
+            committedText: "你好",
+            candidate: "你好？"
+        )
+        #expect(cjkTailQuestion.text == "你好世界")
+        #expect(!cjkTailQuestion.displayChanged)
+
+        let bareQuestion = StreamingSession.stablePrefixLookaheadDisplayUpdate(
+            displayText: "hello",
+            committedText: "hello",
+            candidate: "hello?"
+        )
+        #expect(bareQuestion.text == "hello")
+        #expect(!bareQuestion.displayChanged)
+
+        let cjkBareQuestion = StreamingSession.stablePrefixLookaheadDisplayUpdate(
+            displayText: "你好",
+            committedText: "你好",
+            candidate: "你好？"
+        )
+        #expect(cjkBareQuestion.text == "你好")
+        #expect(!cjkBareQuestion.displayChanged)
+
+        let words = StreamingSession.stablePrefixLookaheadDisplayUpdate(
+            displayText: "hello",
+            committedText: "hello",
+            candidate: "hello world"
+        )
+        #expect(words.text == "hello world")
+        #expect(words.displayChanged)
+
+        let wordsThenMark = StreamingSession.stablePrefixLookaheadDisplayUpdate(
+            displayText: "hello",
+            committedText: "hello",
+            candidate: "hello world?"
+        )
+        #expect(wordsThenMark.text == "hello world?")
+        #expect(wordsThenMark.displayChanged)
+
+        let rewriteWords = StreamingSession.stablePrefixLookaheadDisplayUpdate(
+            displayText: "hello world",
+            committedText: "hello",
+            candidate: "hello there"
+        )
+        #expect(rewriteWords.text == "hello there")
+        #expect(rewriteWords.displayChanged)
+
+        let cjkExtend = StreamingSession.stablePrefixLookaheadDisplayUpdate(
+            displayText: "你",
+            committedText: "你",
+            candidate: "你好"
+        )
+        #expect(cjkExtend.text == "你好")
+        #expect(cjkExtend.displayChanged)
+    }
+
+    @Test func stablePrefixQuietAdmitDecision() {
+        let leadingQuiet = StreamingSession.stablePrefixChunkDecision(
+            chunkHasSpeech: false, rms: 0.001, hasSpeech: false
+        )
+        #expect(leadingQuiet.action == .waitForSpeech)
+        #expect(!leadingQuiet.appendAudio)
+
+        let leadingNoisy = StreamingSession.stablePrefixChunkDecision(
+            chunkHasSpeech: false, rms: 0.004, hasSpeech: false
+        )
+        #expect(leadingNoisy.action == .waitForSpeech)
+        #expect(leadingNoisy.appendAudio)
+
+        let speech = StreamingSession.stablePrefixChunkDecision(
+            chunkHasSpeech: true, rms: 0.05, hasSpeech: false
+        )
+        #expect(speech.action == .decode)
+        #expect(speech.appendAudio)
+        #expect(speech.hasSpeech)
+
+        let noisyPause = StreamingSession.stablePrefixChunkDecision(
+            chunkHasSpeech: false, rms: 0.004, hasSpeech: true
+        )
+        #expect(noisyPause.action == .decode)
+        #expect(noisyPause.appendAudio)
+
+        let quietPause = StreamingSession.stablePrefixChunkDecision(
+            chunkHasSpeech: false, rms: 0.001, hasSpeech: true
+        )
+        #expect(quietPause.action == .skipQuietPause)
+        #expect(!quietPause.appendAudio)
+        #expect(quietPause.hasSpeech)
+
+        let noisyAfterSkip = StreamingSession.stablePrefixChunkDecision(
+            chunkHasSpeech: false, rms: 0.004, hasSpeech: true
+        )
+        #expect(noisyAfterSkip.action == .decode)
+        #expect(noisyAfterSkip.appendAudio)
+    }
+
+    @Test func stablePrefixLookaheadBudgetTransitions() {
+        let idle = StreamingSession.StablePrefixLookaheadPause.idle
+
+        let firstQuiet = StreamingSession.stablePrefixLookaheadAdmit(
+            chunkHasSpeech: false, rms: 0.001, hasSpeech: true, pause: idle
+        )
+        #expect(firstQuiet.runLookahead)
+        #expect(!firstQuiet.resetPause)
+
+        let afterChanged = StreamingSession.stablePrefixLookaheadAfterDecode(
+            pause: idle, displayChanged: true
+        )
+        #expect(afterChanged.used == 1)
+        #expect(afterChanged.allowMore)
+        let nextQuiet = StreamingSession.stablePrefixLookaheadAdmit(
+            chunkHasSpeech: false, rms: 0.001, hasSpeech: true, pause: afterChanged
+        )
+        #expect(nextQuiet.runLookahead)
+        #expect(!nextQuiet.resetPause)
+
+        let afterUnchanged = StreamingSession.stablePrefixLookaheadAfterDecode(
+            pause: afterChanged, displayChanged: false
+        )
+        #expect(afterUnchanged.used == 2)
+        #expect(!afterUnchanged.allowMore)
+        let stopped = StreamingSession.stablePrefixLookaheadAdmit(
+            chunkHasSpeech: false, rms: 0.001, hasSpeech: true, pause: afterUnchanged
+        )
+        #expect(!stopped.runLookahead)
+        #expect(!stopped.resetPause)
+
+        var capped = idle
+        for step in 1 ... StreamingSession.StablePrefixLookaheadPause.maxDecodes {
+            let admit = StreamingSession.stablePrefixLookaheadAdmit(
+                chunkHasSpeech: false, rms: 0.001, hasSpeech: true, pause: capped
+            )
+            #expect(admit.runLookahead)
+            capped = StreamingSession.stablePrefixLookaheadAfterDecode(
+                pause: capped, displayChanged: true
+            )
+            #expect(capped.used == step)
+        }
+        #expect(!capped.allowMore)
+        #expect(
+            !StreamingSession.stablePrefixLookaheadAdmit(
+                chunkHasSpeech: false, rms: 0.001, hasSpeech: true, pause: capped
+            ).runLookahead
+        )
+
+        let speechResets = StreamingSession.stablePrefixLookaheadAdmit(
+            chunkHasSpeech: true, rms: 0.05, hasSpeech: true, pause: afterUnchanged
+        )
+        #expect(speechResets.resetPause)
+        #expect(!speechResets.runLookahead)
+        #expect(
+            StreamingSession.stablePrefixLookaheadAdmit(
+                chunkHasSpeech: false, rms: 0.001, hasSpeech: true, pause: idle
+            ).runLookahead
+        )
+
+        let noisyResets = StreamingSession.stablePrefixLookaheadAdmit(
+            chunkHasSpeech: false, rms: 0.004, hasSpeech: true, pause: afterUnchanged
+        )
+        #expect(noisyResets.resetPause)
+        #expect(!noisyResets.runLookahead)
+
+        let leadingQuiet = StreamingSession.stablePrefixLookaheadAdmit(
+            chunkHasSpeech: false, rms: 0.001, hasSpeech: false, pause: idle
+        )
+        #expect(!leadingQuiet.runLookahead)
+        #expect(!leadingQuiet.resetPause)
     }
 
     @Test func visibleTranscriptCommitsHeldLastWordWithoutReencode() {

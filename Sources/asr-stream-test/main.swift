@@ -10,7 +10,6 @@ import NativeASR
 private let yuwpDefaultsDomain = "com.yuwp.app"
 private let requiredModelFiles = ["config.json", "model.safetensors", "vocab.json", "merges.txt"]
 private let speechRMS: Float = 0.020
-private let vadSpeechThreshold: Float = 0.5
 
 private struct ToolConfig: Codable {
     let wavFile: String
@@ -524,34 +523,25 @@ private func computeRMS(_ audio: [Float]) -> Double {
     return sqrt(sum / Double(audio.count))
 }
 
-private func analyzeSpeechActivity(_ audio: [Float], vad: SileroVAD?) -> SpeechActivity {
+private func analyzeSpeechActivity(
+    _ audio: [Float],
+    vad: SileroVAD?,
+    state: inout SileroVAD.StreamState,
+    padFinalFrame: Bool = false
+) -> SpeechActivity {
     guard let vad else {
         let hasSpeech = computeRMS(audio) >= Double(speechRMS)
         let duration = hasSpeech ? Double(audio.count) / Double(ASRAudio.sampleRate) : 0
         return SpeechActivity(hasSpeech: hasSpeech, speechDurationSec: duration)
     }
 
-    let frameSize = SileroVAD.chunkSize
     guard !audio.isEmpty else {
         return SpeechActivity(hasSpeech: false, speechDurationSec: 0)
     }
 
-    var speechFrames = 0
-    var offset = 0
-    while offset < audio.count {
-        let end = min(offset + frameSize, audio.count)
-        var frame = Array(audio[offset ..< end])
-        if frame.count < frameSize {
-            frame.append(contentsOf: repeatElement(0, count: frameSize - frame.count))
-        }
-        if let probability = try? vad.process(frame), probability >= vadSpeechThreshold {
-            speechFrames += 1
-        }
-        offset = end
-    }
-
-    let speechDurationSec = Double(speechFrames * frameSize) / Double(ASRAudio.sampleRate)
-    return SpeechActivity(hasSpeech: speechFrames > 0, speechDurationSec: speechDurationSec)
+    let (activity, next) = vad.processStream(audio, state: state, padFinalFrame: padFinalFrame)
+    state = next
+    return SpeechActivity(hasSpeech: activity.hasSpeech, speechDurationSec: activity.speechDurationSec)
 }
 
 // This annotation pass is independent of inference chunk boundaries. The replay
@@ -666,6 +656,7 @@ private func runMain() throws {
     var offset = 0
     var chunkNum = 0
     var previousText = ""
+    var vadStream = SileroVAD.StreamState()
     var chunkTraces: [ChunkTrace] = []
     var segmentCommitCount = 0
     var firstSpeechChunk: Int? = nil
@@ -689,7 +680,9 @@ private func runMain() throws {
         let currentChunkSize = firstTextChunk == nil ? bootstrapChunkSize : steadyChunkSize
         let end = min(offset + currentChunkSize, audio.count)
         let chunk = Array(audio[offset ..< end])
-        let speech = analyzeSpeechActivity(chunk, vad: vad)
+        let speech = analyzeSpeechActivity(
+            chunk, vad: vad, state: &vadStream, padFinalFrame: end == audio.count
+        )
         let result = session.processChunk(
             chunk,
             speechHint: SpeechActivityHint(hasSpeech: speech.hasSpeech, speechDurationSec: speech.speechDurationSec)

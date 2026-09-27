@@ -23,13 +23,16 @@ public struct StablePrefixCommitter: Sendable {
             return Result(committedText: prefix, unstableTail: "", committedDelta: "")
         }
 
-        let cut = Self.pipeCut(Self.stripMeta(generatedText))
+        let unfixed = max(0, unfixedTokenCount)
+        let cut = Self.pipeCut(Self.stripMeta(
+            generatedText,
+            hidePartialLanguageHeader: unfixed > 0
+        ))
         guard let hypothesis = hypothesis(prefix: prefix, cut: cut) else {
             return Result(committedText: prefix, unstableTail: "", committedDelta: "")
         }
 
         let tokens = encode(hypothesis)
-        let unfixed = max(0, unfixedTokenCount)
         let fixedCount = tokens.count <= unfixed ? tokens.count : tokens.count - unfixed
         let fixedTokens = Array(tokens.prefix(fixedCount))
         let unstableTokens = Array(tokens.dropFirst(fixedCount))
@@ -86,14 +89,18 @@ public struct StablePrefixCommitter: Sendable {
     public static func isLanguageHeaderOnly(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("language") else { return false }
-        return pipeCut(stripMeta(trimmed)).isEmpty
+        return pipeCut(stripMeta(trimmed, hidePartialLanguageHeader: true)).isEmpty
     }
 
     /// Displayed transcript after `|` / header strip. Never shrinks `prefixText`
     /// once that prefix is already real content.
-    public static func visibleTranscript(prefixText: String, decoded: String) -> String {
-        let previous = pipeCut(stripMeta(prefixText))
-        let cut = pipeCut(stripMeta(decoded))
+    public static func visibleTranscript(
+        prefixText: String,
+        decoded: String,
+        hidePartialLanguageHeader: Bool = true
+    ) -> String {
+        let previous = pipeCut(stripMeta(prefixText, hidePartialLanguageHeader: false))
+        let cut = pipeCut(stripMeta(decoded, hidePartialLanguageHeader: hidePartialLanguageHeader))
         if previous.isEmpty { return cut }
         if cut.hasPrefix(previous) { return cut }
         if isContinuation(prefix: previous, cut: cut) { return previous + cut }
@@ -110,7 +117,7 @@ public struct StablePrefixCommitter: Sendable {
         return name
     }
 
-    static func stripMeta(_ text: String) -> String {
+    static func stripMeta(_ text: String, hidePartialLanguageHeader: Bool = false) -> String {
         var cleaned = text
         if let range = cleaned.range(of: "<asr_text>") {
             let before = String(cleaned[..<range.lowerBound])
@@ -124,17 +131,26 @@ public struct StablePrefixCommitter: Sendable {
         if let replacement = cleaned.firstIndex(of: "\u{FFFD}") {
             cleaned = String(cleaned[..<replacement])
         }
-        return stripLanguageHeader(cleaned)
+        return stripLanguageHeader(cleaned, hidePartialLanguageHeader: hidePartialLanguageHeader)
     }
 
     /// R2T2's vocab lacks `<asr_text>`, so a language switch may be glued to
     /// content mid-transcript. Also hide partial names while a live header is
     /// being sampled; leave ordinary uses of "language" alone.
-    static func stripLanguageHeader(_ text: String) -> String {
-        if text == "language" { return "" }
+    /// Trailing spoken "language" is hidden only while live text is held back.
+    /// Endpoint and stop commits keep the word. Re-stripping `prefixText` never
+    /// drops an already-committed trailing "language".
+    static func stripLanguageHeader(
+        _ text: String,
+        hidePartialLanguageHeader: Bool = false
+    ) -> String {
+        if text == "language" {
+            return hidePartialLanguageHeader ? "" : text
+        }
         var cleaned = text
-        // The decoder can stop between `language` and the following space.
-        if cleaned.lowercased().hasSuffix(" language") {
+        // Live holdback: the decoder can stop between `language` and the
+        // following space. Do not drop a finished spoken word on endpoint/stop.
+        if hidePartialLanguageHeader, cleaned.lowercased().hasSuffix(" language") {
             cleaned.removeLast("language".count)
         }
         var searchStart = cleaned.startIndex

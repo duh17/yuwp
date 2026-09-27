@@ -115,30 +115,27 @@ final class ShutdownCoordinator: @unchecked Sendable {
 private let vadLock = NSLock()
 
 private func analyzeSpeechActivity(_ audio: [Float], vad: SileroVAD?) -> SpeechActivityHint? {
+    var state = SileroVAD.StreamState()
+    return analyzeSpeechActivity(audio, vad: vad, state: &state)
+}
+
+private func analyzeSpeechActivity(
+    _ audio: [Float],
+    vad: SileroVAD?,
+    state: inout SileroVAD.StreamState,
+    padFinalFrame: Bool = false
+) -> SpeechActivityHint? {
     guard let vad else { return nil }
     guard !audio.isEmpty else { return SpeechActivityHint(hasSpeech: false, speechDurationSec: 0) }
 
-    let frameSize = SileroVAD.chunkSize
-    var speechFrames = 0
-    var offset = 0
     vadLock.lock()
     defer { vadLock.unlock() }
-    vad.reset()
-
-    while offset < audio.count {
-        let end = min(offset + frameSize, audio.count)
-        var frame = Array(audio[offset ..< end])
-        if frame.count < frameSize {
-            frame.append(contentsOf: repeatElement(0, count: frameSize - frame.count))
-        }
-        if let probability = try? vad.process(frame), probability >= 0.5 {
-            speechFrames += 1
-        }
-        offset = end
-    }
-
-    let speechDurationSec = Double(speechFrames * frameSize) / Double(ASRAudio.sampleRate)
-    return SpeechActivityHint(hasSpeech: speechFrames > 0, speechDurationSec: speechDurationSec)
+    let (activity, next) = vad.processStream(audio, state: state, padFinalFrame: padFinalFrame)
+    state = next
+    return SpeechActivityHint(
+        hasSpeech: activity.hasSpeech,
+        speechDurationSec: activity.speechDurationSec
+    )
 }
 
 private final class ManagedStreamingSession: @unchecked Sendable {
@@ -148,6 +145,7 @@ private final class ManagedStreamingSession: @unchecked Sendable {
     var preview = FirstPartialPreview()
     var lastActivity: Date
     var recordingData: Data?
+    var vadStream = SileroVAD.StreamState()
     let recordingStartedAt: Date
     let language: String?
     let contextualStrings: [String]
@@ -273,7 +271,9 @@ final class StreamingSessionManager: @unchecked Sendable {
                     : chunkSamples
                 guard let chunk = managedSession.pendingAudio.takePrefix(currentChunkSamples) else { break }
 
-                let speechHint = analyzeSpeechActivity(chunk, vad: vad)
+                let speechHint = analyzeSpeechActivity(
+                    chunk, vad: vad, state: &managedSession.vadStream
+                )
                 let result = session.processChunk(chunk, speechHint: speechHint)
                 managedSession.preview.canonicalChunkProcessed(text: result.text)
                 if result.batchCorrected { batchCorrected = true }
@@ -362,7 +362,11 @@ final class StreamingSessionManager: @unchecked Sendable {
 
             inferenceLock.lock()
             defer { inferenceLock.unlock() }
-            let speechHint = pending.isEmpty ? nil : analyzeSpeechActivity(pending, vad: vad)
+            let speechHint = pending.isEmpty
+                ? nil
+                : analyzeSpeechActivity(
+                    pending, vad: vad, state: &managedSession.vadStream, padFinalFrame: true
+                )
             let finished = session.finishOnStop(pendingAudio: pending, speechHint: speechHint)
             let text = finished.text
             let response = transcriptPayload(

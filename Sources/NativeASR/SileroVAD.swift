@@ -15,7 +15,36 @@ public final class SileroVAD: @unchecked Sendable {
     private let model: MLModel
     private var hiddenState: MLMultiArray
     private var cellState: MLMultiArray
-    private static let stateShape: [NSNumber] = [1, 128]
+    static let stateLength = 128
+    private static let stateShape: [NSNumber] = [1, NSNumber(value: stateLength)]
+
+    /// LSTM state plus unprocessed samples shorter than `chunkSize`.
+    public struct StreamState: Sendable, Equatable {
+        var hidden: [Float]
+        var cell: [Float]
+        public var leftover: [Float]
+
+        public init() {
+            self.init(
+                hidden: Array(repeating: 0, count: SileroVAD.stateLength),
+                cell: Array(repeating: 0, count: SileroVAD.stateLength),
+                leftover: []
+            )
+        }
+
+        init(hidden: [Float], cell: [Float], leftover: [Float]) {
+            self.hidden = hidden
+            self.cell = cell
+            self.leftover = leftover
+        }
+    }
+
+    public struct StreamActivity: Sendable, Equatable {
+        public var hasSpeech: Bool
+        public var speechDurationSec: Double
+        public var processedFrameCount: Int
+        public var speechFrameCount: Int
+    }
 
     public init(modelURL: URL) throws {
         let config = MLModelConfiguration()
@@ -42,28 +71,142 @@ public final class SileroVAD: @unchecked Sendable {
     }
 
     public func process(_ samples: [Float]) throws -> Float {
+        let prediction = try predict(samples: samples, hidden: hiddenState, cell: cellState)
+        hiddenState = prediction.hidden
+        cellState = prediction.cell
+        return prediction.probability
+    }
+
+    /// One 36 ms frame with caller-owned LSTM state. Does not use or update
+    /// the instance hidden/cell buffers, so a shared model can serve many streams.
+    public func process(_ samples: [Float], state: StreamState) throws -> (Float, StreamState) {
+        guard state.hidden.count == Self.stateLength, state.cell.count == Self.stateLength else {
+            throw SileroVADError.inferenceError
+        }
+        let hidden = try Self.floatsToMultiArray(state.hidden, shape: Self.stateShape)
+        let cell = try Self.floatsToMultiArray(state.cell, shape: Self.stateShape)
+        let prediction = try predict(samples: samples, hidden: hidden, cell: cell)
+        var next = state
+        if let copied = Self.floats(from: prediction.hidden) {
+            next.hidden = copied
+        }
+        if let copied = Self.floats(from: prediction.cell) {
+            next.cell = copied
+        }
+        return (prediction.probability, next)
+    }
+
+    /// Full 576-sample frames only. Remainder is carried in `state.leftover`
+    /// instead of zero-padding a partial frame. `padFinalFrame` scores one
+    /// zero-padded frame only when ending and leftover plus samples cannot
+    /// form a full frame. Live chunks stay unpadded.
+    public func processStream(
+        _ samples: [Float],
+        state: StreamState,
+        padFinalFrame: Bool = false
+    ) -> (StreamActivity, StreamState) {
+        var (frames, leftover) = Self.takeFullFrames(
+            leftover: state.leftover, samples: samples
+        )
+        if padFinalFrame, frames.isEmpty, !leftover.isEmpty {
+            leftover.append(contentsOf: repeatElement(0, count: Self.chunkSize - leftover.count))
+            frames = [leftover]
+            leftover = []
+        }
+        var current = state
+        current.leftover = leftover
+        var speechFrames = 0
+        for frame in frames {
+            do {
+                let (probability, next) = try process(frame, state: current)
+                current = next
+                if probability >= 0.5 {
+                    speechFrames += 1
+                }
+            } catch {
+                // Keep the previous LSTM state. Do not treat a failed frame as
+                // scored silence.
+            }
+        }
+        current.leftover = leftover
+        let activity = StreamActivity(
+            hasSpeech: speechFrames > 0,
+            speechDurationSec: Self.streamSpeechDurationSec(speechFrameCount: speechFrames),
+            processedFrameCount: frames.count,
+            speechFrameCount: speechFrames
+        )
+        return (activity, current)
+    }
+
+    private struct VADPrediction {
+        var probability: Float
+        var hidden: MLMultiArray
+        var cell: MLMultiArray
+    }
+
+    private func predict(
+        samples: [Float],
+        hidden: MLMultiArray,
+        cell: MLMultiArray
+    ) throws -> VADPrediction {
         guard samples.count == Self.chunkSize else {
             throw SileroVADError.invalidChunkSize(expected: Self.chunkSize, got: samples.count)
         }
-
         let audioInput = try Self.floatsToMultiArray(samples, shape: [1, NSNumber(value: Self.chunkSize)])
         let provider = try MLDictionaryFeatureProvider(dictionary: [
             "audio_input": MLFeatureValue(multiArray: audioInput),
-            "hidden_state": MLFeatureValue(multiArray: hiddenState),
-            "cell_state": MLFeatureValue(multiArray: cellState),
+            "hidden_state": MLFeatureValue(multiArray: hidden),
+            "cell_state": MLFeatureValue(multiArray: cell),
         ])
         let result = try model.prediction(from: provider)
-
-        if let newHiddenState = result.featureValue(for: "new_hidden_state")?.multiArrayValue {
-            hiddenState = newHiddenState
-        }
-        if let newCellState = result.featureValue(for: "new_cell_state")?.multiArrayValue {
-            cellState = newCellState
-        }
+        let nextHidden = result.featureValue(for: "new_hidden_state")?.multiArrayValue ?? hidden
+        let nextCell = result.featureValue(for: "new_cell_state")?.multiArrayValue ?? cell
         guard let output = result.featureValue(for: "vad_output")?.multiArrayValue else {
             throw SileroVADError.inferenceError
         }
-        return output[0].floatValue
+        return VADPrediction(
+            probability: output[0].floatValue,
+            hidden: nextHidden,
+            cell: nextCell
+        )
+    }
+
+    static func takeFullFrames(
+        leftover: [Float],
+        samples: [Float],
+        chunkSize: Int = chunkSize
+    ) -> (frames: [[Float]], leftover: [Float]) {
+        let totalCount = leftover.count + samples.count
+        guard totalCount >= chunkSize else {
+            if leftover.isEmpty { return ([], samples) }
+            if samples.isEmpty { return ([], leftover) }
+            return ([], leftover + samples)
+        }
+        var combined: [Float]
+        if leftover.isEmpty {
+            combined = samples
+        } else {
+            combined = leftover
+            combined.append(contentsOf: samples)
+        }
+        let frameCount = combined.count / chunkSize
+        var frames: [[Float]] = []
+        frames.reserveCapacity(frameCount)
+        var offset = 0
+        for _ in 0 ..< frameCount {
+            frames.append(Array(combined[offset ..< (offset + chunkSize)]))
+            offset += chunkSize
+        }
+        let remaining = offset < combined.count ? Array(combined[offset...]) : []
+        return (frames, remaining)
+    }
+
+    static func streamSpeechDurationSec(
+        speechFrameCount: Int,
+        chunkSize: Int = chunkSize,
+        sampleRate: Int = sampleRate
+    ) -> Double {
+        Double(speechFrameCount * chunkSize) / Double(sampleRate)
     }
 
     private static func floatsToMultiArray(_ values: [Float], shape: [NSNumber]) throws -> MLMultiArray {
@@ -73,6 +216,11 @@ public final class SileroVAD: @unchecked Sendable {
             pointer[i] = values[i]
         }
         return array
+    }
+
+    private static func floats(from array: MLMultiArray) -> [Float]? {
+        guard array.count == stateLength else { return nil }
+        return (0 ..< stateLength).map { array[$0].floatValue }
     }
 }
 

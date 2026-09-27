@@ -241,6 +241,15 @@ public final class StreamingSession: @unchecked Sendable {
     private var consecutiveSilence: Int = 0
     private var batchDoneForPause: Bool = false
     private var hasSpeech: Bool = false
+    private var stablePrefixAudioDirty = false
+    /// Quiet pause samples for display-only lookahead. Never merged into `audioBuffer`.
+    private var pendingPauseAudio: [Float] = []
+    /// True after a lookahead on the current `pendingPauseAudio` contents.
+    private var pendingPauseAudioLookaheadDone = false
+    private var lookaheadPause = StablePrefixLookaheadPause.idle
+    /// Shown text for stable-prefix. May include the held last token on pause
+    /// without putting it in `committedPrefixTokens`.
+    private var displayText: String = ""
     private var activeSpeechEvidence = SpeechEvidence()
     private var consecutiveSpeechNoGrowth: Int = 0
     private var lastStallBatchAttemptChunk: Int = -1_000_000
@@ -343,6 +352,151 @@ public final class StreamingSession: @unchecked Sendable {
         return alreadyHasSpeech || chunkHasSpeech
     }
 
+    struct StablePrefixChunkDecision: Equatable, Sendable {
+        enum Action: Equatable, Sendable {
+            case waitForSpeech
+            case decode
+            case skipQuietPause
+        }
+
+        var action: Action
+        var appendAudio: Bool
+        var hasSpeech: Bool
+    }
+
+    /// Stable-prefix admit policy. Qwen rollback-batch does not use this.
+    /// Live decode always keeps the 1-token holdback; this only decides
+    /// whether to decode/append to the real buffer. Quiet after speech is
+    /// never appended; display-only lookahead is a separate path.
+    static func stablePrefixChunkDecision(
+        chunkHasSpeech: Bool,
+        rms: Float,
+        hasSpeech: Bool,
+        silenceRMS: Float = silenceRMS
+    ) -> StablePrefixChunkDecision {
+        if chunkHasSpeech {
+            return StablePrefixChunkDecision(
+                action: .decode,
+                appendAudio: true,
+                hasSpeech: true
+            )
+        }
+        if !hasSpeech {
+            return StablePrefixChunkDecision(
+                action: .waitForSpeech,
+                appendAudio: rms >= silenceRMS,
+                hasSpeech: false
+            )
+        }
+        if rms >= silenceRMS {
+            return StablePrefixChunkDecision(
+                action: .decode,
+                appendAudio: true,
+                hasSpeech: true
+            )
+        }
+        return StablePrefixChunkDecision(
+            action: .skipQuietPause,
+            appendAudio: false,
+            hasSpeech: true
+        )
+    }
+
+    struct StablePrefixLookaheadPause: Equatable, Sendable {
+        var used: Int
+        var allowMore: Bool
+
+        static let maxDecodes = 4
+        static let maxPendingSamples = ASRAudio.sampleRate
+        static let idle = StablePrefixLookaheadPause(used: 0, allowMore: true)
+    }
+
+    struct StablePrefixLookaheadAdmit: Equatable, Sendable {
+        var runLookahead: Bool
+        var resetPause: Bool
+    }
+
+    /// First quiet chunk of a pause always runs (idle). Later quiet chunks run
+    /// only while the previous lookahead changed the display, up to `maxDecodes`.
+    /// Speech or noisy chunks end the pause.
+    static func stablePrefixLookaheadAdmit(
+        chunkHasSpeech: Bool,
+        rms: Float,
+        hasSpeech: Bool,
+        pause: StablePrefixLookaheadPause,
+        silenceRMS: Float = silenceRMS,
+        maxDecodes: Int = StablePrefixLookaheadPause.maxDecodes
+    ) -> StablePrefixLookaheadAdmit {
+        if chunkHasSpeech || rms >= silenceRMS {
+            return StablePrefixLookaheadAdmit(runLookahead: false, resetPause: true)
+        }
+        if !hasSpeech {
+            return StablePrefixLookaheadAdmit(runLookahead: false, resetPause: false)
+        }
+        return StablePrefixLookaheadAdmit(
+            runLookahead: pause.allowMore && pause.used < maxDecodes,
+            resetPause: false
+        )
+    }
+
+    static func stablePrefixLookaheadAfterDecode(
+        pause: StablePrefixLookaheadPause,
+        displayChanged: Bool,
+        maxDecodes: Int = StablePrefixLookaheadPause.maxDecodes
+    ) -> StablePrefixLookaheadPause {
+        let used = pause.used + 1
+        return StablePrefixLookaheadPause(
+            used: used,
+            allowMore: displayChanged && used < maxDecodes
+        )
+    }
+
+    /// Display-only last-word release. The model prefix stays on the holdback.
+    static func stablePrefixUpdatedDisplayText(
+        displayText: String,
+        committedText: String,
+        candidate: String
+    ) -> String {
+        var display = displayText
+        if !display.hasPrefix(committedText) {
+            display = committedText
+        }
+        if candidate.hasPrefix(display) {
+            return candidate
+        }
+        if display.hasPrefix(candidate) {
+            return display
+        }
+        if candidate.hasPrefix(committedText) {
+            return candidate
+        }
+        return display
+    }
+
+    /// Lookahead may release words. Ignore an update whose letters and numbers
+    /// are a prefix of or equal to the display's so punctuation-only rewrites
+    /// and suffixes cannot spend the budget or stick into stop text.
+    static func stablePrefixLookaheadDisplayUpdate(
+        displayText: String,
+        committedText: String,
+        candidate: String
+    ) -> (text: String, displayChanged: Bool) {
+        let updated = stablePrefixUpdatedDisplayText(
+            displayText: displayText,
+            committedText: committedText,
+            candidate: candidate
+        )
+        if updated == displayText {
+            return (displayText, false)
+        }
+        let updatedLettersAndNumbers = updated.filter { $0.isLetter || $0.isNumber }
+        let displayLettersAndNumbers = displayText.filter { $0.isLetter || $0.isNumber }
+        if displayLettersAndNumbers.hasPrefix(updatedLettersAndNumbers) {
+            return (displayText, false)
+        }
+        return (updated, true)
+    }
+
     /// Append session audio and speech evidence. Decode is a separate step so
     /// stop can skip an unexposed tail pass when final accuracy will replace it.
     private func admitChunk(
@@ -379,18 +533,58 @@ public final class StreamingSession: @unchecked Sendable {
             }
         }
 
+        if config.isStablePrefix {
+            let lookaheadAdmit = Self.stablePrefixLookaheadAdmit(
+                chunkHasSpeech: chunkHasSpeech,
+                rms: rms,
+                hasSpeech: hasSpeech,
+                pause: lookaheadPause
+            )
+            if lookaheadAdmit.resetPause {
+                resetStablePrefixPauseLookahead()
+            }
+            let decision = Self.stablePrefixChunkDecision(
+                chunkHasSpeech: chunkHasSpeech,
+                rms: rms,
+                hasSpeech: hasSpeech
+            )
+            hasSpeech = decision.hasSpeech
+            if decision.appendAudio {
+                audioBuffer.append(contentsOf: audioChunk)
+                if decision.hasSpeech {
+                    stablePrefixAudioDirty = true
+                }
+            }
+            switch decision.action {
+            case .waitForSpeech:
+                chunkIdx += 1
+                lastText = displayText
+                return .finished(ChunkResult(
+                    text: displayText, isPartial: true,
+                    totalMs: Date().timeIntervalSince(t0) * 1000
+                ))
+            case .skipQuietPause:
+                // Quiet pause: never append silence to the real buffer. Release
+                // the held token from rawTokens, then maybe a display-only
+                // lookahead over audioBuffer plus this pause's quiet audio.
+                appendPendingPauseAudio(audioChunk)
+                updateStablePrefixDisplay(chunkHasSpeech: false)
+                if lookaheadAdmit.runLookahead {
+                    applyStablePrefixLookaheadDisplay()
+                }
+                chunkIdx += 1
+                lastText = displayText
+                return .finished(ChunkResult(
+                    text: displayText, isPartial: true,
+                    totalMs: Date().timeIntervalSince(t0) * 1000
+                ))
+            case .decode:
+                return .admitted(rms: rms)
+            }
+        }
+
         if !chunkHasSpeech && rms < Self.silenceRMS {
             chunkIdx += 1
-            if config.isStablePrefix {
-                // Do not keep running inference on pause — that hitch is what
-                // feels like the app halting after a word. Flush the held token
-                // so the last word appears without a GPU pass.
-                if hasSpeech { flushStablePrefixHeldTokens() }
-                lastText = committedText
-                return .finished(ChunkResult(
-                    text: committedText, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000
-                ))
-            }
             let activeText = rawTokens.isEmpty ? "" : extractText(rawTokens)
             let combined = Self.appendSegment(committedText, activeText)
             lastText = combined
@@ -437,7 +631,8 @@ public final class StreamingSession: @unchecked Sendable {
 
         if numEncTokens == 0 {
             chunkIdx += 1
-            return ChunkResult(text: committedText, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000)
+            let text = config.isStablePrefix ? displayText : committedText
+            return ChunkResult(text: text, isPartial: true, totalMs: Date().timeIntervalSince(t0) * 1000)
         }
 
         // 2. Prefix tokens (rollback, or committed text in stable-prefix mode)
@@ -508,15 +703,26 @@ public final class StreamingSession: @unchecked Sendable {
 
         // 5. Decode
         let decodeT0 = Date()
-        let newTokens = decodeTokens(logits: logits, maxTokens: config.maxNewTokens)
+        let newTokens = decodeTokens(logits: logits, maxTokens: config.maxNewTokens, cache: kvCache)
         let decodeMs = Date().timeIntervalSince(decodeT0) * 1000
 
         // 6. Update tokens
         if config.isStablePrefix {
+            let previousTokens = rawTokens
             applyStablePrefixUpdate(newTokens: newTokens)
+            let chunkHasSpeech = speechHint?.hasSpeech ?? (rms >= Self.speechStartRMS)
+            // Prompt stays on committedPrefixTokens (live holdback). A pipe-only
+            // noisy non-speech decode can replace rawTokens with that shorter
+            // prefix; restore the held tail so display release and stop flush
+            // still see it.
+            if !chunkHasSpeech, rawTokens.count < previousTokens.count {
+                rawTokens = previousTokens
+            }
+            updateStablePrefixDisplay(chunkHasSpeech: chunkHasSpeech)
+            stablePrefixAudioDirty = false
             chunkIdx += 1
             return ChunkResult(
-                text: committedText, isPartial: true,
+                text: displayText, isPartial: true,
                 encodeMs: encodeMs, prefillMs: prefillMs, decodeMs: decodeMs,
                 totalMs: Date().timeIntervalSince(t0) * 1000, reusePct: reusePct
             )
@@ -600,6 +806,9 @@ public final class StreamingSession: @unchecked Sendable {
         consecutiveSilence = 0
         batchDoneForPause = false
         hasSpeech = false
+        stablePrefixAudioDirty = false
+        resetStablePrefixPauseLookahead()
+        displayText = committedText
         activeSpeechEvidence = SpeechEvidence()
         consecutiveSpeechNoGrowth = 0
         lastStallBatchAttemptChunk = -1_000_000
@@ -609,7 +818,10 @@ public final class StreamingSession: @unchecked Sendable {
 
     public func finalText() -> String { lastText }
 
-    public func committedSegmentText() -> String { committedText }
+    public func committedSegmentText() -> String {
+        if config.isStablePrefix { return displayText }
+        return committedText
+    }
 
     public func activeSegmentText() -> String {
         // Stable-prefix commits are append-only. Publishing the full hypothesis
@@ -743,6 +955,7 @@ public final class StreamingSession: @unchecked Sendable {
         self.hasSpeech = hasSpeech
         committedText = ""
         committedPrefixTokens = []
+        displayText = ""
         lastText = ""
         rawTokens = []
         consecutiveSilence = 0
@@ -985,6 +1198,48 @@ public final class StreamingSession: @unchecked Sendable {
         return parts.count == 1 ? parts[0] : MLX.concatenated(parts, axis: 0)
     }
 
+    /// Encoder view of `audioBuffer` plus extra pause audio, without writing
+    /// `encWindowCache`, `nextWindowStart`, or `encoderCacheOrigin`. Complete
+    /// windows that the extra audio would close are encoded into a local list.
+    private func encodeLookahead(extraAudio: [Float]) -> MLXArray {
+        var uncached: [Float] = []
+        if nextWindowStart < audioBuffer.count {
+            uncached.append(contentsOf: audioBuffer[nextWindowStart...])
+        }
+        uncached.append(contentsOf: extraAudio)
+
+        var completeWindows = encWindowCache
+        var offset = 0
+        while offset + encWindowSamples <= uncached.count {
+            let window = Array(uncached[offset ..< offset + encWindowSamples])
+            let enc = encodeSegment(window)
+            eval(enc)
+            completeWindows.append(enc)
+            offset += encWindowSamples
+        }
+        let evictionCount = Self.encoderWindowEvictionCount(
+            cachedWindowCount: completeWindows.count,
+            maximum: config.maxEncWindows
+        )
+        if evictionCount > 0 {
+            completeWindows.removeFirst(evictionCount)
+        }
+
+        var parts = completeWindows
+        if offset < uncached.count {
+            let tail = Array(uncached[offset...])
+            if !tail.isEmpty {
+                let enc = encodeSegment(tail)
+                eval(enc)
+                parts.append(enc)
+            }
+        }
+        if parts.isEmpty {
+            return MLXArray.zeros([0, transcriber.model.config.audioConfig.outputDim])
+        }
+        return parts.count == 1 ? parts[0] : MLX.concatenated(parts, axis: 0)
+    }
+
     private func buildInputEmbeds(
         encOutput: MLXArray, numEncTokens: Int, prefixTokens: [Int]
     ) -> (embeds: MLXArray, headerLength: Int) {
@@ -1023,7 +1278,7 @@ public final class StreamingSession: @unchecked Sendable {
 
     /// Decode with double-buffer asyncEval pattern:
     /// Sample current token while next forward pass runs on GPU.
-    private func decodeTokens(logits: MLXArray, maxTokens: Int) -> [Int] {
+    private func decodeTokens(logits: MLXArray, maxTokens: Int, cache: [KVCache]) -> [Int] {
         let eos = Qwen3ASRTokenizer.eosTokens
         let repPenalty = config.repetitionPenalty
         let stopOnPipe = config.isStablePrefix
@@ -1039,7 +1294,7 @@ public final class StreamingSession: @unchecked Sendable {
             let tokId = y.asType(.int32).expandedDimensions(axis: 0).expandedDimensions(axis: 0)
             let tokEmbed = transcriber.model.model.embedTokens(tokId)
             (curLogits, _) = transcriber.model(
-                inputIds: tokId, inputEmbeddings: tokEmbed, cache: kvCache
+                inputIds: tokId, inputEmbeddings: tokEmbed, cache: cache
             )
             let nextY = sampleWithPenalty(
                 logits: curLogits, recent: Array(tokens.suffix(repWindow)), penalty: repPenalty
@@ -1080,27 +1335,151 @@ public final class StreamingSession: @unchecked Sendable {
             : transcriber.tokenizer.decode(committedPrefixTokens)
         committedText = StablePrefixCommitter.visibleTranscript(
             prefixText: committedText,
-            decoded: decodedCommitted
+            decoded: decodedCommitted,
+            hidePartialLanguageHeader: true
         )
         rawTokens = kept
-        lastText = committedText
+    }
+
+    private func updateStablePrefixDisplay(chunkHasSpeech: Bool) {
+        let candidate: String
+        if chunkHasSpeech {
+            candidate = committedText
+        } else {
+            let decoded = rawTokens.isEmpty ? "" : transcriber.tokenizer.decode(rawTokens)
+            candidate = StablePrefixCommitter.visibleTranscript(
+                prefixText: committedText,
+                decoded: decoded,
+                hidePartialLanguageHeader: true
+            )
+        }
+        displayText = Self.stablePrefixUpdatedDisplayText(
+            displayText: displayText,
+            committedText: committedText,
+            candidate: candidate
+        )
+        lastText = displayText
+    }
+
+    private func resetStablePrefixPauseLookahead() {
+        pendingPauseAudio = []
+        pendingPauseAudioLookaheadDone = false
+        lookaheadPause = .idle
+    }
+
+    private func appendPendingPauseAudio(_ chunk: [Float]) {
+        pendingPauseAudio.append(contentsOf: chunk)
+        if !chunk.isEmpty {
+            pendingPauseAudioLookaheadDone = false
+        }
+        let maxSamples = StablePrefixLookaheadPause.maxPendingSamples
+        if pendingPauseAudio.count > maxSamples {
+            pendingPauseAudio.removeFirst(pendingPauseAudio.count - maxSamples)
+        }
+    }
+
+    /// Display-only: encode buffer+pause on a scratch KV cache. Does not write
+    /// prompt tokens, audioBuffer, encoder cache, or session KV/prefill reuse.
+    private func applyStablePrefixLookaheadDisplay() {
+        let candidate = stablePrefixLookaheadCandidate(extraAudio: pendingPauseAudio)
+        let applied = Self.stablePrefixLookaheadDisplayUpdate(
+            displayText: displayText,
+            committedText: committedText,
+            candidate: candidate
+        )
+        displayText = applied.text
+        lastText = displayText
+        lookaheadPause = Self.stablePrefixLookaheadAfterDecode(
+            pause: lookaheadPause,
+            displayChanged: applied.displayChanged
+        )
+        pendingPauseAudioLookaheadDone = true
+    }
+
+    private func stablePrefixLookaheadCandidate(extraAudio: [Float]) -> String {
+        let encOutput = encodeLookahead(extraAudio: extraAudio)
+        let numEncTokens = encOutput.shape[0]
+        if numEncTokens == 0 {
+            return displayText
+        }
+
+        let prefixTokens = committedPrefixTokens
+        let (inputEmbeds, _) = buildInputEmbeds(
+            encOutput: encOutput, numEncTokens: numEncTokens, prefixTokens: prefixTokens
+        )
+        let totalLen = inputEmbeds.shape[1]
+        guard totalLen >= 1 else { return displayText }
+        let prefillLen = totalLen - 1
+
+        // Fresh cache, full prefill. Session kvCache / prevPrefill* stay put.
+        let scratchCache = transcriber.model.makeCache()
+        let dummyIds = MLXArray([Int32(0)]).expandedDimensions(axis: 0)
+        let prefillEmbeds = inputEmbeds[0..., 0 ..< (prefillLen + 1), 0...]
+        let (logits, _) = transcriber.model(
+            inputIds: dummyIds,
+            inputEmbeddings: prefillEmbeds,
+            cache: scratchCache
+        )
+        eval(logits)
+
+        let newTokens = decodeTokens(
+            logits: logits, maxTokens: config.maxNewTokens, cache: scratchCache
+        )
+        return stablePrefixHypothesisText(prefixTokens: prefixTokens, newTokens: newTokens)
+    }
+
+    /// Full kept hypothesis: cut at `|`, holdback 0, live header hiding on.
+    private func stablePrefixHypothesisText(prefixTokens: [Int], newTokens: [Int]) -> String {
+        var kept = prefixTokens
+        for token in newTokens {
+            let trial = kept + [token]
+            let decoded = transcriber.tokenizer.decode(trial)
+            if decoded.contains("|") { break }
+            if decoded.contains("\u{FFFD}") { break }
+            kept = trial
+        }
+        let decoded = kept.isEmpty ? "" : transcriber.tokenizer.decode(kept)
+        return StablePrefixCommitter.visibleTranscript(
+            prefixText: committedText,
+            decoded: decoded,
+            hidePartialLanguageHeader: true
+        )
     }
 
     private func flushStablePrefixHeldTokens() {
         guard !rawTokens.isEmpty else { return }
         committedText = StablePrefixCommitter.visibleTranscript(
             prefixText: committedText,
-            decoded: transcriber.tokenizer.decode(rawTokens)
+            decoded: transcriber.tokenizer.decode(rawTokens),
+            hidePartialLanguageHeader: false
         )
         committedPrefixTokens = rawTokens
-        lastText = committedText
     }
 
     private func finalizeStablePrefix() -> String {
+        if stablePrefixAudioDirty {
+            _ = decodeAdmittedChunk(startedAt: Date(), speechHint: nil, rms: 0)
+        }
+        // Pause lookahead is display-only and is never merged into audioBuffer.
+        // If the live budget ran out, still give pending pause audio one decode
+        // before preferStablePrefixStopText. Skip if this buffer already had one.
+        if !pendingPauseAudio.isEmpty && !pendingPauseAudioLookaheadDone {
+            applyStablePrefixLookaheadDisplay()
+        }
+        let previousDisplay = displayText
         // Commit the held-back token from sampled ids. Re-encoding the decoded
         // string drifts off those ids and drops the last word.
         flushStablePrefixHeldTokens()
         rawTokens = []
+        let flushed = Self.preferStablePrefixStopText(
+            displayText: previousDisplay,
+            flushedText: committedText
+        )
+        if flushed != committedText {
+            committedText = flushed
+            committedPrefixTokens = []
+        }
+        displayText = flushed
         // Default stop result is flushed live text. Full-session batch is a
         // stop-only overlay for short sessions with speech evidence; live
         // pause-batch stays off because `batchRetranscribe` is false.
@@ -1115,9 +1494,10 @@ public final class StreamingSession: @unchecked Sendable {
                 committedText = chosen
                 committedPrefixTokens = []
             }
+            displayText = committedText
         }
-        lastText = committedText
-        return committedText
+        lastText = displayText
+        return displayText
     }
 
     /// R2T2 stop-only accuracy pass. Live decode stays append-only because
@@ -1144,6 +1524,15 @@ public final class StreamingSession: @unchecked Sendable {
         if batch.isEmpty { return streamed }
         if batch.count < streamed.count { return streamed }
         return batch
+    }
+
+    /// Stop text is never shorter than the last display. Flushed text that
+    /// extends display wins; a consistent longer display is kept; otherwise
+    /// the longer of the two, matching `preferStopBatch`.
+    static func preferStablePrefixStopText(displayText: String, flushedText: String) -> String {
+        if flushedText.hasPrefix(displayText) { return flushedText }
+        if displayText.hasPrefix(flushedText) { return displayText }
+        return preferStopBatch(streamed: displayText, batch: flushedText)
     }
 
     private func sampleWithPenalty(logits: MLXArray, recent: [Int], penalty: Float) -> MLXArray {
