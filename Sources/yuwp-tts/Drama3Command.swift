@@ -54,13 +54,16 @@ func runDrama3Generate(options: TTSTestOptions) async throws {
     let engine = try await Drama3Engine.load(directory: URL(fileURLWithPath: modelPath).standardizedFileURL)
     let loadSeconds = Date().timeIntervalSince(loadStart)
 
+    guard options.referenceAudioPaths.count == options.referenceTexts.count else {
+        throw Drama3Error.invalidInput("each --ref-audio needs a matching --ref-text transcript")
+    }
+    // Reference i voices <|speaker:i|> unless its transcript already starts with a speaker tag.
     var references: [Drama3Reference] = []
-    if let referenceAudioPath = options.referenceAudioPath {
-        guard let transcript = options.referenceText else {
-            throw Drama3Error.invalidInput("--ref-audio needs --ref-text with its transcript")
-        }
-        let (_, audio) = try loadAudioArray(from: URL(fileURLWithPath: referenceAudioPath), sampleRate: engine.sampleRate)
-        references.append(Drama3Reference(transcript: transcript, samples: audio.asArray(Float.self)))
+    for (index, (path, transcript)) in zip(options.referenceAudioPaths, options.referenceTexts).enumerated() {
+        let (_, audio) = try loadAudioArray(from: URL(fileURLWithPath: path), sampleRate: engine.sampleRate)
+        let trimmed = transcript.drop(while: { $0.isWhitespace })
+        let tagged = trimmed.hasPrefix("<|speaker:") ? transcript : "<|speaker:\(index)|> \(transcript)"
+        references.append(Drama3Reference(transcript: tagged, samples: audio.asArray(Float.self)))
     }
 
     var sampling = Drama3Sampling()

@@ -13,6 +13,9 @@ struct TTSTestOptions {
     var voice: String?
     var referenceAudioPath: String?
     var referenceText: String?
+    /// Every `--ref-audio` / `--ref-text` in order; Drama 3 casts reference i as `<|speaker:i|>`.
+    var referenceAudioPaths: [String] = []
+    var referenceTexts: [String] = []
     var language: String? = "English"
     var maxTokens: Int?
     var temperature: Float?
@@ -56,8 +59,12 @@ func parseOptions(_ args: [String]) -> TTSTestOptions {
             options.textSet = true
         case "--out", "--output": options.outputPath = takeValue() ?? options.outputPath
         case "--voice": options.voice = takeValue()
-        case "--ref-audio", "--audio": options.referenceAudioPath = takeValue()
-        case "--ref-text": options.referenceText = takeValue()
+        case "--ref-audio", "--audio":
+            options.referenceAudioPath = takeValue()
+            if let path = options.referenceAudioPath { options.referenceAudioPaths.append(path) }
+        case "--ref-text":
+            options.referenceText = takeValue()
+            if let text = options.referenceText { options.referenceTexts.append(text) }
         case "--language": options.language = takeValue()
         case "--max-tokens": options.maxTokens = takeValue().flatMap(Int.init)
         case "--temperature": options.temperature = takeValue().flatMap(Float.init)
@@ -95,6 +102,7 @@ func parseOptions(_ args: [String]) -> TTSTestOptions {
               --ref-audio <path>           Reference WAV/M4A for cloning or AuK source/reference audio
               --audio <path>               Alias for --ref-audio (AuK)
               --ref-text <text>            Transcript of reference audio
+                                           Drama 3: repeat --ref-audio/--ref-text pairs; pair i voices <|speaker:i|>
               --language <language>        Language, default English
               --gen-seconds <float>        AuK target duration; required for instruct TTS without --ref-audio
               --nfe <n>                    AuK Base diffusion steps (default 32; ignored on Flash)
