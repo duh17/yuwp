@@ -129,6 +129,35 @@ Long-form **auto-chunk is TTS only**. It preserves sentence boundaries, keeps th
 
 Cookbook-style edits (content replace, pitch/volume/emotion, enhancement, separation) are representable on the same path. **Verified** vs **representable**: content replace and a non-content transform are checked with ASR / pitch-cents / dB in `results/` when weights are present; lyric editing is representable but not claimed verified (upstream Base/Flash/torch also fail the cookbook "rear view" → "like you" case).
 
+### Fish Audio Drama 3 (expressive multi-speaker TTS, CLI only)
+
+`yuwp-tts` runs a native Swift/MLX port of [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3): a 35B-A3B Qwen3.5-MoE backbone, a 13-layer codebook tower, and the 44.1 kHz Fish codec. Convert the official checkpoint once. The converter dequantizes the block-FP8 experts, reads `codec.pth` without Python, and can quantize to 8 or 4 bits:
+
+```bash
+hf download fishaudio/drama-3
+.build/out/Products/Release/yuwp-tts convert-drama3 \
+  --src ~/.cache/huggingface/hub/models--fishaudio--drama-3/snapshots/<rev> \
+  --out "$HOME/Library/Application Support/Yuwp/models/drama3-mlx-8bit" --bits 8
+
+.build/out/Products/Release/yuwp-tts \
+  --model "$HOME/Library/Application Support/Yuwp/models/drama3-mlx-8bit" \
+  --text "[sighs] Fine. If we miss it, it's on you. [laughs] Well, maybe that's fair." \
+  --ref-audio ref.wav --ref-text "Transcript of ref.wav." \
+  --out /tmp/drama3.wav
+```
+
+`--ref-audio`/`--ref-text` are optional (voice clone). Inline tags such as `[laughs]` and `<|speaker:N|>` (0–15) go in `--text`. Sampling defaults match upstream: `--temperature 1.0 --top-p 0.9 --top-k 30`; `--max-tokens` caps frames (21.5 frames per second of audio). `serve` does not load Drama 3 yet.
+
+Mac Studio M3 Ultra, one sentence (ASR transcript matched the input on every run):
+
+| Weights | Disk | Frames/s | Real-time factor |
+| --- | ---: | ---: | ---: |
+| bf16 | 68 GB | 21–29 | ~1.0–1.3× |
+| 8-bit | 38 GB | 35–37 | ~1.7× |
+| 4-bit | 22 GB | 43–52 | ~2.0–2.4× |
+
+The weights use the Fish Audio Research License; check it before anything beyond personal use.
+
 ## Development
 
 ```bash
@@ -180,3 +209,4 @@ Audio is processed on the Mac. Recording is off unless you enable **Save Recordi
 - [MIT](LICENSE)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 - App bundles and release DMGs include those notices plus vendored upstream licenses under `OpenSource/`
+- [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) and [SGLang-Omni](https://github.com/sgl-project/sglang-omni) (Drama 3 inference reference)

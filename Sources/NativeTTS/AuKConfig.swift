@@ -66,6 +66,7 @@ public enum AuKVariant: String, Sendable, Equatable, CaseIterable {
 public enum TTSBackendKind: Equatable, Sendable {
     case aukFlash
     case aukBase
+    case drama3
     case qwen3TTS
 
     public var isAuK: Bool {
@@ -76,7 +77,7 @@ public enum TTSBackendKind: Equatable, Sendable {
         switch self {
         case .aukFlash: .flash
         case .aukBase: .base
-        case .qwen3TTS: nil
+        case .drama3, .qwen3TTS: nil
         }
     }
 
@@ -296,6 +297,9 @@ public func inspectAuKModelDirectory(_ url: URL) -> AuKModelLayout {
 }
 
 public func detectTTSBackend(at url: URL) -> TTSBackendKind {
+    if inspectDrama3ModelDirectory(url) != .unknown {
+        return .drama3
+    }
     switch inspectAuKModelDirectory(url) {
     case .converted(let variant), .pytorchSource(let variant):
         return .auk(variant)

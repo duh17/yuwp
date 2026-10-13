@@ -115,6 +115,25 @@ Instruct TTS 需要 `--gen-seconds`。克隆或编辑已有音频时传 `--ref-a
 
 Cookbook 式编辑（内容替换、音高/音量/情感、增强、分离）都走同一条路径。**已验证**与**仅可表达**：有权重时，内容替换与至少一种非内容变换会用 ASR / 音分 / dB 检查；歌词编辑可表达但不声称已验证。
 
+### Fish Audio Drama 3（多角色、可控情绪的 TTS，仅命令行）
+
+`yuwp-tts` 内置 [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) 的原生 Swift/MLX 实现：35B-A3B Qwen3.5-MoE 主干、13 层 codebook tower、44.1 kHz Fish codec。官方权重转换一次即可。转换器会反量化 block-FP8 专家，不用 Python 也能读取 `codec.pth`，并可选 8/4 bit 量化：
+
+```bash
+hf download fishaudio/drama-3
+.build/out/Products/Release/yuwp-tts convert-drama3 \
+  --src ~/.cache/huggingface/hub/models--fishaudio--drama-3/snapshots/<rev> \
+  --out "$HOME/Library/Application Support/Yuwp/models/drama3-mlx-8bit" --bits 8
+
+.build/out/Products/Release/yuwp-tts \
+  --model "$HOME/Library/Application Support/Yuwp/models/drama3-mlx-8bit" \
+  --text "[sighs] Fine. If we miss it, it's on you. [laughs] Well, maybe that's fair." \
+  --ref-audio ref.wav --ref-text "ref.wav 的文字稿" \
+  --out /tmp/drama3.wav
+```
+
+`--ref-audio` / `--ref-text` 可选（声音克隆）。`[laughs]` 等行内标签和 `<|speaker:N|>`（0–15）直接写在 `--text` 里。采样默认值与上游一致：`--temperature 1.0 --top-p 0.9 --top-k 30`；`--max-tokens` 限制帧数（每秒音频 21.5 帧）。`serve` 暂不支持 Drama 3。M3 Ultra 上 bf16（68 GB）约 21–29 帧/秒，8-bit（38 GB）约 35–37 帧/秒，4-bit（22 GB）约 43–52 帧/秒。权重使用 Fish Audio Research License，个人用途以外请先看许可证。
+
 ## 开发
 
 ```bash
@@ -165,3 +184,4 @@ M3U 上 1.7B bf16 的混合语音 Silero 起点 canary，首段文字为 505 ms�
 - [MIT](LICENSE)
 - [第三方声明](THIRD_PARTY_NOTICES.md)
 - 应用包和发布的 DMG 均包含这些声明，以及 `OpenSource/` 目录下随包分发的上游许可证。
+- [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) 与 [SGLang-Omni](https://github.com/sgl-project/sglang-omni)（Drama 3 推理参考）

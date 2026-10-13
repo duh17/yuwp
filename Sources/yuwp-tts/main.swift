@@ -85,6 +85,7 @@ func parseOptions(_ args: [String]) -> TTSTestOptions {
             Usage: yuwp-tts --model <model-dir> [options]
                    yuwp-tts serve --transport http --model <model-dir> [--host 127.0.0.1] [--port 7937]
                    yuwp-tts convert-auk --src <AuK-Flash-or-AuK-dir> --thinker-src <Qwen2.5-Omni-3B or auk-flash-mlx> --out <mlx-dir>
+                   yuwp-tts convert-drama3 --src <fishaudio/drama-3 dir> --out <mlx-dir> [--bits 8|4]
 
             Options:
               --text <text>                Text to synthesize (Qwen3-TTS) or instruction (AuK)
@@ -1085,9 +1086,13 @@ func runServe(_ args: [String]) async throws {
         throw AudioGenerationError.invalidInput("serve requires --model <model-dir>")
     }
 
-    if detectTTSBackend(at: URL(fileURLWithPath: modelPath).standardizedFileURL).isAuK {
+    let backend = detectTTSBackend(at: URL(fileURLWithPath: modelPath).standardizedFileURL)
+    if backend.isAuK {
         try await runAuKServe(options: options)
         return
+    }
+    if backend == .drama3 {
+        throw Drama3Error.invalidInput("serve does not support Drama 3 yet; use `yuwp-tts --model <drama3-mlx-dir> --text ...`")
     }
 
     let loadStart = Date()
@@ -1338,6 +1343,15 @@ if rawArgs.first == "convert-auk" {
         exit(1)
     }
 }
+if rawArgs.first == "convert-drama3" {
+    do {
+        try runDrama3Convert(Array(rawArgs.dropFirst()))
+        exit(0)
+    } catch {
+        fputs("Error: \(error.localizedDescription)\n", stderr)
+        exit(1)
+    }
+}
 if rawArgs.first == "serve" {
     do {
         try await runServe(Array(rawArgs.dropFirst()))
@@ -1358,8 +1372,13 @@ guard let modelPath = options.modelPath else {
 do {
     let start = Date()
     let modelURL = URL(fileURLWithPath: modelPath).standardizedFileURL
-    if detectTTSBackend(at: modelURL).isAuK {
+    let backend = detectTTSBackend(at: modelURL)
+    if backend.isAuK {
         try await runAuKGenerate(options: options)
+        exit(0)
+    }
+    if backend == .drama3 {
+        try await runDrama3Generate(options: options)
         exit(0)
     }
     let model = try await Qwen3TTSModel.fromModelDirectory(modelURL)
