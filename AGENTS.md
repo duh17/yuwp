@@ -73,6 +73,8 @@ appcast URL or public key with `YUWP_SPARKLE_FEED_URL` or
 | yuwp-asr/main.swift | ASR CLI entrypoint: transcribe and serve |
 | ASRServerSupport/ | ASR server runtime, CLI parsing, HTTP/stdin routing |
 | NativeASR/ | MLX model loading, inference, streaming session |
+| NativeMusic/ | YuE2 music: tokenizer, AR score/semantic decode, NAR flow matching, Oobleck VAE |
+| yuwp-music/main.swift | Music CLI: generate, render (re-solve saved tokens), decode |
 
 ## HTTP API
 

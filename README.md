@@ -158,6 +158,32 @@ Mac Studio M3 Ultra, one sentence (ASR transcript matched the input on every run
 
 The weights use the Fish Audio Research License; check it before anything beyond personal use.
 
+### YuE2 music (CLI only)
+
+`yuwp-music` runs a native Swift/MLX port of [YuE2-3B](https://huggingface.co/m-a-p/YuE2-3B): style tags and lyrics in, a 48 kHz stereo song out. YuE2 first writes an ABC score (melody, plus chords in `full` mode), generates 25 Hz semantic codec ids from it, solves acoustic latents with midpoint flow matching, and decodes them with the Oobleck VAE. It loads the converted [`vanch007/mlx-Yue2-3B`](https://huggingface.co/vanch007/mlx-Yue2-3B) layout (`ar-{8bit,4bit,bf16}`, `nar-bf16`, `qwen.tiktoken`, `vae/`). Runtime inference does not use Python.
+
+```bash
+hf download vanch007/mlx-Yue2-3B --local-dir ~/models/mlx-Yue2-3B
+swift build -c release --product yuwp-music
+
+.build/out/Products/Release/yuwp-music generate --model ~/models/mlx-Yue2-3B \
+  --style "Mandarin, 1990s Hong Kong TVB wuxia theme, male tenor lead vocal, erhu, guzheng, strings" \
+  --lyrics-file lyrics.txt --out /tmp/song
+```
+
+Lyrics use section tags on their own lines (`[Verse]`, `[Chorus]`, …). `--mode full|melody|off` picks the score plan; `--abc-file` renders your own score instead. `--steps` sets flow-matching steps (default 32; 8 is about 4× faster on that stage). The output directory holds `audio.wav`, `score.abc`, `prefix.npy`, `semantic.npy`, `noise.npy`, `latent.npy` and `result.json`. `yuwp-music render --from <dir>` re-solves a saved song with other steps, and `decode` runs the VAE alone. Song length is up to the model (at most 360 s). Seeds are stable within `yuwp-music` but do not reproduce mlx-Yue's audio: its MLX version draws different samples from the same key.
+
+Mac Studio M3 Ultra, one 4.3-minute instrumental (supplied score, 8-bit AR, 32 steps):
+
+| Stage | mlx-Yue (Python MLX) | `yuwp-music` |
+| --- | ---: | ---: |
+| Semantic tokens | 98 tok/s | 174 tok/s |
+| Flow matching, 32 steps | 140 s | 120 s |
+| VAE decode | 5.4 s | 2.0 s |
+| End to end | 213 s | 161 s |
+
+On the same tokens and noise, latents match mlx-Yue at 37 dB SNR (cosine 0.9999) and VAE audio at 124 dB. YuE2 weights are CC BY-NC 4.0: personal and research use only.
+
 ## Development
 
 ```bash
@@ -200,6 +226,7 @@ Audio is processed on the Mac. Recording is off unless you enable **Save Recordi
 
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
 - [AuK](https://github.com/Tencent-Hunyuan/AuK) (AuK-Flash and AuK Base MLX architecture reference)
+- [YuE2](https://github.com/multimodal-art-projection/YuE), [mlx-Yue](https://github.com/vanch007/mlx-Yue) and [mlx-serve](https://github.com/ddalcu/mlx-serve) (YuE2 inference references)
 - [MLX](https://github.com/ml-explore/mlx) and [mlx-swift](https://github.com/ml-explore/mlx-swift)
 - [qwen-asr](https://github.com/antirez/qwen-asr) (streaming reference ideas)
 - [Silero VAD](https://github.com/snakers4/silero-vad)

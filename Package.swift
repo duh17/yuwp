@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "yuwp-asr", targets: ["yuwp_asr"]),
         .executable(name: "yuwp-tts", targets: ["yuwp_tts"]),
+        .executable(name: "yuwp-music", targets: ["yuwp_music"]),
     ],
     dependencies: [
         .package(
@@ -25,7 +26,7 @@ let package = Package(
                 "ASRIPC",
             ],
             path: "Sources",
-            exclude: ["NativeASR", "NativeTTS", "YuwpHTTPServerSupport", "ASRServerSupport", "ASRIPC", "asr-test", "tts-test", "yuwp-tts", "asr-bench", "asr-stream-test", "yuwp-asr", "align-test", "asr-stitch-debug", "qwen-asr-metal"]
+            exclude: ["NativeASR", "NativeTTS", "NativeMusic", "yuwp-music", "YuwpHTTPServerSupport", "ASRServerSupport", "ASRIPC", "asr-test", "tts-test", "yuwp-tts", "asr-bench", "asr-stream-test", "yuwp-asr", "align-test", "asr-stitch-debug", "qwen-asr-metal"]
         ),
         .target(
             name: "YuwpHTTPServerSupport",
@@ -57,6 +58,24 @@ let package = Package(
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
             path: "Sources/NativeTTS"
+        ),
+        .target(
+            name: "NativeMusic",
+            dependencies: [
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXFast", package: "mlx-swift"),
+                .product(name: "MLXRandom", package: "mlx-swift"),
+            ],
+            path: "Sources/NativeMusic"
+        ),
+        .executableTarget(
+            name: "yuwp_music",
+            dependencies: [
+                "NativeMusic",
+                .product(name: "MLX", package: "mlx-swift"),
+            ],
+            path: "Sources/yuwp-music"
         ),
         .executableTarget(
             name: "asr-test",
@@ -116,7 +135,7 @@ let package = Package(
         ),
         .testTarget(
             name: "YuwpTests",
-            dependencies: ["Yuwp", "NativeASR", "NativeTTS", "ASRServerSupport", "ASRIPC"],
+            dependencies: ["Yuwp", "NativeASR", "NativeTTS", "NativeMusic", "ASRServerSupport", "ASRIPC"],
             path: "Tests",
             exclude: ["fixtures"]
         ),

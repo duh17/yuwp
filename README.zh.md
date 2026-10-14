@@ -134,6 +134,21 @@ hf download fishaudio/drama-3
 
 `--ref-audio` / `--ref-text` 可选（声音克隆）。重复多组即可给场景分配角色：第 *i* 组对应 `<|speaker:i|>`，旁白加四个角色就是五组；不给参考音频时由模型自己挑声音。`[laughs]` 等行内标签和 `<|speaker:N|>`（0–15）直接写在 `--text` 里。采样默认值与上游一致：`--temperature 1.0 --top-p 0.9 --top-k 30`；`--max-tokens` 限制帧数（每秒音频 21.5 帧）。`serve` 暂不支持 Drama 3。M3 Ultra 上 bf16（68 GB）约 21–29 帧/秒，8-bit（38 GB）约 35–37 帧/秒，4-bit（22 GB）约 43–52 帧/秒。权重使用 Fish Audio Research License，个人用途以外请先看许可证。
 
+### YuE2 音乐生成（仅命令行）
+
+`yuwp-music` 是 [YuE2-3B](https://huggingface.co/m-a-p/YuE2-3B) 的原生 Swift/MLX 实现：输入风格标签和歌词，输出 48 kHz 立体声歌曲。YuE2 先写 ABC 谱（旋律，`full` 模式还带和弦），再据谱生成 25 Hz 语义码，用中点法 flow matching 求声学 latent，最后由 Oobleck VAE 解码。模型目录使用转换好的 [`vanch007/mlx-Yue2-3B`](https://huggingface.co/vanch007/mlx-Yue2-3B) 布局（`ar-{8bit,4bit,bf16}`、`nar-bf16`、`qwen.tiktoken`、`vae/`），推理不用 Python。
+
+```bash
+hf download vanch007/mlx-Yue2-3B --local-dir ~/models/mlx-Yue2-3B
+swift build -c release --product yuwp-music
+
+.build/out/Products/Release/yuwp-music generate --model ~/models/mlx-Yue2-3B \
+  --style "Mandarin, 1990s Hong Kong TVB wuxia theme, male tenor lead vocal, erhu, guzheng, strings" \
+  --lyrics-file lyrics.txt --out /tmp/song
+```
+
+歌词每段单独一行写段落标签（`[Verse]`、`[Chorus]` 等）。`--mode full|melody|off` 选择谱的规划方式；`--abc-file` 直接渲染你自己的谱。`--steps` 设定 flow matching 步数（默认 32；8 步时这一阶段约快 4 倍）。输出目录包含 `audio.wav`、`score.abc`、`prefix.npy`、`semantic.npy`、`noise.npy`、`latent.npy` 和 `result.json`。`yuwp-music render --from <目录>` 用其他步数重解已存歌曲，`decode` 只跑 VAE。歌曲长度由模型决定（最长 360 秒）。同一 seed 在 `yuwp-music` 内可复现，但不会复现 mlx-Yue 的音频：两边的 MLX 版本对同一 key 抽样结果不同。M3 Ultra 上一首 4.3 分钟纯音乐（给定谱、8-bit AR、32 步）：语义码 174 tok/s（mlx-Yue 98 tok/s），flow matching 120 秒（140 秒），VAE 2.0 秒（5.4 秒），端到端 161 秒（213 秒）。YuE2 权重为 CC BY-NC 4.0，仅限个人与研究用途。
+
 ## 开发
 
 ```bash
@@ -175,6 +190,7 @@ M3U 上 1.7B bf16 的混合语音 Silero 起点 canary，首段文字为 505 ms�
 ## 致谢
 
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
+- [YuE2](https://github.com/multimodal-art-projection/YuE)、[mlx-Yue](https://github.com/vanch007/mlx-Yue) 与 [mlx-serve](https://github.com/ddalcu/mlx-serve)（YuE2 推理参考）
 - [MLX](https://github.com/ml-explore/mlx) 和 [mlx-swift](https://github.com/ml-explore/mlx-swift)
 - [qwen-asr](https://github.com/antirez/qwen-asr)（流式处理的参考思路）
 - [Silero VAD](https://github.com/snakers4/silero-vad)
