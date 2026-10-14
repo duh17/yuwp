@@ -202,9 +202,14 @@ final class YuE2ARModel: Module {
         return model.norm(x[0..., (x.dim(1) - 1)...])
     }
 
-    static func load(directory: URL, file: String, config: YuE2Config) throws -> YuE2ARModel {
-        let url = directory.appendingPathComponent(file)
-        guard FileManager.default.fileExists(atPath: url.path) else { throw YuE2Error.missingWeights(url.path) }
+    /// Load `ar-<bits>bit.safetensors`, or `ar-bf16.safetensors` when `bits` is nil. A quantized file
+    /// that is not on disk is made from the bf16 weights with the same recipe (affine, group 64,
+    /// linear layers only; embeddings stay bf16).
+    static func load(directory: URL, bits: Int?, config: YuE2Config) throws -> YuE2ARModel {
+        let bf16 = directory.appendingPathComponent("ar-bf16.safetensors")
+        let quantized = bits.map { directory.appendingPathComponent("ar-\($0)bit.safetensors") }
+        let url = quantized.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil } ?? bf16
+        guard FileManager.default.fileExists(atPath: url.path) else { throw YuE2Error.missingWeights((quantized ?? bf16).path) }
         let weights = try MLX.loadArrays(url: url)
         let model = YuE2ARModel(config)
         if weights["lm_head.scales"] != nil {
@@ -215,6 +220,9 @@ final class YuE2ARModel: Module {
             }
         }
         try model.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
+        if let bits, weights["lm_head.scales"] == nil {
+            quantize(model: model, groupSize: 64, bits: bits, mode: .affine) { _, module in module is Linear }
+        }
         model.train(false)
         eval(model.parameters())
         return model

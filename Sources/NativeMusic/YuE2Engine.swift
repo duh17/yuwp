@@ -7,7 +7,13 @@ public enum YuE2Precision: String, Sendable, CaseIterable {
     case int8 = "8bit"
     case int4 = "4bit"
 
-    var arFile: String { "ar-\(rawValue).safetensors" }
+    var bits: Int? {
+        switch self {
+        case .bf16: nil
+        case .int8: 8
+        case .int4: 4
+        }
+    }
 }
 
 public struct YuE2StageTiming: Sendable, Codable {
@@ -52,7 +58,8 @@ public final class YuE2Engine: @unchecked Sendable {
     private var vae: YuE2VAEDecoder?
 
     /// `directory` is a converted mlx-Yue2-3B layout: `config.json`, `qwen.tiktoken`,
-    /// `ar-{bf16,8bit,4bit}.safetensors`, `nar-bf16.safetensors`, and the VAE in `vae/` by default.
+    /// `ar-bf16.safetensors` (optionally `ar-8bit`/`ar-4bit`), `nar-bf16.safetensors`, and the VAE
+    /// in `vae/` by default.
     public init(directory: URL, precision: YuE2Precision = .int8, vaeDirectory: URL? = nil) throws {
         self.directory = directory
         self.precision = precision
@@ -65,7 +72,7 @@ public final class YuE2Engine: @unchecked Sendable {
 
     private func decodeModel() throws -> YuE2ARModel {
         if let decoder { return decoder }
-        let model = precision == .bf16 ? try conditioningModel() : try YuE2ARModel.load(directory: directory, file: precision.arFile, config: config)
+        let model = precision == .bf16 ? try conditioningModel() : try YuE2ARModel.load(directory: directory, bits: precision.bits, config: config)
         decoder = model
         return model
     }
@@ -80,7 +87,7 @@ public final class YuE2Engine: @unchecked Sendable {
     /// The NAR attends over the bf16 AR path; quantized AR weights never condition it.
     private func conditioningModel() throws -> YuE2ARModel {
         if let conditioner { return conditioner }
-        let model = try YuE2ARModel.load(directory: directory, file: YuE2Precision.bf16.arFile, config: config)
+        let model = try YuE2ARModel.load(directory: directory, bits: nil, config: config)
         conditioner = model
         return model
     }

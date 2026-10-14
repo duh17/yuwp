@@ -136,7 +136,7 @@ hf download fishaudio/drama-3
 
 ### YuE2 音乐生成（仅命令行）
 
-`yuwp-music` 是 [YuE2-3B](https://huggingface.co/m-a-p/YuE2-3B) 的原生 Swift/MLX 实现：输入风格标签和歌词，输出 48 kHz 立体声歌曲。YuE2 先写 ABC 谱（旋律，`full` 模式还带和弦），再据谱生成 25 Hz 语义码，用中点法 flow matching 求声学 latent，最后由 Oobleck VAE 解码。模型目录使用转换好的 [`vanch007/mlx-Yue2-3B`](https://huggingface.co/vanch007/mlx-Yue2-3B) 布局（`ar-{8bit,4bit,bf16}`、`nar-bf16`、`qwen.tiktoken`、`vae/`），推理不用 Python。
+`yuwp-music` 是 [YuE2-3B](https://huggingface.co/m-a-p/YuE2-3B) 的原生 Swift/MLX 实现：输入风格标签和歌词，输出 48 kHz 立体声歌曲。YuE2 先写 ABC 谱（旋律，`full` 模式还带和弦），再据谱生成 25 Hz 语义码，用中点法 flow matching 求声学 latent，最后由 Oobleck VAE 解码。模型目录使用转换好的 [`vanch007/mlx-Yue2-3B`](https://huggingface.co/vanch007/mlx-Yue2-3B) 布局（`ar-bf16`、`ar-8bit`、`nar-bf16`、`qwen.tiktoken`、`vae/`），推理不用 Python。`--precision 8bit|4bit|bf16` 选择生成 token 的权重（默认 8-bit）；没有 `ar-4bit` 文件时，4-bit 会在加载时由 bf16 权重量化而来。flow matching 始终用 bf16。
 
 ```bash
 hf download vanch007/mlx-Yue2-3B --local-dir ~/models/mlx-Yue2-3B

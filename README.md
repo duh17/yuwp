@@ -160,7 +160,7 @@ The weights use the Fish Audio Research License; check it before anything beyond
 
 ### YuE2 music (CLI only)
 
-`yuwp-music` runs a native Swift/MLX port of [YuE2-3B](https://huggingface.co/m-a-p/YuE2-3B): style tags and lyrics in, a 48 kHz stereo song out. YuE2 first writes an ABC score (melody, plus chords in `full` mode), generates 25 Hz semantic codec ids from it, solves acoustic latents with midpoint flow matching, and decodes them with the Oobleck VAE. It loads the converted [`vanch007/mlx-Yue2-3B`](https://huggingface.co/vanch007/mlx-Yue2-3B) layout (`ar-{8bit,4bit,bf16}`, `nar-bf16`, `qwen.tiktoken`, `vae/`). Runtime inference does not use Python.
+`yuwp-music` runs a native Swift/MLX port of [YuE2-3B](https://huggingface.co/m-a-p/YuE2-3B): style tags and lyrics in, a 48 kHz stereo song out. YuE2 first writes an ABC score (melody, plus chords in `full` mode), generates 25 Hz semantic codec ids from it, solves acoustic latents with midpoint flow matching, and decodes them with the Oobleck VAE. It loads the converted [`vanch007/mlx-Yue2-3B`](https://huggingface.co/vanch007/mlx-Yue2-3B) layout (`ar-bf16`, `ar-8bit`, `nar-bf16`, `qwen.tiktoken`, `vae/`). `--precision 8bit|4bit|bf16` picks the token-generation weights (default 8-bit); without an `ar-4bit` file, 4-bit quantizes the bf16 weights at load. Flow matching always uses bf16. Runtime inference does not use Python.
 
 ```bash
 hf download vanch007/mlx-Yue2-3B --local-dir ~/models/mlx-Yue2-3B
