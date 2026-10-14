@@ -173,14 +173,16 @@ swift build -c release --product yuwp-music
 
 Lyrics use section tags on their own lines (`[Verse]`, `[Chorus]`, …). `--mode full|melody|off` picks the score plan; `--abc-file` renders your own score instead. `--steps` sets flow-matching steps (default 32; 8 is about 4× faster on that stage). The output directory holds `audio.wav`, `score.abc`, `prefix.npy`, `semantic.npy`, `noise.npy`, `latent.npy` and `result.json`. `yuwp-music render --from <dir>` re-solves a saved song with other steps, and `decode` runs the VAE alone. Song length is up to the model (at most 360 s). Seeds are stable within `yuwp-music` but do not reproduce mlx-Yue's audio: its MLX version draws different samples from the same key.
 
-Mac Studio M3 Ultra, one 4.3-minute instrumental (supplied score, 8-bit AR, 32 steps):
+Mac Studio M3 Ultra, one 4.4-minute instrumental: the same style, score, seed and 32 steps in each engine, 8-bit token weights. Each engine samples its own tokens, so lengths differ slightly (frames in brackets).
 
-| Stage | mlx-Yue (Python MLX) | `yuwp-music` |
-| --- | ---: | ---: |
-| Semantic tokens | 98 tok/s | 174 tok/s |
-| Flow matching, 32 steps | 140 s | 120 s |
-| VAE decode | 5.4 s | 2.0 s |
-| End to end | 213 s | 161 s |
+| Stage | mlx-Yue (Python MLX) | mlx-serve 26.10.2 (Zig) | `yuwp-music` |
+| --- | ---: | ---: | ---: |
+| Semantic tokens | 98.8 tok/s | 136.5 tok/s | **173.7 tok/s** |
+| Flow matching, 32 steps | 139.6 s (6683) | 123.4 s (6607) | **120.5 s** (6497) |
+| VAE decode | 5.4 s | 7.8 s | **2.0 s** |
+| End to end | 212.8 s | 181.6 s | **160.9 s** |
+
+mlx-serve and `yuwp-music` are even on flow matching once length is accounted for (both run bf16 MLX attention over the whole chunk; mlx-Yue is about 10% slower). The gap is token generation, where `yuwp-music` keeps sampling on the GPU and queues the next step before reading the current token back. mlx-serve's end-to-end excludes model load (already resident); the other two include it. Method and raw numbers: [`benchmarks/`](benchmarks/README.md#yue2-music), [`yue2-tvb-m3u.json`](benchmarks/fixtures/yue2-tvb-m3u.json). 4-bit token weights reach 261 tok/s.
 
 On the same tokens and noise, latents match mlx-Yue at 37 dB SNR (cosine 0.9999) and VAE audio at 124 dB. YuE2 weights are CC BY-NC 4.0: personal and research use only.
 

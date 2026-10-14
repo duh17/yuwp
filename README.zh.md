@@ -147,7 +147,18 @@ swift build -c release --product yuwp-music
   --lyrics-file lyrics.txt --out /tmp/song
 ```
 
-歌词每段单独一行写段落标签（`[Verse]`、`[Chorus]` 等）。`--mode full|melody|off` 选择谱的规划方式；`--abc-file` 直接渲染你自己的谱。`--steps` 设定 flow matching 步数（默认 32；8 步时这一阶段约快 4 倍）。输出目录包含 `audio.wav`、`score.abc`、`prefix.npy`、`semantic.npy`、`noise.npy`、`latent.npy` 和 `result.json`。`yuwp-music render --from <目录>` 用其他步数重解已存歌曲，`decode` 只跑 VAE。歌曲长度由模型决定（最长 360 秒）。同一 seed 在 `yuwp-music` 内可复现，但不会复现 mlx-Yue 的音频：两边的 MLX 版本对同一 key 抽样结果不同。M3 Ultra 上一首 4.3 分钟纯音乐（给定谱、8-bit AR、32 步）：语义码 174 tok/s（mlx-Yue 98 tok/s），flow matching 120 秒（140 秒），VAE 2.0 秒（5.4 秒），端到端 161 秒（213 秒）。YuE2 权重为 CC BY-NC 4.0，仅限个人与研究用途。
+歌词每段单独一行写段落标签（`[Verse]`、`[Chorus]` 等）。`--mode full|melody|off` 选择谱的规划方式；`--abc-file` 直接渲染你自己的谱。`--steps` 设定 flow matching 步数（默认 32；8 步时这一阶段约快 4 倍）。输出目录包含 `audio.wav`、`score.abc`、`prefix.npy`、`semantic.npy`、`noise.npy`、`latent.npy` 和 `result.json`。`yuwp-music render --from <目录>` 用其他步数重解已存歌曲，`decode` 只跑 VAE。歌曲长度由模型决定（最长 360 秒）。同一 seed 在 `yuwp-music` 内可复现，但不会复现 mlx-Yue 的音频：两边的 MLX 版本对同一 key 抽样结果不同。YuE2 权重为 CC BY-NC 4.0，仅限个人与研究用途。
+
+Mac Studio M3 Ultra，一首 4.4 分钟纯音乐：三个引擎使用同样的风格、谱、seed 和 32 步，token 权重均为 8-bit。各引擎各自采样，歌曲长度略有不同（括号内为帧数）。
+
+| 阶段 | mlx-Yue（Python MLX） | mlx-serve 26.10.2（Zig） | `yuwp-music` |
+| --- | ---: | ---: | ---: |
+| 语义 token | 98.8 tok/s | 136.5 tok/s | **173.7 tok/s** |
+| Flow matching，32 步 | 139.6 秒（6683） | 123.4 秒（6607） | **120.5 秒**（6497） |
+| VAE 解码 | 5.4 秒 | 7.8 秒 | **2.0 秒** |
+| 端到端 | 212.8 秒 | 181.6 秒 | **160.9 秒** |
+
+按长度折算后，mlx-serve 与 `yuwp-music` 的 flow matching 基本持平（都用 bf16 MLX 对整段做注意力；mlx-Yue 约慢 10%）。差距主要在生成 token：`yuwp-music` 在 GPU 上采样，并在读回当前 token 之前就排好下一步。mlx-serve 的端到端不含加载模型（模型已常驻），另外两个包含。方法与原始数据见 [`benchmarks/`](benchmarks/README.md#yue2-music) 和 [`yue2-tvb-m3u.json`](benchmarks/fixtures/yue2-tvb-m3u.json)。4-bit token 权重可达 261 tok/s。
 
 ## 开发
 

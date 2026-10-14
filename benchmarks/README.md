@@ -70,6 +70,27 @@ Plot load benchmark JSON:
 uv run benchmarks/cli.py plot /tmp/yuwp-load.json --out-dir /tmp/yuwp-load-plots
 ```
 
+## YuE2 music
+
+`yuwp-music` is compared with [mlx-Yue](https://github.com/vanch007/mlx-Yue) (Python MLX) and [mlx-serve](https://github.com/ddalcu/mlx-serve) (Zig on mlx-c) on one request: the same style, section-only lyrics, supplied ABC score, seed and 32 flow-matching steps. Numbers: [`fixtures/yue2-tvb-m3u.json`](fixtures/yue2-tvb-m3u.json).
+
+```bash
+# yuwp-music: per-stage times land in result.json
+.build/out/Products/Release/yuwp-music generate --model <mlx-Yue2-3B> \
+  --style "$STYLE" --lyrics-file sections.txt --abc-file score.abc --seed 41 --out /tmp/yuwp-yue2
+
+# mlx-Yue: same request, per-stage times in result.json
+mlx-yue generate --model models/converted --vae models/mlx-Yue2-3B/vae --precision 8bit --offline \
+  --mode full --seed 41 --lyrics-file sections.txt --abc score.abc --style "$STYLE" --output /tmp/mlx-yue
+
+# mlx-serve: a separate process on a spare port, timed from SSE progress (stage + step) events
+mlx-serve --model <ddalcu/YuE2-3B-MLX-Serve-8bit> --serve --host 127.0.0.1 --port 11299
+curl -N http://127.0.0.1:11299/v1/audio/music-generations -H 'content-type: application/json' \
+  -d '{"model":"<id>","prompt":"…","lyrics":"…","cot":"full","abc":"…","seed":41,"steps":32,"stream":true}'
+```
+
+Each engine samples its own tokens, so song lengths differ by a few percent; compare tok/s and per-stage times at the recorded frame counts. Flow-matching cost grows faster than linearly with frames.
+
 ## Dev-only English diagnostics
 
 `english-parity` is **NON-ACCEPTANCE**: one Qwen/N1/P1 pass, at most 81

@@ -1,0 +1,58 @@
+{
+  "request": {
+    "description": "4.4-minute instrumental: 1990s TVB wuxia underscore style, section-only lyrics, supplied 2804-token ABC score, cot=full, seed 41, 32 midpoint steps",
+    "prefix_tokens": 2950
+  },
+  "machine": {
+    "cpu": "Apple M3 Ultra",
+    "mem_gb": 512,
+    "macos": "27.2"
+  },
+  "notes": {
+    "same_request": "All three engines ran the same style, lyrics, score, seed and step count. Each samples its own tokens (different RNG streams), so song lengths differ by a few percent; compare tok/s and stage times at the stated frame counts.",
+    "token_weights": "8-bit affine group-64 AR for token generation; bf16 AR conditioning and NAR for flow matching; FP32 Oobleck VAE (YuE2-Vae) in all three.",
+    "clocks": "semantic = prefill + decode of semantic ids; nar = AR conditioning + 64 velocity evaluations; vae = tiled latent decode. yuwp-music and mlx-Yue end-to-end include model load from a warm page cache; mlx-serve end-to-end is one HTTP request against an already loaded model (SSE progress timestamps, includes returning the 50 MB WAV).",
+    "parity": "On mlx-Yue's own tokens and noise, yuwp-music latents match at 37.2 dB SNR (cosine 0.99990) and VAE audio at 124 dB. mlx-Yue itself documents a 0.054 latent RMS error against PyTorch."
+  },
+  "engines": {
+    "yuwp-music": {
+      "version": "badf540",
+      "semantic_tokens": 6498,
+      "semantic_s": 38.1,
+      "semantic_tok_s": 173.7,
+      "nar_frames": 6497,
+      "nar_s": 120.5,
+      "vae_s": 2.0,
+      "audio_s": 259.9,
+      "e2e_s": 160.9
+    },
+    "mlx-serve": {
+      "version": "MLX-Serve.app 26.10.2, ddalcu/YuE2-3B-MLX-Serve-8bit",
+      "semantic_tokens": 6608,
+      "semantic_s": 48.4,
+      "semantic_tok_s": 136.5,
+      "nar_frames": 6607,
+      "nar_s": 123.4,
+      "vae_s": 7.8,
+      "audio_s": 264.3,
+      "e2e_s": 181.6
+    },
+    "mlx-yue": {
+      "version": "vanch007/mlx-Yue c5b5a81, MLX 0.32.2",
+      "semantic_tokens": 6684,
+      "semantic_s": 67.6,
+      "semantic_tok_s": 98.8,
+      "nar_frames": 6683,
+      "nar_s": 139.6,
+      "vae_s": 5.4,
+      "audio_s": 267.3,
+      "e2e_s": 212.8
+    }
+  },
+  "yuwp_music_other_precisions": {
+    "description": "Short Mandarin song (two lyric sections), seed 7, 8 steps; semantic token generation only (8-bit run used cot=full, 4-bit and bf16 cot=melody)",
+    "8bit_tok_s": 206.6,
+    "4bit_tok_s": 261.4,
+    "bf16_tok_s": 145.2
+  }
+}
