@@ -489,7 +489,8 @@ private func writeAuKSpeechStream(
     }
 }
 
-private func pcm16Base64(samples: [Float]) -> String {
+/// Base64 little-endian PCM16 for the NDJSON `audio` event shared by every `serve` backend.
+func pcm16Base64(samples: [Float]) -> String {
     var data = Data(capacity: samples.count * 2)
     for sample in samples {
         let clamped = max(-1.0, min(1.0, sample))

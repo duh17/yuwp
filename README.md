@@ -129,7 +129,7 @@ Long-form **auto-chunk is TTS only**. It preserves sentence boundaries, keeps th
 
 Cookbook-style edits (content replace, pitch/volume/emotion, enhancement, separation) are representable on the same path. **Verified** vs **representable**: content replace and a non-content transform are checked with ASR / pitch-cents / dB in `results/` when weights are present; lyric editing is representable but not claimed verified (upstream Base/Flash/torch also fail the cookbook "rear view" → "like you" case).
 
-### Fish Audio Drama 3 (expressive multi-speaker TTS, CLI only)
+### Fish Audio Drama 3 (expressive multi-speaker TTS)
 
 `yuwp-tts` runs a native Swift/MLX port of [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3): a 35B-A3B Qwen3.5-MoE backbone, a 13-layer codebook tower, and the 44.1 kHz Fish codec. Convert the official checkpoint once. The converter dequantizes the block-FP8 experts, reads `codec.pth` without Python, and can quantize to 8 or 4 bits:
 
@@ -146,7 +146,16 @@ hf download fishaudio/drama-3
   --out /tmp/drama3.wav
 ```
 
-`--ref-audio`/`--ref-text` are optional (voice clone). Repeat the pair to cast a scene: pair *i* voices `<|speaker:i|>`, so a narrator plus four characters takes five pairs. Without references the model picks its own voices. Inline tags such as `[laughs]` and `<|speaker:N|>` (0–15) go in `--text`. Sampling defaults match upstream: `--temperature 1.0 --top-p 0.9 --top-k 30`; `--max-tokens` caps frames (21.5 frames per second of audio). `--stream` decodes as frames arrive (first audio after about four frames, then `--streaming-interval`, default 0.2 s) using the same `StreamingWAVWriter` path as Qwen3-TTS. `serve` does not load Drama 3 yet.
+`--ref-audio`/`--ref-text` are optional (voice clone). Repeat the pair to cast a scene: pair *i* voices `<|speaker:i|>`, so a narrator plus four characters takes five pairs. Without references the model picks its own voices. Inline tags such as `[laughs]` and `<|speaker:N|>` (0–15) go in `--text`. Sampling defaults match upstream: `--temperature 1.0 --top-p 0.9 --top-k 30`; `--max-tokens` caps frames (21.5 frames per second of audio). `--stream` decodes as frames arrive (first audio after about four frames, then `--streaming-interval`, default 0.2 s) using the same `StreamingWAVWriter` path as Qwen3-TTS.
+
+`serve` loads Drama 3 over HTTP only. Run it on its own port next to the Qwen3-TTS server:
+
+```bash
+.build/out/Products/Release/yuwp-tts serve --transport http --port 7938 \
+  --model "$HOME/Library/Application Support/Yuwp/models/drama3-mlx-8bit" --voice elena
+```
+
+Voices come from the shared voice library (`/v1/voices`, the same one the Qwen3-TTS server writes). A voice is usable when it has reference audio and its transcript; every Qwen VoiceDesign voice gets one from its preview. `POST /v1/audio/speech` (WAV) and `/v1/audio/speech/stream` (NDJSON `metadata`/`audio`/`done`/`error`, 44.1 kHz `pcm_s16le`) take `input` plus either `voice` or `voices`: voice *i* of `voices` speaks `<|speaker:i|>`. Without either, `--voice` is the default. Scripts longer than 900 characters are generated in sentence-aligned chunks that each reopen with the active speaker tag; shorter scripts are sent verbatim, line breaks included. Encoded reference clips are cached until the voice record changes.
 
 Mac Studio M3 Ultra, one sentence (ASR transcript matched the input on every run):
 

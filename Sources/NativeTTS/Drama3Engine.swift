@@ -12,6 +12,43 @@ public struct Drama3Sampling: Sendable, Equatable {
     public var seed: UInt64?
 
     public init() {}
+
+    /// Frame cap for one script when the caller sets none. Sampling misses end-of-speech on roughly one
+    /// take in ten, and an uncapped miss keeps talking until `maxFrames` (~95 s). The budget is about
+    /// 2.5x a relaxed reading: 6 characters per second with CJK characters counting triple, 1.5 s per
+    /// `[...]` control, plus 3 s. Markup inside `<...>` is free; the words it encloses count.
+    public static func frameBudget(forScript script: String) -> Int {
+        var units = 0.0
+        var controls = 0
+        var closing: Character?
+        for character in script {
+            if let close = closing {
+                if character == close { closing = nil }
+                continue
+            }
+            if character == "[" {
+                controls += 1
+                closing = "]"
+            } else if character == "<" {
+                closing = ">"
+            } else if character.unicodeScalars.contains(where: isWideScript) {
+                units += 3
+            } else if !character.isWhitespace {
+                units += 1
+            }
+        }
+        let seconds = 3 + units / 6 + 1.5 * Double(controls)
+        let framesPerSecond = Double(FishCodec.sampleRate) / Double(FishCodec.frameLength)
+        return Int((seconds * framesPerSecond).rounded(.up))
+    }
+
+    /// Kana, CJK ideographs, and Hangul: one character is a syllable or more of speech.
+    private static func isWideScript(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x3040 ... 0x30FF, 0x3400 ... 0x9FFF, 0xAC00 ... 0xD7AF, 0xF900 ... 0xFAFF: true
+        default: false
+        }
+    }
 }
 
 public struct Drama3Reference: Sendable {
@@ -22,6 +59,18 @@ public struct Drama3Reference: Sendable {
     public init(transcript: String, samples: [Float]) {
         self.transcript = transcript
         self.samples = samples
+    }
+}
+
+/// A reference whose clip is already codec-encoded, so a server can reuse it across requests.
+public struct Drama3EncodedReference: @unchecked Sendable {
+    public var transcript: String
+    /// Fish codec codes [codebooks, frames] from `Drama3Engine.encodeReference`.
+    public var codes: MLXArray
+
+    public init(transcript: String, codes: MLXArray) {
+        self.transcript = transcript
+        self.codes = codes
     }
 }
 
@@ -253,7 +302,25 @@ public final class Drama3Engine: @unchecked Sendable {
         onFrame: ((Int) -> Void)? = nil,
         onAudio: (([Float]) -> Void)? = nil
     ) throws -> Drama3Result {
-        let referenceCodes = references.map { (transcript: $0.transcript, codes: encodeReference($0)) }
+        try synthesize(
+            text: text,
+            encodedReferences: references.map { Drama3EncodedReference(transcript: $0.transcript, codes: encodeReference($0)) },
+            sampling: sampling,
+            stream: stream,
+            onFrame: onFrame,
+            onAudio: onAudio
+        )
+    }
+
+    public func synthesize(
+        text: String,
+        encodedReferences: [Drama3EncodedReference],
+        sampling: Drama3Sampling = Drama3Sampling(),
+        stream: Drama3StreamOptions? = nil,
+        onFrame: ((Int) -> Void)? = nil,
+        onAudio: (([Float]) -> Void)? = nil
+    ) throws -> Drama3Result {
+        let referenceCodes = encodedReferences.map { (transcript: $0.transcript, codes: $0.codes) }
         lock.lock()
         defer { lock.unlock() }
         if let seed = sampling.seed { MLXRandom.seed(seed) }

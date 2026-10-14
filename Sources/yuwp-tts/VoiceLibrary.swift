@@ -1,4 +1,5 @@
 import Foundation
+import YuwpHTTPServerSupport
 
 struct VoiceGenerationDefaults: Codable, Sendable {
     var temperature: Float?
@@ -338,5 +339,68 @@ enum VoiceLibraryError: LocalizedError {
         case .invalidReferenceAudio:
             return "invalid reference audio"
         }
+    }
+}
+
+/// `/v1/voices` CRUD shared by every `serve` backend; the library directory is shared too.
+/// `onChange` runs after PATCH/DELETE so a backend can drop per-voice caches.
+func voiceLibraryResponse(
+    _ library: VoiceLibrary,
+    request: HTTPRequest,
+    pathComponents: [String],
+    onChange: (String) -> Void
+) -> HTTPResponse {
+    do {
+        if pathComponents.count == 2 {
+            switch request.method {
+            case "GET":
+                return jsonResponse(status: 200, [
+                    "object": "list",
+                    "data": try library.list().compactMap(codableJSONObject),
+                ])
+            case "POST":
+                let create = try JSONDecoder().decode(VoiceCreateRequest.self, from: request.body)
+                let record = try library.create(create)
+                return codableJSONResponse(status: 201, record)
+            default:
+                return jsonResponse(status: 405, ["error": "method not allowed"])
+            }
+        }
+
+        guard pathComponents.count >= 3 else { return jsonResponse(status: 404, ["error": "voice endpoint not found"]) }
+        let voiceID = pathComponents[2]
+
+        if pathComponents.count == 4, pathComponents[3] == "preview.wav" {
+            guard request.method == "GET" else { return jsonResponse(status: 405, ["error": "method not allowed"]) }
+            let previewURL = try library.previewURL(for: voiceID)
+            guard FileManager.default.fileExists(atPath: previewURL.path) else {
+                return jsonResponse(status: 404, ["error": "preview not found"])
+            }
+            return binaryResponse(status: 200, body: try Data(contentsOf: previewURL), contentType: "audio/wav")
+        }
+
+        guard pathComponents.count == 3 else { return jsonResponse(status: 404, ["error": "voice endpoint not found"]) }
+        switch request.method {
+        case "GET":
+            guard let record = try library.get(voiceID) else { return jsonResponse(status: 404, ["error": "voice not found"]) }
+            return codableJSONResponse(status: 200, record)
+        case "PATCH":
+            let update = try JSONDecoder().decode(VoiceUpdateRequest.self, from: request.body)
+            let record = try library.update(id: voiceID, request: update)
+            onChange(voiceID)
+            return codableJSONResponse(status: 200, record)
+        case "DELETE":
+            try library.delete(id: voiceID)
+            onChange(voiceID)
+            return jsonResponse(status: 200, ["deleted": true, "id": voiceID])
+        default:
+            return jsonResponse(status: 405, ["error": "method not allowed"])
+        }
+    } catch VoiceLibraryError.notFound {
+        return jsonResponse(status: 404, ["error": "voice not found"])
+    } catch VoiceLibraryError.conflict(let message) {
+        return jsonResponse(status: 409, ["error": message])
+    } catch {
+        return jsonResponse(status: 400, ["error": error.localizedDescription])
     }
 }

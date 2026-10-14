@@ -15,6 +15,7 @@ Local speech from `yuwp-tts`. Qwen3-TTS is the ordinary low-latency lane. AuK is
 | Speak this / named speaker | Qwen3-TTS CustomVoice | HF snapshot of `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` |
 | Describe a voice, no clip | Qwen3-TTS VoiceDesign | HF snapshot of `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` |
 | Clone, emotion, or edit existing audio | AuK-Flash (faster) or AuK Base (quality) | `~/Library/Application Support/Yuwp/models/auk-flash-mlx` or `auk-base-mlx` |
+| Directed, expressive speech or multi-voice scenes (`[laughs]`, `<whisper>…</whisper>`, `<\|speaker:N\|>`) | Fish Audio Drama 3 | `~/Library/Application Support/Yuwp/models/drama3-mlx-8bit` (38 GB) |
 | Cloud Grok / xAI TTS | stop — use `grok-media` | |
 
 ## Binary
@@ -118,6 +119,8 @@ curl -sf http://127.0.0.1:7937/v1/info
 ```
 
 `GET /v1/info` reports `backend` `auk-flash` or `auk-base` plus `variant` and sampling defaults.
+
+Drama 3 serves on its own port (convention `7938`) with `--transport http`. Requests name saved voices (`voice`, or `voices` where voice *i* speaks `<|speaker:i|>`); a voice needs reference audio plus `reference_text`, which Qwen VoiceDesign previews provide. `/v1/info` reports `backend: drama3`, 44.1 kHz.
 
 ## Output
 

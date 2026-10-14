@@ -52,6 +52,46 @@ struct Drama3Tests {
         #expect(throws: Drama3Error.self) { try Drama3Engine.validateCallerText("<|speaker:16|> hi", location: "input") }
     }
 
+    @Test func scriptChunksReopenWithTheActiveSpeakerTag() {
+        let long = String(repeating: "Hagrid kept talking about dragons. ", count: 12)
+        let chunks = Drama3ScriptChunker.chunk(
+            "Narration first. <|speaker:1|> \(long)<|speaker:2|> Short reply.",
+            targetCharacters: 200,
+            hardCharacterLimit: 300
+        )
+        #expect(chunks.count == 4)
+        #expect(chunks[0] == "Narration first.")
+        // Every later chunk opens with the speaker who is talking there, not the default speaker 0.
+        for chunk in chunks.dropFirst() {
+            #expect(chunk.hasPrefix("<|speaker:1|>") || chunk.hasPrefix("<|speaker:2|>"))
+        }
+        #expect(chunks.last?.hasSuffix("<|speaker:2|> Short reply.") == true)
+        // A turn split across chunks does not repeat its tag inside one chunk.
+        #expect(chunks.allSatisfy { $0.components(separatedBy: "<|speaker:1|>").count <= 2 })
+    }
+
+    @Test func frameBudgetCoversSlowReadingButStopsRunaways() {
+        let framesPerSecond = 44_100.0 / 2_048.0
+        func seconds(_ script: String) -> Double { Double(Drama3Sampling.frameBudget(forScript: script)) / framesPerSecond }
+        // Observed: this two-voice line ends in 54-95 frames (2.5-4.4 s); a runaway runs to 2,048.
+        let line = "<|speaker:0|> The hall was quiet. <|speaker:1|> [whispering] Did you hear that?"
+        #expect((8 ... 15).contains(seconds(line)))
+        // About 100 Chinese characters take ~22 s at a relaxed pace; Latin-rate counting would cut it off.
+        let chinese = String(repeating: "今天天气很好，我们去公园散步吧。", count: 7)
+        #expect(seconds(chinese) > 40)
+        // Point tags add time; scoped-tag markup does not, but its words do.
+        #expect(abs(seconds("Well [sighs] fine. [pause] Okay.") - seconds("Well fine. Okay.") - 3) < 0.1)
+        #expect(seconds("Promise me <whisper>you won't tell</whisper>.") == seconds("Promise me you won't tell."))
+    }
+
+    @Test func shortScriptStaysVerbatimIncludingLineBreaks() {
+        let script = "<|speaker:0|> [laughs] Okay, fine. <|speaker:1|> [sighs] You always say that."
+        #expect(Drama3ScriptChunker.chunk(script) == [script])
+        let note = "Direction: icy calm, as if you already accepted it.\nLine: So this is goodbye."
+        #expect(Drama3ScriptChunker.chunk("\n\(note)\n") == [note])
+        #expect(Drama3ScriptChunker.chunk("  \n ") == [])
+    }
+
     @Test(.enabled(if: FileManager.default.fileExists(atPath: Drama3Tests.codecPath)))
     func streamingCodecChunksMatchFullDecode() throws {
         let codec = try FishCodec.load(url: URL(fileURLWithPath: Self.codecPath))

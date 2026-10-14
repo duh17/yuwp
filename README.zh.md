@@ -115,7 +115,7 @@ Instruct TTS 需要 `--gen-seconds`。克隆或编辑已有音频时传 `--ref-a
 
 Cookbook 式编辑（内容替换、音高/音量/情感、增强、分离）都走同一条路径。**已验证**与**仅可表达**：有权重时，内容替换与至少一种非内容变换会用 ASR / 音分 / dB 检查；歌词编辑可表达但不声称已验证。
 
-### Fish Audio Drama 3（多角色、可控情绪的 TTS，仅命令行）
+### Fish Audio Drama 3（多角色、可控情绪的 TTS）
 
 `yuwp-tts` 内置 [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) 的原生 Swift/MLX 实现：35B-A3B Qwen3.5-MoE 主干、13 层 codebook tower、44.1 kHz Fish codec。官方权重转换一次即可。转换器会反量化 block-FP8 专家，不用 Python 也能读取 `codec.pth`，并可选 8/4 bit 量化：
 
@@ -132,7 +132,7 @@ hf download fishaudio/drama-3
   --out /tmp/drama3.wav
 ```
 
-`--ref-audio` / `--ref-text` 可选（声音克隆）。重复多组即可给场景分配角色：第 *i* 组对应 `<|speaker:i|>`，旁白加四个角色就是五组；不给参考音频时由模型自己挑声音。`[laughs]` 等行内标签和 `<|speaker:N|>`（0–15）直接写在 `--text` 里。采样默认值与上游一致：`--temperature 1.0 --top-p 0.9 --top-k 30`；`--max-tokens` 限制帧数（每秒音频 21.5 帧）。`--stream` 边生成边解码（约 4 帧后出第一段音频，之后按 `--streaming-interval`，默认 0.2 秒），与 Qwen3-TTS 共用 `StreamingWAVWriter`。`serve` 暂不支持 Drama 3。M3 Ultra 上 bf16（68 GB）约 21–29 帧/秒，8-bit（38 GB）约 35–37 帧/秒，4-bit（22 GB）约 54 帧/秒。权重使用 Fish Audio Research License，个人用途以外请先看许可证。
+`--ref-audio` / `--ref-text` 可选（声音克隆）。重复多组即可给场景分配角色：第 *i* 组对应 `<|speaker:i|>`，旁白加四个角色就是五组；不给参考音频时由模型自己挑声音。`[laughs]` 等行内标签和 `<|speaker:N|>`（0–15）直接写在 `--text` 里。采样默认值与上游一致：`--temperature 1.0 --top-p 0.9 --top-k 30`；`--max-tokens` 限制帧数（每秒音频 21.5 帧）。`--stream` 边生成边解码（约 4 帧后出第一段音频，之后按 `--streaming-interval`，默认 0.2 秒），与 Qwen3-TTS 共用 `StreamingWAVWriter`。`serve --transport http` 也可加载 Drama 3（建议单独端口，如 `--port 7938`）：声音取自共享声音库 `/v1/voices`，带参考音频和文本的声音即可使用（Qwen VoiceDesign 的预览会自动成为参考）；请求用 `voice` 或 `voices`，`voices` 第 *i* 个对应 `<|speaker:i|>`；超过 900 字符的脚本按句分段生成，每段沿用当前说话人标签。M3 Ultra 上 bf16（68 GB）约 21–29 帧/秒，8-bit（38 GB）约 35–37 帧/秒，4-bit（22 GB）约 54 帧/秒。权重使用 Fish Audio Research License，个人用途以外请先看许可证。
 
 ### YuE2 音乐生成（仅命令行）
 

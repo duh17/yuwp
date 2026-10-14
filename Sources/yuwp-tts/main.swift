@@ -281,11 +281,14 @@ struct OpenAISpeechRequest: Decodable, Sendable {
     var sway: Float?
     var chunkPauseMs: Double?
     var interChunkPauseSeconds: Double?
+    /// Drama 3 cast: saved voice i speaks `<|speaker:i|>`. Overrides `voice`.
+    var voices: [String]?
 
     enum CodingKeys: String, CodingKey {
         case model
         case input
         case voice
+        case voices
         case voiceId = "voice_id"
         case responseFormat = "response_format"
         case speed
@@ -806,69 +809,9 @@ final class TTSHTTPState: @unchecked Sendable {
         writer.write(data)
     }
 
-    private func pcm16Base64(samples: [Float]) -> String {
-        var data = Data(capacity: samples.count * 2)
-        for sample in samples {
-            let clamped = max(-1.0, min(1.0, sample))
-            var pcm = Int16((clamped * Float(Int16.max)).rounded()).littleEndian
-            withUnsafeBytes(of: &pcm) { data.append(contentsOf: $0) }
-        }
-        return data.base64EncodedString()
-    }
-
     func voicesResponse(request: HTTPRequest, pathComponents: [String]) -> HTTPResponse {
-        do {
-            if pathComponents.count == 2 {
-                switch request.method {
-                case "GET":
-                    return jsonResponse(status: 200, [
-                        "object": "list",
-                        "data": try voiceLibrary.list().compactMap(codableJSONObject),
-                    ])
-                case "POST":
-                    let create = try JSONDecoder().decode(VoiceCreateRequest.self, from: request.body)
-                    let record = try voiceLibrary.create(create)
-                    return codableJSONResponse(status: 201, record)
-                default:
-                    return jsonResponse(status: 405, ["error": "method not allowed"])
-                }
-            }
-
-            guard pathComponents.count >= 3 else { return jsonResponse(status: 404, ["error": "voice endpoint not found"]) }
-            let voiceID = pathComponents[2]
-
-            if pathComponents.count == 4, pathComponents[3] == "preview.wav" {
-                guard request.method == "GET" else { return jsonResponse(status: 405, ["error": "method not allowed"]) }
-                let previewURL = try voiceLibrary.previewURL(for: voiceID)
-                guard FileManager.default.fileExists(atPath: previewURL.path) else {
-                    return jsonResponse(status: 404, ["error": "preview not found"])
-                }
-                return binaryResponse(status: 200, body: try Data(contentsOf: previewURL), contentType: "audio/wav")
-            }
-
-            guard pathComponents.count == 3 else { return jsonResponse(status: 404, ["error": "voice endpoint not found"]) }
-            switch request.method {
-            case "GET":
-                guard let record = try voiceLibrary.get(voiceID) else { return jsonResponse(status: 404, ["error": "voice not found"]) }
-                return codableJSONResponse(status: 200, record)
-            case "PATCH":
-                let update = try JSONDecoder().decode(VoiceUpdateRequest.self, from: request.body)
-                let record = try voiceLibrary.update(id: voiceID, request: update)
-                voiceConditioningCache.removeValue(forKey: voiceID)
-                return codableJSONResponse(status: 200, record)
-            case "DELETE":
-                try voiceLibrary.delete(id: voiceID)
-                voiceConditioningCache.removeValue(forKey: voiceID)
-                return jsonResponse(status: 200, ["deleted": true, "id": voiceID])
-            default:
-                return jsonResponse(status: 405, ["error": "method not allowed"])
-            }
-        } catch VoiceLibraryError.notFound {
-            return jsonResponse(status: 404, ["error": "voice not found"])
-        } catch VoiceLibraryError.conflict(let message) {
-            return jsonResponse(status: 409, ["error": message])
-        } catch {
-            return jsonResponse(status: 400, ["error": error.localizedDescription])
+        voiceLibraryResponse(voiceLibrary, request: request, pathComponents: pathComponents) { voiceID in
+            voiceConditioningCache.removeValue(forKey: voiceID)
         }
     }
 
@@ -1102,7 +1045,8 @@ func runServe(_ args: [String]) async throws {
         return
     }
     if backend == .drama3 {
-        throw Drama3Error.invalidInput("serve does not support Drama 3 yet; use `yuwp-tts --model <drama3-mlx-dir> --text ...`")
+        try await runDrama3Serve(options: options)
+        return
     }
 
     let loadStart = Date()
