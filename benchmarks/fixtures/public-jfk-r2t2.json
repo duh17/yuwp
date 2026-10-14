@@ -1,0 +1,53 @@
+{
+  "clip": "Tests/fixtures/jfk.wav",
+  "duration_s": 11.0,
+  "energy_onset_s": 0.3,
+  "machine": {
+    "cpu": "Apple M3 Ultra",
+    "mem_gb": 512,
+    "macos": "27.2",
+    "build": "26B5091g"
+  },
+  "commit": "61dbfc4",
+  "notes": {
+    "precision": "R2T2-8bit is mlx-community/Confucius4-R2T2-8bit: Qwen3 LM 8-bit affine group 64, AuT encoder bf16 (not FP8). R2T2-bf16 is unquantized 4.08 GB.",
+    "headline_clock": "Same as public-jfk.json: 100 ms stdio packets, energy onset 0.30 s to first nonempty partial, stop request to final, yuwp-asr transcribe wall time.",
+    "stream_clock": "asr-stream-test stable-prefix 160 ms chunks, Silero speech onset to first nonempty committed text, speech-active chunk totalMs.",
+    "official": "netease-youdao/Confucius4-R2T2 publishes CUDA vLLM/llama.cpp WER/CER and 200-600 ms retrospective chunk-wise mean fuzzy latency. No Apple Silicon numbers. That stack needs NVIDIA CUDA."
+  },
+  "asr": {
+    "R2T2-8bit": {
+      "stdio_energy_onset_ttft_ms_median": 990,
+      "stdio_finalize_ms_median": 171,
+      "transcribe_wall_s_median": 0.86
+    },
+    "R2T2-bf16": {
+      "stdio_energy_onset_ttft_ms_median": 939,
+      "stdio_finalize_ms_median": 206,
+      "transcribe_wall_s_median": 1.03
+    }
+  },
+  "stream_r2t2_8bit": {
+    "jfk": {
+      "chunk_sec": 0.16,
+      "decode_mode": "stablePrefix",
+      "speech_onset_s": 0.32,
+      "speech_to_first_text_s": 0.80,
+      "speech_chunk_median_ms": 47,
+      "speech_chunk_p99_ms": 60,
+      "finalization_s": 0.10,
+      "stream_vs_batch_wer": 0.0,
+      "final_text": "And so, my fellow Americans, ask not what your country can do for you; ask what you can do for your country."
+    },
+    "asr_zh": {
+      "chunk_sec": 0.16,
+      "speech_onset_s": 0.48,
+      "speech_to_first_text_s": 1.12,
+      "speech_chunk_median_ms": 41,
+      "speech_chunk_p99_ms": 52,
+      "finalization_s": 0.05,
+      "stream_vs_batch_wer": 0.0,
+      "final_text": "甚至出现交易几乎停滞的情况。"
+    }
+  }
+}

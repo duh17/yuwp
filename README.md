@@ -4,7 +4,7 @@
 
 Yuwp is a local dictation app for macOS. Press a hotkey and speak to enter text in the app you're using.
 
-It runs Qwen3-ASR on Apple Silicon using Swift and MLX. Once the model is on disk, audio stays on the Mac. Yuwp inserts text through the Accessibility API, uses key events in terminals, and falls back to the clipboard if those methods fail.
+It runs Qwen3-ASR or Confucius4-R2T2 on Apple Silicon using Swift and MLX. Once the model is on disk, audio stays on the Mac. Yuwp inserts text through the Accessibility API, uses key events in terminals, and falls back to the clipboard if those methods fail.
 
 ## Requirements
 
@@ -216,6 +216,21 @@ On a mixed-speech Silero-onset canary, M3U 1.7B bf16 first text is 505 ms.
 
 **Speak**, Qwen3-TTS 1.7B CustomVoice on M3U: 2.05 s to generate 4.16 s of audio.
 
+### R2T2
+
+Optional Settings model. The 8-bit weights are `mlx-community/Confucius4-R2T2-8bit`: 8-bit affine (group 64) on the language model, bf16 on the audio encoder, not FP8. Settings also offers unquantized bf16 (4.08 GB).
+
+Same headline clocks as the Qwen table, Mac Studio M3 Ultra, macOS 27.2 (26B5091g). Mini R2T2 numbers are not measured. Reproduce with `uv run benchmarks/cli.py asr headline --skip-batch --skip-tts --asr-model LABEL=PATH`. Numbers: [`benchmarks/fixtures/public-jfk-r2t2.json`](benchmarks/fixtures/public-jfk-r2t2.json).
+
+| Model | First M3U | Stop M3U | Transcribe M3U |
+| --- | ---: | ---: | ---: |
+| R2T2 8-bit | 990 ms | 171 ms | 0.86 s |
+| R2T2 bf16 | 939 ms | 206 ms | 1.03 s |
+
+R2T2 commits append-only text every 160 ms and holds one trailing token, so this first-text clock is later than Qwen's rollback/preview path. After the first commit it stays inside the chunk: on `jfk.wav`, Silero speech onset to first text is 800 ms; speech-active 160 ms chunks take 47 ms median and 60 ms p99. Stop → final on that 11 s clip is 171 ms and includes the short-session stop batch. Stream vs batch WER is 0 on `jfk.wav` and `asr_zh.wav`.
+
+Official [Confucius4-R2T2](https://github.com/netease-youdao/Confucius4-R2T2) publishes dataset WER/CER and 200–600 ms average streaming latency (retrospective chunk-wise mean fuzzy latency) for CUDA vLLM / llama.cpp. They do not publish Apple Silicon numbers. That Python path needs NVIDIA CUDA and does not run on this Mac. The table above is Yuwp's MLX Swift port, not a same-hardware comparison with vLLM.
+
 More scenarios: [`benchmarks/`](benchmarks/README.md).
 
 ## Privacy
@@ -225,7 +240,9 @@ Audio is processed on the Mac. Recording is off unless you enable **Save Recordi
 ## Acknowledgments
 
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
+- [Confucius4-R2T2](https://github.com/netease-youdao/Confucius4-R2T2)
 - [AuK](https://github.com/Tencent-Hunyuan/AuK) (AuK-Flash and AuK Base MLX architecture reference)
+- [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) and [SGLang-Omni](https://github.com/sgl-project/sglang-omni) (Drama 3 inference reference)
 - [YuE2](https://github.com/multimodal-art-projection/YuE), [mlx-Yue](https://github.com/vanch007/mlx-Yue) and [mlx-serve](https://github.com/ddalcu/mlx-serve) (YuE2 inference references)
 - [MLX](https://github.com/ml-explore/mlx) and [mlx-swift](https://github.com/ml-explore/mlx-swift)
 - [qwen-asr](https://github.com/antirez/qwen-asr) (streaming reference ideas)
@@ -236,4 +253,3 @@ Audio is processed on the Mac. Recording is off unless you enable **Save Recordi
 - [MIT](LICENSE)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 - App bundles and release DMGs include those notices plus vendored upstream licenses under `OpenSource/`
-- [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) and [SGLang-Omni](https://github.com/sgl-project/sglang-omni) (Drama 3 inference reference)

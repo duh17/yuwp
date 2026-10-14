@@ -4,7 +4,7 @@
 
 Yuwp 是一款 macOS 本地听写应用。按下快捷键后说话，即可在当前使用的应用中输入文字。
 
-Yuwp 使用 Swift 和 MLX，在 Apple Silicon 上运行 Qwen3-ASR。模型下载到本地后，音频不会离开 Mac。Yuwp 通过辅助功能 API 输入文字，在终端中使用键盘事件；如果这些方式失败，则回退到剪贴板。
+Yuwp 使用 Swift 和 MLX，在 Apple Silicon 上运行 Qwen3-ASR 或 Confucius4-R2T2。模型下载到本地后，音频不会离开 Mac。Yuwp 通过辅助功能 API 输入文字，在终端中使用键盘事件；如果这些方式失败，则回退到剪贴板。
 
 ## 系统要求
 
@@ -181,6 +181,21 @@ M3U 上 1.7B bf16 的混合语音 Silero 起点 canary，首段文字为 505 ms�
 
 **语音合成**，Qwen3-TTS 1.7B CustomVoice（M3U）：生成 4.16 s 音频耗时 2.05 s。
 
+### R2T2
+
+可选模型。当前 8-bit 权重是 `mlx-community/Confucius4-R2T2-8bit`：语言模型 8-bit affine（group 64），音频编码器仍是 bf16，不是 FP8。Settings 里还有未量化的 bf16（4.08 GB）。
+
+计时口径与上面的 Qwen 表相同。机器是 Mac Studio M3 Ultra，macOS 27.2（26B5091g）。尚未测 Mini。复现：`uv run benchmarks/cli.py asr headline --skip-batch --skip-tts --asr-model LABEL=PATH`。数字：[`benchmarks/fixtures/public-jfk-r2t2.json`](benchmarks/fixtures/public-jfk-r2t2.json)。
+
+| 模型 | 首段 M3U | 停止 M3U | 转写 M3U |
+| --- | ---: | ---: | ---: |
+| R2T2 8-bit | 990 ms | 171 ms | 0.86 s |
+| R2T2 bf16 | 939 ms | 206 ms | 1.03 s |
+
+R2T2 每 160 ms 提交一次已确认文本，并扣住最后一个 token，所以这条 headline 的首字会晚于 Qwen 的 rollback/preview。提交之后能跟上分片：`jfk.wav` 上 Silero 语音起点到首字是 800 ms；有语音的 160 ms 分片中位数 47 ms，p99 60 ms。这段 11 秒音频的停止→最终是 171 ms，其中包含短会话的 stop-batch。`jfk.wav` 和 `asr_zh.wav` 上流式与 batch 的 WER 为 0。
+
+官方 [Confucius4-R2T2](https://github.com/netease-youdao/Confucius4-R2T2) 公布了数据集 WER/CER，以及 CUDA vLLM / llama.cpp 上 200–600 ms 的平均流式延迟（retrospective chunk-wise mean fuzzy latency）。没有 Apple Silicon 数字。那条 Python 路径需要 NVIDIA CUDA，这台 Mac 跑不了。上表是 Yuwp 的 MLX Swift 移植，不是同一硬件上与 vLLM 的对比。
+
 更多场景见 [`benchmarks/`](benchmarks/README.md)。
 
 ## 隐私
@@ -190,14 +205,15 @@ M3U 上 1.7B bf16 的混合语音 Silero 起点 canary，首段文字为 505 ms�
 ## 致谢
 
 - [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
-- [YuE2](https://github.com/multimodal-art-projection/YuE)、[mlx-Yue](https://github.com/vanch007/mlx-Yue) 与 [mlx-serve](https://github.com/ddalcu/mlx-serve)（YuE2 推理参考）
+- [Confucius4-R2T2](https://github.com/netease-youdao/Confucius4-R2T2)
 - [MLX](https://github.com/ml-explore/mlx) 和 [mlx-swift](https://github.com/ml-explore/mlx-swift)
 - [qwen-asr](https://github.com/antirez/qwen-asr)（流式处理的参考思路）
 - [Silero VAD](https://github.com/snakers4/silero-vad)
+- [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) 与 [SGLang-Omni](https://github.com/sgl-project/sglang-omni)（Drama 3 推理参考）
+- [YuE2](https://github.com/multimodal-art-projection/YuE)、[mlx-Yue](https://github.com/vanch007/mlx-Yue) 与 [mlx-serve](https://github.com/ddalcu/mlx-serve)（YuE2 推理参考）
 
 ## 许可证
 
 - [MIT](LICENSE)
 - [第三方声明](THIRD_PARTY_NOTICES.md)
 - 应用包和发布的 DMG 均包含这些声明，以及 `OpenSource/` 目录下随包分发的上游许可证。
-- [Fish Audio Drama 3](https://huggingface.co/fishaudio/drama-3) 与 [SGLang-Omni](https://github.com/sgl-project/sglang-omni)（Drama 3 推理参考）

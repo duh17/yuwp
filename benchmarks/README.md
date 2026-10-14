@@ -13,6 +13,12 @@ uv run benchmarks/cli.py asr <scenario> [options]
 uv run benchmarks/cli.py asr headline
 # Writes benchmarks/fixtures/public-jfk.json
 
+# R2T2 headline numbers in the README (stdio dictation + CLI transcribe)
+uv run benchmarks/cli.py asr headline --skip-batch --skip-tts \
+  --asr-model "R2T2-8bit=$HOME/Library/Application Support/Yuwp/models/mlx-community--Confucius4-R2T2-8bit" \
+  --asr-model "R2T2-bf16=$HOME/Library/Application Support/Yuwp/models/mlx-community--Confucius4-R2T2-bf16" \
+  --json benchmarks/fixtures/public-jfk-r2t2.json
+
 # Local server load / latency / memory across models and concurrency
 uv run benchmarks/cli.py asr load small --balanced 5 --concurrency 1 2 4 --json /tmp/yuwp-load.json
 
@@ -39,6 +45,7 @@ README clocks (do not mix with cloud “time to final after end of speech”):
 - Transcribe: `yuwp-asr transcribe` wall time on `Tests/fixtures/jfk.wav`
 - Speak: `yuwp-tts` wall time to write the WAV (Studio only)
 - The 505 ms Studio 1.7B figure is a separate Silero speech-onset canary, not the jfk energy-onset clock
+- R2T2 README extra clocks: `asr-stream-test` 160 ms stable-prefix, Silero speech onset → first committed text, speech-active chunk `totalMs`. Do not mix that 800 ms JFK figure with the 990 ms energy-onset headline, or with official 200–600 ms retrospective fuzzy latency
 
 Long-form evaluator runs use explicit batch modes (`vad`, `energy`, or
 `automatic`); production `automatic` keeps VAD for inputs up to 120 seconds and
