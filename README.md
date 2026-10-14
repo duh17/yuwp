@@ -177,10 +177,10 @@ Mac Studio M3 Ultra, one 4.4-minute instrumental: the same style, score, seed an
 
 | Stage | mlx-Yue (Python MLX) | mlx-serve 26.10.2 (Zig) | `yuwp-music` |
 | --- | ---: | ---: | ---: |
-| Semantic tokens | 98.8 tok/s | 136.5 tok/s | **173.7 tok/s** |
-| Flow matching, 32 steps | 139.6 s (6683) | 123.4 s (6607) | **120.5 s** (6497) |
-| VAE decode | 5.4 s | 7.8 s | **2.0 s** |
-| End to end | 212.8 s | 181.6 s | **160.9 s** |
+| Semantic tokens | 98.8 tok/s | 136.5 tok/s | **180.9 tok/s** |
+| Flow matching, 32 steps | 139.6 s (6683) | 123.4 s (6607) | **121.1 s** (6497) |
+| VAE decode | 5.4 s | 7.8 s | **2.1 s** |
+| End to end | 212.8 s | 181.6 s | **160.0 s** |
 
 mlx-serve and `yuwp-music` are even on flow matching once length is accounted for (both run bf16 MLX attention over the whole chunk; mlx-Yue is about 10% slower). The gap is token generation, where `yuwp-music` keeps sampling on the GPU and queues the next step before reading the current token back. mlx-serve's end-to-end excludes model load (already resident); the other two include it. Method and raw numbers: [`benchmarks/`](benchmarks/README.md#yue2-music), [`yue2-tvb-m3u.json`](benchmarks/fixtures/yue2-tvb-m3u.json). 4-bit token weights reach 261 tok/s.
 

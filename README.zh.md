@@ -153,10 +153,10 @@ Mac Studio M3 Ultra，一首 4.4 分钟纯音乐：三个引擎使用同样的�
 
 | 阶段 | mlx-Yue（Python MLX） | mlx-serve 26.10.2（Zig） | `yuwp-music` |
 | --- | ---: | ---: | ---: |
-| 语义 token | 98.8 tok/s | 136.5 tok/s | **173.7 tok/s** |
-| Flow matching，32 步 | 139.6 秒（6683） | 123.4 秒（6607） | **120.5 秒**（6497） |
-| VAE 解码 | 5.4 秒 | 7.8 秒 | **2.0 秒** |
-| 端到端 | 212.8 秒 | 181.6 秒 | **160.9 秒** |
+| 语义 token | 98.8 tok/s | 136.5 tok/s | **180.9 tok/s** |
+| Flow matching，32 步 | 139.6 秒（6683） | 123.4 秒（6607） | **121.1 秒**（6497） |
+| VAE 解码 | 5.4 秒 | 7.8 秒 | **2.1 秒** |
+| 端到端 | 212.8 秒 | 181.6 秒 | **160.0 秒** |
 
 按长度折算后，mlx-serve 与 `yuwp-music` 的 flow matching 基本持平（都用 bf16 MLX 对整段做注意力；mlx-Yue 约慢 10%）。差距主要在生成 token：`yuwp-music` 在 GPU 上采样，并在读回当前 token 之前就排好下一步。mlx-serve 的端到端不含加载模型（模型已常驻），另外两个包含。方法与原始数据见 [`benchmarks/`](benchmarks/README.md#yue2-music) 和 [`yue2-tvb-m3u.json`](benchmarks/fixtures/yue2-tvb-m3u.json)。4-bit token 权重可达 261 tok/s。
 

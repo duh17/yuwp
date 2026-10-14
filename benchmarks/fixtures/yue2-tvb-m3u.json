@@ -16,15 +16,17 @@
   },
   "engines": {
     "yuwp-music": {
-      "version": "badf540",
+      "version": "200bbb5",
       "semantic_tokens": 6498,
-      "semantic_s": 38.1,
-      "semantic_tok_s": 173.7,
+      "semantic_s": 36.4,
+      "semantic_tok_s": 180.9,
       "nar_frames": 6497,
-      "nar_s": 120.5,
-      "vae_s": 2.0,
+      "nar_s": 121.1,
+      "vae_s": 2.1,
       "audio_s": 259.9,
-      "e2e_s": 160.9
+      "e2e_s": 160.0,
+      "badf540_semantic_tok_s": 173.7,
+      "note": "200bbb5 keeps the same tokens, score and latents as badf540; it only decodes faster. Flow matching varies about 1 s run to run."
     },
     "mlx-serve": {
       "version": "MLX-Serve.app 26.10.2, ddalcu/YuE2-3B-MLX-Serve-8bit",
