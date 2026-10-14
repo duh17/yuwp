@@ -146,7 +146,7 @@ hf download fishaudio/drama-3
   --out /tmp/drama3.wav
 ```
 
-`--ref-audio`/`--ref-text` are optional (voice clone). Repeat the pair to cast a scene: pair *i* voices `<|speaker:i|>`, so a narrator plus four characters takes five pairs. Without references the model picks its own voices. Inline tags such as `[laughs]` and `<|speaker:N|>` (0–15) go in `--text`. Sampling defaults match upstream: `--temperature 1.0 --top-p 0.9 --top-k 30`; `--max-tokens` caps frames (21.5 frames per second of audio). `serve` does not load Drama 3 yet.
+`--ref-audio`/`--ref-text` are optional (voice clone). Repeat the pair to cast a scene: pair *i* voices `<|speaker:i|>`, so a narrator plus four characters takes five pairs. Without references the model picks its own voices. Inline tags such as `[laughs]` and `<|speaker:N|>` (0–15) go in `--text`. Sampling defaults match upstream: `--temperature 1.0 --top-p 0.9 --top-k 30`; `--max-tokens` caps frames (21.5 frames per second of audio). `--stream` decodes as frames arrive (first audio after about four frames, then `--streaming-interval`, default 0.2 s) using the same `StreamingWAVWriter` path as Qwen3-TTS. `serve` does not load Drama 3 yet.
 
 Mac Studio M3 Ultra, one sentence (ASR transcript matched the input on every run):
 
@@ -154,7 +154,7 @@ Mac Studio M3 Ultra, one sentence (ASR transcript matched the input on every run
 | --- | ---: | ---: | ---: |
 | bf16 | 68 GB | 21–29 | ~1.0–1.3× |
 | 8-bit | 38 GB | 35–37 | ~1.7× |
-| 4-bit | 22 GB | 43–52 | ~2.0–2.4× |
+| 4-bit | 22 GB | ~54 | ~2.5× |
 
 The weights use the Fish Audio Research License; check it before anything beyond personal use.
 

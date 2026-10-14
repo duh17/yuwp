@@ -51,4 +51,32 @@ struct Drama3Tests {
         #expect(throws: Drama3Error.self) { try Drama3Engine.validateCallerText("<|speaker:07|> hi", location: "input") }
         #expect(throws: Drama3Error.self) { try Drama3Engine.validateCallerText("<|speaker:16|> hi", location: "input") }
     }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: Drama3Tests.codecPath)))
+    func streamingCodecChunksMatchFullDecode() throws {
+        let codec = try FishCodec.load(url: URL(fileURLWithPath: Self.codecPath))
+        var codes: [Int32] = []
+        codes.reserveCapacity(10 * 9)
+        var next: UInt32 = 1
+        for _ in 0 ..< (10 * 9) {
+            next = next &* 1_103_515_245 &+ 12_345
+            codes.append(Int32(next % 1024))
+        }
+        let all = MLXArray(codes, [10, 9])
+        let batched = codec.decode(codes: all)
+        codec.resetStreaming()
+        var chunks: [MLXArray] = []
+        for start in stride(from: 0, to: 9, by: 3) {
+            chunks.append(codec.streamingStep(codes: all[0..., start ..< (start + 3)]))
+        }
+        let streamed = concatenated(chunks)
+        eval(batched, streamed)
+        #expect(batched.shape == streamed.shape)
+        let diff = abs(batched - streamed).max().item(Float.self)
+        #expect(diff < 2e-3)
+    }
+
+    private static var codecPath: String {
+        NSHomeDirectory() + "/Library/Application Support/Yuwp/models/drama3-mlx-4bit/codec.safetensors"
+    }
 }

@@ -18,6 +18,12 @@ public final class FishCodec: @unchecked Sendable {
     let quantizer: Quantizer
     let decoder: Decoder
 
+    /// Lazy MLX tensor carried across `streamingStep` calls. Nested layers share this box type so
+    /// the codec structs can stay value types.
+    final class StreamTensor: @unchecked Sendable {
+        var array: MLXArray?
+    }
+
     public static func load(url: URL) throws -> FishCodec {
         let bag = WeightBag(try MLX.loadArrays(url: url))
         let codec = try FishCodec(bag: bag)
@@ -51,6 +57,21 @@ public final class FishCodec: @unchecked Sendable {
     public func decode(codes: MLXArray) -> MLXArray {
         let latent = quantizer.decode(codes.transposed(1, 0)[.newAxis])
         return decoder(latent).reshaped(-1)
+    }
+
+    /// Clears causal conv buffers, transposed-conv overlap, and transformer KV used by `streamingStep`.
+    public func resetStreaming() {
+        quantizer.resetStream()
+        decoder.resetStream()
+    }
+
+    /// Incrementally decodes new codec frames. Concatenating successive calls matches `decode` on all
+    /// frames at once. Call `resetStreaming()` before each new utterance.
+    ///
+    /// Codes [codebooks, new_frames] → mono samples [new_frames * 2048].
+    public func streamingStep(codes: MLXArray) -> MLXArray {
+        let latent = quantizer.decodeStep(codes.transposed(1, 0)[.newAxis])
+        return decoder.step(latent).reshaped(-1)
     }
 
     // MARK: Weight access
@@ -100,6 +121,8 @@ public final class FishCodec: @unchecked Sendable {
         let dilation: Int
         let groups: Int
         let effectiveKernel: Int
+        let padding: Int
+        let leftContext = StreamTensor()
 
         init(_ bag: WeightBag, _ prefix: String, stride: Int = 1, dilation: Int = 1, groups: Int = 1) throws {
             weight = try bag.take(prefix + ".weight")
@@ -108,11 +131,11 @@ public final class FishCodec: @unchecked Sendable {
             self.dilation = dilation
             self.groups = groups
             effectiveKernel = (weight.dim(1) - 1) * dilation + 1
+            padding = effectiveKernel - stride
         }
 
         func callAsFunction(_ x: MLXArray) -> MLXArray {
             let length = x.dim(1)
-            let padding = effectiveKernel - stride
             let frames = Double(length - effectiveKernel + padding) / Double(stride) + 1
             let ideal = (Int(frames.rounded(.up)) - 1) * stride + (effectiveKernel - padding)
             let extra = max(0, ideal - length)
@@ -123,6 +146,25 @@ public final class FishCodec: @unchecked Sendable {
             if let bias { y = y + bias }
             return y
         }
+
+        func resetStream() { leftContext.array = nil }
+
+        /// Streaming causal conv. Stride must be 1; left context is carried between calls.
+        func step(_ x: MLXArray) -> MLXArray {
+            precondition(stride == 1, "streaming conv requires stride 1")
+            var input = x
+            if padding > 0 {
+                if let left = leftContext.array {
+                    input = concatenated([left, x], axis: 1)
+                } else {
+                    input = MLX.padded(x, widths: [.init((0, 0)), .init((padding, 0)), .init((0, 0))])
+                }
+                leftContext.array = input[0..., (input.dim(1) - padding)..., 0...]
+            }
+            var y = conv1d(input, weight, stride: 1, padding: 0, dilation: dilation, groups: groups)
+            if let bias { y = y + bias }
+            return y
+        }
     }
 
     /// Causal transposed conv: full transposed conv, then drop the trailing (kernel - stride) samples.
@@ -130,6 +172,7 @@ public final class FishCodec: @unchecked Sendable {
         let weight: MLXArray
         let bias: MLXArray?
         let stride: Int
+        let overlap = StreamTensor()
 
         init(_ bag: WeightBag, _ prefix: String, stride: Int) throws {
             weight = try bag.take(prefix + ".weight")
@@ -142,6 +185,23 @@ public final class FishCodec: @unchecked Sendable {
             if let bias { y = y + bias }
             let trim = weight.dim(1) - stride
             return trim > 0 ? y[0..., ..<(y.dim(1) - trim), 0...] : y
+        }
+
+        func resetStream() { overlap.array = nil }
+
+        /// Overlap-adds the tail that batch decode trims; concatenating steps matches `callAsFunction`.
+        func step(_ x: MLXArray) -> MLXArray {
+            var y = convTransposed1d(x, weight, stride: stride, padding: 0)
+            if let bias { y = y + bias }
+            let valid = x.dim(1) * stride
+            if let carry = overlap.array {
+                var left = carry
+                if let bias { left = left - bias }
+                let n = left.dim(1)
+                y = concatenated([y[0..., ..<n, 0...] + left, y[0..., n..., 0...]], axis: 1)
+            }
+            overlap.array = y.dim(1) > valid ? y[0..., valid..., 0...] : nil
+            return y[0..., ..<valid, 0...]
         }
     }
 
@@ -162,6 +222,15 @@ public final class FishCodec: @unchecked Sendable {
             let y = conv2(snake2(conv1(snake1(x))))
             let trim = x.dim(1) - y.dim(1)
             return (trim > 0 ? x[0..., ..<(x.dim(1) - trim), 0...] : x) + y
+        }
+
+        func resetStream() {
+            conv1.resetStream()
+            conv2.resetStream()
+        }
+
+        func step(_ x: MLXArray) -> MLXArray {
+            conv2.step(snake2(conv1.step(snake1(x)))) + x
         }
     }
 
@@ -192,6 +261,15 @@ public final class FishCodec: @unchecked Sendable {
             y = matmul(y, pw2Weight.T) + pw2Bias
             return x + gamma * y
         }
+
+        func resetStream() { dwconv.resetStream() }
+
+        func step(_ x: MLXArray) -> MLXArray {
+            var y = MLXFast.layerNorm(dwconv.step(x), weight: normWeight, bias: normBias, eps: 1e-6)
+            y = gelu(matmul(y, pw1Weight.T) + pw1Bias)
+            y = matmul(y, pw2Weight.T) + pw2Bias
+            return x + gamma * y
+        }
     }
 
     /// Window-limited causal transformer with RMSNorm, layer scale, and the checkpoint's RoPE table.
@@ -214,6 +292,24 @@ public final class FishCodec: @unchecked Sendable {
         let heads: Int
         let headDim: Int
         let window: Int
+        let kv: StreamKV
+
+        final class StreamKV: @unchecked Sendable {
+            var keys: [MLXArray?]
+            var values: [MLXArray?]
+            var position = 0
+
+            init(layerCount: Int) {
+                keys = Array(repeating: nil, count: layerCount)
+                values = Array(repeating: nil, count: layerCount)
+            }
+
+            func reset() {
+                keys = Array(repeating: nil, count: keys.count)
+                values = Array(repeating: nil, count: values.count)
+                position = 0
+            }
+        }
 
         init(_ bag: WeightBag, _ prefix: String, layerCount: Int, heads: Int, window: Int) throws {
             layers = try (0 ..< layerCount).map { index in
@@ -235,6 +331,7 @@ public final class FishCodec: @unchecked Sendable {
             self.heads = heads
             headDim = freqs.dim(1) * 2
             self.window = window
+            kv = StreamKV(layerCount: layerCount)
         }
 
         func rotate(_ x: MLXArray, cos: MLXArray, sin: MLXArray) -> MLXArray {
@@ -273,6 +370,57 @@ public final class FishCodec: @unchecked Sendable {
                 let ff = matmul(silu(matmul(f, layer.w1.T)) * matmul(f, layer.w3.T), layer.w2.T)
                 x = x + layer.ffnScale * ff
             }
+            return MLXFast.rmsNorm(x, weight: norm, eps: 1e-5)
+        }
+
+        func resetStream() { kv.reset() }
+
+        /// Attends new rows to a sliding window of cached keys. Concatenating outputs matches a
+        /// single `callAsFunction` on the same prefix when the window covers the whole prefix.
+        func step(_ input: MLXArray) -> MLXArray {
+            let B = input.dim(0)
+            let Tnew = input.dim(1)
+            let start = kv.position
+            let total = start + Tnew
+            precondition(total <= freqs.dim(0), "codec transformer supports at most \(freqs.dim(0)) positions")
+            let keep = min(start, max(0, window - Tnew))
+            let keyStart = start - keep
+            let keyCount = keep + Tnew
+            let keyCos = freqs[keyStart ..< total][.newAxis, 0..., .newAxis, 0..., 0]
+            let keySin = freqs[keyStart ..< total][.newAxis, 0..., .newAxis, 0..., 1]
+            let queryCos = freqs[start ..< total][.newAxis, 0..., .newAxis, 0..., 0]
+            let querySin = freqs[start ..< total][.newAxis, 0..., .newAxis, 0..., 1]
+            let rows = MLXArray.arange(Tnew, dtype: .int32)[0..., .newAxis] + Int32(keep)
+            let cols = MLXArray.arange(keyCount, dtype: .int32)[.newAxis, 0...]
+            let allowed = (cols .<= rows) .&& (cols .> (rows - Int32(window)))
+            let mask = MLX.where(allowed, MLXArray(Float(0)), MLXArray(Float(-1e9)))
+            var x = input
+            for (index, layer) in layers.enumerated() {
+                let h = MLXFast.rmsNorm(x, weight: layer.attentionNorm, eps: 1e-5)
+                let qkv = split(matmul(h, layer.wqkv.T), parts: 3, axis: -1)
+                let newK = qkv[1].reshaped(B, Tnew, heads, headDim)
+                let newV = qkv[2].reshaped(B, Tnew, heads, headDim)
+                var keys = newK
+                var values = newV
+                if keep > 0, let cachedK = kv.keys[index], let cachedV = kv.values[index] {
+                    keys = concatenated([cachedK[0..., (cachedK.dim(1) - keep)..., 0..., 0...], newK], axis: 1)
+                    values = concatenated([cachedV[0..., (cachedV.dim(1) - keep)..., 0..., 0...], newV], axis: 1)
+                }
+                kv.keys[index] = keys
+                kv.values[index] = values
+                let q = rotate(qkv[0].reshaped(B, Tnew, heads, headDim), cos: queryCos, sin: querySin).transposed(0, 2, 1, 3)
+                let k = rotate(keys, cos: keyCos, sin: keySin).transposed(0, 2, 1, 3)
+                let v = values.transposed(0, 2, 1, 3)
+                let attended = MLXFast.scaledDotProductAttention(
+                    queries: q, keys: k, values: v, scale: 1 / Float(headDim).squareRoot(), mask: .array(mask)
+                )
+                .transposed(0, 2, 1, 3).reshaped(B, Tnew, heads * headDim)
+                x = x + layer.attentionScale * matmul(attended, layer.wo.T)
+                let f = MLXFast.rmsNorm(x, weight: layer.ffnNorm, eps: 1e-5)
+                let ff = matmul(silu(matmul(f, layer.w1.T)) * matmul(f, layer.w3.T), layer.w2.T)
+                x = x + layer.ffnScale * ff
+            }
+            kv.position = total
             return MLXFast.rmsNorm(x, weight: norm, eps: 1e-5)
         }
     }
@@ -411,6 +559,24 @@ public final class FishCodec: @unchecked Sendable {
             for (conv, block) in upsample { z = block(conv(z)) }
             return z
         }
+
+        func resetStream() {
+            postModule.resetStream()
+            for (conv, block) in upsample {
+                conv.resetStream()
+                block.resetStream()
+            }
+        }
+
+        func decodeStep(_ codes: MLXArray) -> MLXArray {
+            var z = semantic.decode(codes[0..., 0..., 0])
+            for (index, quantizer) in residual.enumerated() where index + 1 < codes.dim(-1) {
+                z = z + quantizer.decode(codes[0..., 0..., index + 1])
+            }
+            z = postModule.step(z)
+            for (conv, block) in upsample { z = block.step(conv.step(z)) }
+            return z
+        }
     }
 
     // MARK: Decoder
@@ -448,6 +614,24 @@ public final class FishCodec: @unchecked Sendable {
                 for unit in block.units { x = unit(x) }
             }
             return tanh(outputConv(snake(x)))
+        }
+
+        func resetStream() {
+            inputConv.resetStream()
+            outputConv.resetStream()
+            for block in blocks {
+                block.upsample.resetStream()
+                for unit in block.units { unit.resetStream() }
+            }
+        }
+
+        func step(_ latent: MLXArray) -> MLXArray {
+            var x = inputConv.step(latent)
+            for block in blocks {
+                x = block.upsample.step(block.snake(x))
+                for unit in block.units { x = unit.step(x) }
+            }
+            return tanh(outputConv.step(snake(x)))
         }
     }
 }

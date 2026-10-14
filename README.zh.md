@@ -132,7 +132,7 @@ hf download fishaudio/drama-3
   --out /tmp/drama3.wav
 ```
 
-`--ref-audio` / `--ref-text` 可选（声音克隆）。重复多组即可给场景分配角色：第 *i* 组对应 `<|speaker:i|>`，旁白加四个角色就是五组；不给参考音频时由模型自己挑声音。`[laughs]` 等行内标签和 `<|speaker:N|>`（0–15）直接写在 `--text` 里。采样默认值与上游一致：`--temperature 1.0 --top-p 0.9 --top-k 30`；`--max-tokens` 限制帧数（每秒音频 21.5 帧）。`serve` 暂不支持 Drama 3。M3 Ultra 上 bf16（68 GB）约 21–29 帧/秒，8-bit（38 GB）约 35–37 帧/秒，4-bit（22 GB）约 43–52 帧/秒。权重使用 Fish Audio Research License，个人用途以外请先看许可证。
+`--ref-audio` / `--ref-text` 可选（声音克隆）。重复多组即可给场景分配角色：第 *i* 组对应 `<|speaker:i|>`，旁白加四个角色就是五组；不给参考音频时由模型自己挑声音。`[laughs]` 等行内标签和 `<|speaker:N|>`（0–15）直接写在 `--text` 里。采样默认值与上游一致：`--temperature 1.0 --top-p 0.9 --top-k 30`；`--max-tokens` 限制帧数（每秒音频 21.5 帧）。`--stream` 边生成边解码（约 4 帧后出第一段音频，之后按 `--streaming-interval`，默认 0.2 秒），与 Qwen3-TTS 共用 `StreamingWAVWriter`。`serve` 暂不支持 Drama 3。M3 Ultra 上 bf16（68 GB）约 21–29 帧/秒，8-bit（38 GB）约 35–37 帧/秒，4-bit（22 GB）约 54 帧/秒。权重使用 Fish Audio Research License，个人用途以外请先看许可证。
 
 ### YuE2 音乐生成（仅命令行）
 

@@ -74,6 +74,52 @@ func runDrama3Generate(options: TTSTestOptions) async throws {
     sampling.seed = options.seed
 
     let synthStart = Date()
+    if options.stream {
+        let outputURL = URL(fileURLWithPath: options.outputPath)
+        let writer = try StreamingWAVWriter(url: outputURL, sampleRate: Double(engine.sampleRate))
+        let player = options.play ? try StreamingAudioPlayer(sampleRate: engine.sampleRate) : nil
+        var chunkCount = 0
+        var writeError: Error?
+        var streamOptions = Drama3StreamOptions()
+        streamOptions.intervalSeconds = options.streamingInterval
+        let result = try engine.synthesize(
+            text: options.text,
+            references: references,
+            sampling: sampling,
+            stream: streamOptions,
+            onAudio: { samples in
+                do {
+                    try writer.writeChunk(samples)
+                    try player?.schedule(samples: samples)
+                } catch {
+                    writeError = error
+                    return
+                }
+                chunkCount += 1
+                let chunkDuration = Double(samples.count) / Double(engine.sampleRate)
+                fputs(
+                    "stream chunk \(chunkCount): \(String(format: "%.2f", chunkDuration))s audio at +\(String(format: "%.2f", Date().timeIntervalSince(synthStart)))s\n",
+                    stderr
+                )
+            }
+        )
+        if let writeError { throw writeError }
+        _ = writer.finalize()
+        if let player {
+            await player.waitUntilComplete()
+            player.stop()
+        }
+        let synthSeconds = Date().timeIntervalSince(synthStart)
+        let duration = Double(result.samples.count) / Double(engine.sampleRate)
+        let framesPerSecond = Double(result.frameCount) / max(result.generationSeconds, 1e-6)
+        let firstAudio = result.firstAudioSeconds.map { String(format: "%.2f", $0) } ?? "n/a"
+        fputs(
+            "\(engine.modelName): loaded in \(String(format: "%.1f", loadSeconds))s; \(result.frameCount) frames (\(String(format: "%.1f", framesPerSecond)) frames/s, prompt \(result.promptRowCount) rows) -> \(String(format: "%.2f", duration))s audio in \(String(format: "%.1f", synthSeconds))s; first audio +\(firstAudio)s; chunks=\(chunkCount)\(result.finishedWithEndOfSpeech ? "" : " [hit --max-tokens]") -> \(options.outputPath)\n",
+            stderr
+        )
+        return
+    }
+
     let result = try engine.synthesize(text: options.text, references: references, sampling: sampling)
     let synthSeconds = Date().timeIntervalSince(synthStart)
     try AudioUtils.writeWavFile(

@@ -25,11 +25,21 @@ public struct Drama3Reference: Sendable {
     }
 }
 
+public struct Drama3StreamOptions: Sendable, Equatable {
+    /// Target seconds of audio per emitted chunk after the first.
+    public var intervalSeconds: Double = 0.2
+    /// Frames in the first audio chunk (4 frames ≈ 186 ms) so first audio is not gated on `intervalSeconds`.
+    public var firstChunkFrames: Int = 4
+
+    public init() {}
+}
+
 public struct Drama3Result: Sendable {
     public var samples: [Float]
     public var frameCount: Int
     public var promptRowCount: Int
     public var generationSeconds: Double
+    public var firstAudioSeconds: Double?
     public var finishedWithEndOfSpeech: Bool
 }
 
@@ -239,7 +249,9 @@ public final class Drama3Engine: @unchecked Sendable {
         text: String,
         references: [Drama3Reference] = [],
         sampling: Drama3Sampling = Drama3Sampling(),
-        onFrame: ((Int) -> Void)? = nil
+        stream: Drama3StreamOptions? = nil,
+        onFrame: ((Int) -> Void)? = nil,
+        onAudio: (([Float]) -> Void)? = nil
     ) throws -> Drama3Result {
         let referenceCodes = references.map { (transcript: $0.transcript, codes: encodeReference($0)) }
         lock.lock()
@@ -247,24 +259,72 @@ public final class Drama3Engine: @unchecked Sendable {
         if let seed = sampling.seed { MLXRandom.seed(seed) }
         let rows = try promptRows(text: text, references: referenceCodes)
         let start = Date()
-        let (frames, sawEnd) = generateFrames(rows: rows, sampling: sampling, onFrame: onFrame)
+        var samples: [Float] = []
+        var firstAudioSeconds: Double?
+        var pendingAudio: [MLXArray] = []
+        if stream != nil { codec.resetStreaming() }
+        let frameRate = Double(FishCodec.sampleRate) / Double(FishCodec.frameLength)
+        let intervalFrames = max(1, Int(((stream?.intervalSeconds ?? 0.2) * frameRate).rounded()))
+        let firstChunkFrames = max(1, stream?.firstChunkFrames ?? intervalFrames)
+
+        func flushAudio() {
+            guard !pendingAudio.isEmpty else { return }
+            let codes = concatenated(pendingAudio, axis: 0)[0..., 1...].transposed(1, 0)
+            let audio = codec.streamingStep(codes: codes)
+            eval(audio)
+            let chunk = audio.asArray(Float.self)
+            pendingAudio.removeAll(keepingCapacity: true)
+            guard !chunk.isEmpty else { return }
+            if firstAudioSeconds == nil {
+                firstAudioSeconds = Date().timeIntervalSince(start)
+            }
+            samples.append(contentsOf: chunk)
+            onAudio?(chunk)
+        }
+
+        let (frames, sawEnd) = generateFrames(rows: rows, sampling: sampling) { frame, count in
+            onFrame?(count)
+            guard stream != nil else { return }
+            pendingAudio.append(frame)
+            let due = samples.isEmpty ? firstChunkFrames : intervalFrames
+            if pendingAudio.count >= due { flushAudio() }
+        }
+        if stream != nil {
+            flushAudio()
+        }
         let generationSeconds = Date().timeIntervalSince(start)
         guard !frames.isEmpty else {
             throw Drama3Error.generationFailed("the model ended speech before producing any audio frame")
         }
-        let codes = concatenated(frames, axis: 0)[0..., 1...].transposed(1, 0)
-        let audio = codec.decode(codes: codes)
-        eval(audio)
+        if stream == nil {
+            let codes = concatenated(frames, axis: 0)[0..., 1...].transposed(1, 0)
+            let audio = codec.decode(codes: codes)
+            eval(audio)
+            samples = audio.asArray(Float.self)
+        }
         return Drama3Result(
-            samples: audio.asArray(Float.self),
+            samples: samples,
             frameCount: frames.count,
             promptRowCount: rows.dim(0),
             generationSeconds: generationSeconds,
+            firstAudioSeconds: firstAudioSeconds,
             finishedWithEndOfSpeech: sawEnd
         )
     }
 
-    func generateFrames(rows: MLXArray, sampling: Drama3Sampling, onFrame: ((Int) -> Void)?) -> ([MLXArray], Bool) {
+    /// One AR frame, fully lazy: the caller queues GPU work with `asyncEval` before reading EOS.
+    struct PendingFrame {
+        var frame: MLXArray
+        var hidden: MLXArray
+        var window: MLXArray
+        var mainToken: MLXArray
+    }
+
+    func generateFrames(
+        rows: MLXArray,
+        sampling: Drama3Sampling,
+        onFrame: ((MLXArray, Int) -> Void)? = nil
+    ) -> ([MLXArray], Bool) {
         let backbone = model.backbone
         let tower = model.tower
         let backboneCache = Drama3BackboneCache(config: config.backbone)
@@ -284,19 +344,18 @@ public final class Drama3Engine: @unchecked Sendable {
                 caches: towerCaches
             )
         }
-        var hidden = prefillHidden[(rowCount - 1)...]
-        var inputFrame = rows[(rowCount - 1)...]
+        let hidden = prefillHidden[(rowCount - 1)...]
+        let inputFrame = rows[(rowCount - 1)...]
         // The RAS window starts with the main tokens of the last prompt rows, left-padded with -1.
         let promptTail = rows[max(0, rowCount - Self.rasWindowFrames)..., 0].asType(.int32)
-        var window = concatenated([
+        let window = concatenated([
             MLXArray([Int32](repeating: -1, count: Self.rasWindowFrames - promptTail.dim(0))),
             promptTail,
         ], axis: 0)
-        var frames: [MLXArray] = []
         let semanticBegin = Int32(config.semanticBeginID)
         let codebookLimit = config.tower.codebookSize - 1
 
-        for _ in 0 ..< sampling.maxFrames {
+        func step(hidden: MLXArray, inputFrame: MLXArray, window: MLXArray) -> PendingFrame {
             let candidateLogits = model.lmHead(hidden)[0..., candidateIDs]
             let first = candidateIDs[Self.sample(candidateLogits, temperature: sampling.temperature, topK: sampling.topK, topP: sampling.topP)]
             let rasDraw = candidateIDs[Self.sample(candidateLogits, temperature: Self.rasTemperature, topK: Self.rasTopK, topP: Self.rasTopP)]
@@ -310,16 +369,28 @@ public final class Drama3Engine: @unchecked Sendable {
                 Self.sample(logits, temperature: sampling.temperature, topK: sampling.topK, topP: sampling.topP)
             }
             let frame = concatenated([mainToken] + codes, axis: 0).asType(.int32)[.newAxis]
-            eval(frame)
-            let main = frame[0, 0].item(Int.self)
+            let nextWindow = concatenated([window[1...], frame[0, 0 ..< 1]], axis: 0)
+            let nextHidden = backbone(embeddings: backboneInput(frame), cache: backboneCache)[0]
+            return PendingFrame(frame: frame, hidden: nextHidden, window: nextWindow, mainToken: mainToken)
+        }
+
+        var pending = step(hidden: hidden, inputFrame: inputFrame, window: window)
+        asyncEval(pending.frame, pending.hidden, pending.mainToken)
+        var frames: [MLXArray] = []
+        for index in 0 ..< sampling.maxFrames {
+            let current = pending
+            if index + 1 < sampling.maxFrames {
+                pending = step(hidden: current.hidden, inputFrame: current.frame, window: current.window)
+                asyncEval(pending.frame, pending.hidden, pending.mainToken)
+            }
+            // Read this step's own main token, not a slice of `frame`, so the queued next step is not a
+            // dependency of the host sync (same pattern as mlx-audio and YuE2).
+            let main = current.mainToken.item(Int.self)
             if main == config.eosTokenID {
                 return (frames, true)
             }
-            frames.append(frame)
-            onFrame?(frames.count)
-            window = concatenated([window[1...], frame[0, 0 ..< 1]], axis: 0)
-            inputFrame = frame
-            hidden = backbone(embeddings: backboneInput(frame), cache: backboneCache)[0]
+            frames.append(current.frame)
+            onFrame?(current.frame, frames.count)
         }
         return (frames, false)
     }

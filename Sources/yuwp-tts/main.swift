@@ -121,6 +121,8 @@ func parseOptions(_ args: [String]) -> TTSTestOptions {
               --min-p <float>              Min-p sampling threshold
               --repetition-penalty <float> Repetition penalty
               --stream                     Stream decode/write chunks instead of waiting for full decode
+                                           (Qwen3-TTS and Drama 3). Drama 3 emits the first ~4 frames
+                                           (~0.19s audio) then chunks of --streaming-interval.
               --streaming-interval <sec>   Target streaming chunk interval, default 0.2
               --play                       Play the generated WAV, or play chunks live with --stream
             """)
