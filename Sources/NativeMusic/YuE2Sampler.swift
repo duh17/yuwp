@@ -14,6 +14,9 @@ struct YuE2Sampler {
     /// Last `penaltyWindow` sampled local ids, oldest first; -1 marks empty slots.
     private(set) var window: MLXArray
     private let endMask: MLXArray
+    /// Top-k, top-p and the draw run on the `poolSize` highest scores instead of the whole phase
+    /// vocabulary. The margin over k keeps every token tied at the k-th value in the pool.
+    private let poolSize: Int
     private let rankFloor: MLXArray
 
     init(phase: YuE2Phase, sampling: YuE2Sampling, seed: UInt64, legacyOff: Bool) {
@@ -25,7 +28,8 @@ struct YuE2Sampler {
         key = MLXRandom.key(seed)
         window = MLXArray([Int32](repeating: -1, count: sampling.penaltyWindow))
         endMask = MLXArray(Int32(YuE2Protocol.endIndex(phase))) .== MLXArray(0 ..< Int32(size))
-        rankFloor = MLXArray(0 ..< Int32(size)) .>= MLXArray(Int32(legacyOff ? 3 : 1))
+        poolSize = min(size, min(sampling.topK, size) + 256)
+        rankFloor = MLXArray(0 ..< Int32(poolSize)) .>= MLXArray(Int32(legacyOff ? 3 : 1))
     }
 
     /// Phase-local `[1]` int32 token from bf16 `[1, size]` logits at decode `step`.
@@ -42,22 +46,29 @@ struct YuE2Sampler {
         if sampling.temperature != 1 {
             scores = (scores.asType(.float32) / sampling.temperature).asType(scores.dtype)
         }
+        // Ascending ids give ties the same order a stable sort of the full vocabulary would.
+        let pool = sorted(argPartition(-scores, kth: poolSize - 1, axis: -1)[0..., ..<poolSize], axis: -1)
+        var values = takeAlong(scores, pool, axis: -1)
         let k = min(sampling.topK, size)
-        let threshold = top(scores, k: k, axis: -1).min(axis: -1, keepDims: true)
-        scores = MLX.where(scores .< threshold, negInf, scores)
+        let threshold = top(values, k: k, axis: -1).min(axis: -1, keepDims: true)
+        values = MLX.where(values .< threshold, negInf, values)
         if sampling.topP < 1 {
-            let order = argSort(-scores, axis: -1)
-            var values = takeAlong(scores, order, axis: -1)
-            let probabilities = softmax(values, axis: -1, precise: true)
+            let order = argSort(-values, axis: -1)
+            var ranked = takeAlong(values, order, axis: -1)
+            let probabilities = softmax(ranked, axis: -1, precise: true)
             let preceding = (cumsum(probabilities, axis: -1) - probabilities).asType(scores.dtype)
             let removed = (preceding.asType(.float32) .> sampling.topP) .&& rankFloor
-            values = MLX.where(removed, negInf, values)
-            scores = putAlong(values, order, values: values, axis: -1)
+            ranked = MLX.where(removed, negInf, ranked)
+            values = putAlong(ranked, order, values: ranked, axis: -1)
         }
         let keys = MLXRandom.split(key: key, into: 2)
         key = keys[0]
-        let logProbabilities = log(softmax(scores, axis: -1, precise: true).asType(.float32))
-        return categorical(logProbabilities, axis: -1, key: keys[1]).asType(.int32)
+        // categorical() is argmax(log p + Gumbel noise over the full vocabulary); drawing the full-size
+        // noise from the same key and reading it at the pool ids picks the identical token.
+        let logProbabilities = log(softmax(values, axis: -1, precise: true).asType(.float32))
+        let noise = takeAlong(MLXRandom.gumbel([1, size], dtype: .float32, key: keys[1]), pool, axis: -1)
+        let choice = argMax(logProbabilities + noise, axis: -1, keepDims: true)
+        return takeAlong(pool, choice, axis: -1).reshaped(1).asType(.int32)
     }
 
     /// Record a sampled content token in the repetition window (lazy, device-side).

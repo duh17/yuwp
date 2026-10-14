@@ -52,9 +52,8 @@ final class YuE2Attention: Module {
     let ropeTheta: Float
     let scale: Float
 
-    @ModuleInfo(key: "q_proj") var qProj: Linear
-    @ModuleInfo(key: "k_proj") var kProj: Linear
-    @ModuleInfo(key: "v_proj") var vProj: Linear
+    /// q, k and v projections stacked into one matmul (see `fuseProjections`).
+    @ModuleInfo(key: "qkv_proj") var qkvProj: Linear
     @ModuleInfo(key: "o_proj") var oProj: Linear
     @ModuleInfo(key: "q_norm") var qNorm: RMSNorm
     @ModuleInfo(key: "k_norm") var kNorm: RMSNorm
@@ -65,9 +64,7 @@ final class YuE2Attention: Module {
         headDim = c.headDim
         ropeTheta = c.ropeTheta
         scale = 1 / Float(c.headDim).squareRoot()
-        _qProj.wrappedValue = Linear(c.hiddenSize, c.heads * c.headDim, bias: false)
-        _kProj.wrappedValue = Linear(c.hiddenSize, c.kvHeads * c.headDim, bias: false)
-        _vProj.wrappedValue = Linear(c.hiddenSize, c.kvHeads * c.headDim, bias: false)
+        _qkvProj.wrappedValue = Linear(c.hiddenSize, (c.heads + 2 * c.kvHeads) * c.headDim, bias: false)
         _oProj.wrappedValue = Linear(c.heads * c.headDim, c.hiddenSize, bias: false)
         _qNorm.wrappedValue = RMSNorm(dimensions: c.headDim, eps: c.rmsNormEps)
         _kNorm.wrappedValue = RMSNorm(dimensions: c.headDim, eps: c.rmsNormEps)
@@ -77,9 +74,10 @@ final class YuE2Attention: Module {
     /// Normed, rotated `[B, H, L, D]` projections at absolute positions `offset ..< offset + L`.
     func project(_ x: MLXArray, offset: Int) -> (q: MLXArray, k: MLXArray, v: MLXArray) {
         let (B, L) = (x.dim(0), x.dim(1))
-        var q = qNorm(qProj(x).reshaped(B, L, heads, headDim)).transposed(0, 2, 1, 3)
-        var k = kNorm(kProj(x).reshaped(B, L, kvHeads, headDim)).transposed(0, 2, 1, 3)
-        let v = vProj(x).reshaped(B, L, kvHeads, headDim).transposed(0, 2, 1, 3)
+        let qkv = qkvProj(x).reshaped(B, L, heads + 2 * kvHeads, headDim)
+        var q = qNorm(qkv[0..., 0..., ..<heads]).transposed(0, 2, 1, 3)
+        var k = kNorm(qkv[0..., 0..., heads ..< heads + kvHeads]).transposed(0, 2, 1, 3)
+        let v = qkv[0..., 0..., (heads + kvHeads)...].transposed(0, 2, 1, 3)
         q = MLXFast.RoPE(q, dimensions: headDim, traditional: false, base: ropeTheta, scale: 1, offset: offset)
         k = MLXFast.RoPE(k, dimensions: headDim, traditional: false, base: ropeTheta, scale: 1, offset: offset)
         return (q, k, v)
@@ -97,45 +95,86 @@ private let swiGLU = compile(shapeless: true) { (gate: MLXArray, up: MLXArray) -
 }
 
 final class YuE2MLP: Module, UnaryLayer {
-    @ModuleInfo(key: "gate_proj") var gateProj: Linear
-    @ModuleInfo(key: "up_proj") var upProj: Linear
+    /// gate and up projections stacked into one matmul (see `fuseProjections`).
+    @ModuleInfo(key: "gate_up_proj") var gateUpProj: Linear
     @ModuleInfo(key: "down_proj") var downProj: Linear
+    let intermediate: Int
 
     init(_ c: YuE2Config) {
-        _gateProj.wrappedValue = Linear(c.hiddenSize, c.intermediateSize, bias: false)
-        _upProj.wrappedValue = Linear(c.hiddenSize, c.intermediateSize, bias: false)
+        intermediate = c.intermediateSize
+        _gateUpProj.wrappedValue = Linear(c.hiddenSize, 2 * c.intermediateSize, bias: false)
         _downProj.wrappedValue = Linear(c.intermediateSize, c.hiddenSize, bias: false)
         super.init()
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        downProj(swiGLU(gateProj(x), upProj(x)))
+        let gateUp = gateUpProj(x)
+        return downProj(swiGLU(gateUp[.ellipsis, ..<intermediate], gateUp[.ellipsis, intermediate...]))
     }
 }
 
-/// Fixed-capacity append-only K/V for one AR branch: `[1, kvHeads, capacity, headDim]`.
+/// Stack checkpoint q/k/v and gate/up tensors (weights and any quantization scales/biases) so each
+/// group runs as one matmul. Rows are only concatenated: quantization groups run along the input
+/// dimension, so fused 8/4-bit weights are the original rows unchanged.
+func fuseProjections(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+    var fused = weights
+    let groups = [("q_proj", "k_proj", "v_proj", "qkv_proj"), ("gate_proj", "up_proj", nil, "gate_up_proj")]
+    for key in weights.keys {
+        for (first, second, third, target) in groups where key.hasSuffix(".\(first).weight") {
+            let prefix = String(key.dropLast("\(first).weight".count))
+            for suffix in ["weight", "scales", "biases"] {
+                let names = [first, second, third].compactMap { $0 }.map { "\(prefix)\($0).\(suffix)" }
+                let parts = names.compactMap { weights[$0] }
+                guard parts.count == names.count else { continue }
+                fused["\(prefix)\(target).\(suffix)"] = concatenated(parts, axis: 0)
+                names.forEach { fused[$0] = nil }
+            }
+        }
+    }
+    return fused
+}
+
+/// Append-only K/V for one AR branch, `[1, kvHeads, allocated, headDim]`, grown in 256-token
+/// blocks so the buffer tracks the used length instead of the whole context.
 final class YuE2KVCache {
-    private var keys: MLXArray
-    private var values: MLXArray
+    private var keys: MLXArray?
+    private var values: MLXArray?
     private(set) var offset = 0
     let capacity: Int
+    private let kvHeads: Int
+    private let headDim: Int
+    private static let block = 256
 
     init(_ c: YuE2Config, capacity: Int) {
         self.capacity = capacity
-        keys = MLXArray.zeros([1, c.kvHeads, capacity, c.headDim], dtype: .bfloat16)
-        values = MLXArray.zeros([1, c.kvHeads, capacity, c.headDim], dtype: .bfloat16)
+        kvHeads = c.kvHeads
+        headDim = c.headDim
     }
 
     func append(_ k: MLXArray, _ v: MLXArray) throws -> (MLXArray, MLXArray) {
         let end = offset + k.dim(2)
         guard end <= capacity else { throw YuE2Error.invalidInput("KV cache capacity \(capacity) exceeded") }
+        if end > (keys?.dim(2) ?? 0) {
+            let grow = (end - offset + Self.block - 1) / Self.block * Self.block
+            // Separate arrays: subscript writes mutate an MLXArray in place, so K and V must not share one.
+            let blankKeys = MLXArray.zeros([1, kvHeads, grow, headDim], dtype: .bfloat16)
+            let blankValues = MLXArray.zeros([1, kvHeads, grow, headDim], dtype: .bfloat16)
+            if let keys, let values {
+                self.keys = concatenated([keys[0..., 0..., ..<offset, 0...], blankKeys], axis: 2)
+                self.values = concatenated([values[0..., 0..., ..<offset, 0...], blankValues], axis: 2)
+            } else {
+                keys = blankKeys
+                values = blankValues
+            }
+        }
+        guard let keys, let values else { throw YuE2Error.invalidInput("KV cache was not allocated") }
         keys[0..., 0..., offset ..< end, 0...] = k.asType(.bfloat16)
         values[0..., 0..., offset ..< end, 0...] = v.asType(.bfloat16)
         offset = end
         return (keys[0..., 0..., ..<end, 0...], values[0..., 0..., ..<end, 0...])
     }
 
-    var state: [MLXArray] { [keys, values] }
+    var state: [MLXArray] { [keys, values].compactMap { $0 } }
 }
 
 final class YuE2ARLayer: Module {
@@ -210,7 +249,7 @@ final class YuE2ARModel: Module {
         let quantized = bits.map { directory.appendingPathComponent("ar-\($0)bit.safetensors") }
         let url = quantized.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil } ?? bf16
         guard FileManager.default.fileExists(atPath: url.path) else { throw YuE2Error.missingWeights((quantized ?? bf16).path) }
-        let weights = try MLX.loadArrays(url: url)
+        let weights = fuseProjections(try MLX.loadArrays(url: url))
         let model = YuE2ARModel(config)
         if weights["lm_head.scales"] != nil {
             quantize(model: model) { path, module -> (groupSize: Int, bits: Int)? in
@@ -356,7 +395,7 @@ final class YuE2AcousticModel: Module {
             weights[key.replacingOccurrences(of: "time_embedder.mlp.2.", with: "time_embedder.mlp.1.")] = value
         }
         let model = YuE2AcousticModel(config)
-        try model.update(parameters: ModuleParameters.unflattened(weights), verify: .all)
+        try model.update(parameters: ModuleParameters.unflattened(fuseProjections(weights)), verify: .all)
         model.train(false)
         eval(model.parameters())
         return model
