@@ -86,3 +86,9 @@ Takes on mac-studio with `yuwp-music` (8-bit tokens, 32 steps, seed 7 unless not
 | Instrumental, piano, Vocal → Ins score (seed 3) | 90 s; ASR text empty |
 | Cantonese lyrics, `Cantonese, 1990s Hong Kong TVB wuxia theme, …` | 68 s; ASR language `zh`; one verse line replaced by invented words |
 | Same lyrics, Chinese style `粤语, 1990年代香港TVB武侠剧主题曲, …` | 67 s; ASR language `zh`; all lines present, several characters substituted |
+| English jazz-funk, horns + choir, 11 sections | 229 s in 149 s; nearly every line intelligible; the bridge lyrics were not heard; plan merged `[Pre-Chorus]` and `[Interlude]` into neighbors |
+| Portuguese bossa nova | 175 s; lyrics clean; plan chose `M:2/4`, `Q:1/4=67` (a proper bossa feel) |
+| Japanese 80s city pop | 205 s; lyrics largely intact, katakana words came back as English (`highway`, `melody`) |
+| English Afrobeat, call-and-response bridge | 158 s; all sections sung including the call-and-response |
+
+Yuwp ASR sometimes returns an English translation of later sung lines in other languages (`The sky of Panama is so blue`). That is the ASR, not the song; check the language of the early lines before blaming the take.
